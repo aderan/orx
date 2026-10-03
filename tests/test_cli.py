@@ -1013,3 +1013,73 @@ def test_agent_status_json_envelope(cli_project):
 def test_agent_info_without_snapshot_is_honest():
     result = invoke("agent", "info", "codex", "--json")
     assert result.exit_code in (0, 1)  # honest either way; snapshot optional
+
+
+# ---------------------------------------------------------------------------
+# Skill install: default set, explicit names, unknown-name envelope
+
+
+def _fake_cli_packaged_skills(tmp_path, monkeypatch, names=("orx-controller", "orx-agent", "orx-pbv")):
+    from orx import skills as skills_mod
+    root = tmp_path / "cli-packaged-skills"
+    for name in names:
+        (root / name).mkdir(parents=True)
+        (root / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n")
+    monkeypatch.setattr(skills_mod, "packaged_skills_dir", lambda: root)
+    return root
+
+
+def test_skill_install_cli_default_set(tmp_path, monkeypatch):
+    home = tmp_path / "cli-home"
+    (home / ".zcode" / "skills").mkdir(parents=True)
+    _fake_cli_packaged_skills(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    result = invoke("skill", "install", "--json")
+
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    assert sorted(body["installed"]) == ["orx-agent", "orx-controller"]
+    assert body["refreshed"] == []
+    assert body["canonical_root"] == str(home / ".agents" / "skills")
+    assert not (home / ".agents" / "skills" / "orx-pbv").exists()
+
+
+def test_skill_install_cli_explicit_name(tmp_path, monkeypatch):
+    home = tmp_path / "cli-home"
+    (home / ".zcode" / "skills").mkdir(parents=True)
+    _fake_cli_packaged_skills(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    result = invoke("skill", "install", "orx-pbv", "--json")
+
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["installed"] == ["orx-pbv"]
+    assert (home / ".agents" / "skills" / "orx-pbv" / "SKILL.md").is_file()
+    assert (home / ".zcode" / "skills" / "orx-pbv").is_symlink()
+    assert not (home / ".agents" / "skills" / "orx-agent").exists()
+
+    # human output matches the command's existing style
+    text = invoke("skill", "install", "orx-pbv")
+    assert text.exit_code == 0
+    assert f"canonical: {home / '.agents' / 'skills'}" in text.stdout
+    assert "refreshed orx-pbv" in text.stdout
+
+
+def test_skill_install_cli_unknown_name_error_envelope(tmp_path, monkeypatch):
+    home = tmp_path / "cli-home"
+    _fake_cli_packaged_skills(tmp_path, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    result = invoke("skill", "install", "nope", "--json")
+
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    assert "nope" in body["error"]
+    for available in ("orx-controller", "orx-agent", "orx-pbv"):
+        assert available in body["error"]
+    assert not (home / ".agents").exists()

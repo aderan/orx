@@ -415,6 +415,7 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         assert argv[argv.index("-m") + 1] == "fake-codex-model"
         assert argv[argv.index("-C") + 1] == str(tmp_path)
         assert argv[argv.index("-s") + 1] == "workspace-write"
+        assert launch.sandbox == "workspace_write"
         assert "--ephemeral" in argv
         assert argv[-1] == "DO THE WORK"  # prompt positional
         assert "--dangerously-bypass-approvals-and-sandbox" not in argv
@@ -423,6 +424,55 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         assert argv[effort_index + 1] == "model_reasoning_effort=high"
     finally:
         project.close()
+
+
+def test_codex_per_role_sandbox_contract(tmp_path, bindir, monkeypatch):
+    """docs/pbv-mapping.md §4.5: planner and verifier launch with
+    `-s read-only`, workers keep `-s workspace-write`, and the enforced mode
+    is declared on Launch.sandbox. Every other flag stays identical across
+    roles (--json, -m, -C, --ephemeral, --output-last-message, effort args,
+    positional prompt, empty stdin)."""
+    install_fake_codex(bindir)
+    adapter = adapters.get_adapter("codex")
+    assert adapter.probe().ok
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+    profile = Profile(
+        name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
+        model="fake-codex-model", model_class=ModelClass.FRONTIER,
+        effort=Effort.HIGH, capabilities=("coding",),
+    )
+    scratch = tmp_path / "scratch"  # same scratch -> identical last-message path
+    worker = adapter.build_worker_launch(
+        root=tmp_path, scratch=scratch, profile=profile, prompt="x", timeout=5)
+    planner = adapter.build_planner_launch(
+        root=tmp_path, scratch=scratch, profile=profile, prompt="x", timeout=5,
+        schema_path=None)
+    verifier = adapter.build_verifier_launch(
+        root=tmp_path, scratch=scratch, profile=profile, prompt="x", timeout=5)
+
+    assert worker.argv[worker.argv.index("-s") + 1] == "workspace-write"
+    assert worker.sandbox == "workspace_write"
+    for role_launch in (planner, verifier):
+        argv = role_launch.argv
+        assert argv[argv.index("-s") + 1] == "read-only"
+        assert role_launch.sandbox == "read_only"
+        # only the sandbox value differs from the worker launch
+        s_at = worker.argv.index("-s")
+        assert argv[:s_at + 1] == worker.argv[:s_at + 1]
+        assert argv[s_at + 2:] == worker.argv[s_at + 2:]
+        assert "--json" in argv and "--ephemeral" in argv
+        assert argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
+        assert argv[-1] == "x"  # prompt stays positional
+        assert role_launch.stdin_text == ""
+
+    # The planner's schema flag keeps its slot before the positional prompt.
+    with_schema = adapter.build_planner_launch(
+        root=tmp_path, scratch=scratch, profile=profile, prompt="x", timeout=5,
+        schema_path=tmp_path / "plan-schema.json")
+    assert with_schema.argv[with_schema.argv.index("--output-schema") + 1] == str(tmp_path / "plan-schema.json")
+    assert with_schema.argv[-1] == "x"
+    assert with_schema.sandbox == "read_only"
 
 
 def test_codex_effort_flag_omitted_when_unsupported(tmp_path, bindir, monkeypatch):
@@ -508,6 +558,51 @@ def test_cli_launches_never_inherit_stdin(tmp_path, bindir, monkeypatch):
         root=tmp_path, scratch=tmp_path / "s2", profile=cursor_profile,
         prompt="x", timeout=5)
     assert launch.stdin_text == ""
+
+
+def test_cursor_and_shell_launches_make_no_isolation_claim(tmp_path, bindir, monkeypatch):
+    """Cursor and shell adapters pass no real sandbox flag: Launch.sandbox
+    stays None (no isolation claim; host/prompt-only discipline is recorded
+    by the caller, not the adapter) — docs/pbv-mapping.md §4.5."""
+    make_bin(bindir, "agent", 'echo "--print --output-format --workspace --trust --model effort="; exit 0\n')
+    cursor_adapter.reset_caches()
+    cursor = adapters.get_adapter("cursor")
+    assert cursor.probe().ok
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+    cursor_profile = Profile(
+        name="cursor-x", driver=Driver.CLI, harness=Harness.CURSOR,
+        model="fake-cursor", model_class=ModelClass.FRONTIER,
+        effort=Effort.MEDIUM, capabilities=("coding",),
+    )
+    cursor_launches = (
+        cursor.build_worker_launch(root=tmp_path, scratch=tmp_path / "s1",
+                                   profile=cursor_profile, prompt="x", timeout=5),
+        cursor.build_planner_launch(root=tmp_path, scratch=tmp_path / "s2",
+                                    profile=cursor_profile, prompt="x", timeout=5,
+                                    schema_path=None),
+        cursor.build_verifier_launch(root=tmp_path, scratch=tmp_path / "s3",
+                                     profile=cursor_profile, prompt="x", timeout=5),
+    )
+    assert all(launch.sandbox is None for launch in cursor_launches)
+
+    shell_profile = Profile(
+        name="shell-x", driver=Driver.CLI, harness=Harness.SHELL,
+        model="fake", model_class=ModelClass.STRONG,
+        effort=Effort.MEDIUM, capabilities=("coding",),
+        executable="fake-worker", prompt_transport="stdin",
+    )
+    shell = adapters.get_adapter("shell")
+    shell_launches = (
+        shell.build_worker_launch(root=tmp_path, scratch=tmp_path / "s4",
+                                  profile=shell_profile, prompt="x", timeout=5),
+        shell.build_planner_launch(root=tmp_path, scratch=tmp_path / "s5",
+                                   profile=shell_profile, prompt="x", timeout=5,
+                                   schema_path=None),
+        shell.build_verifier_launch(root=tmp_path, scratch=tmp_path / "s6",
+                                    profile=shell_profile, prompt="x", timeout=5),
+    )
+    assert all(launch.sandbox is None for launch in shell_launches)
 
 
 def test_codex_catalog_larger_than_stream_limit_still_validated(tmp_path, bindir, monkeypatch):

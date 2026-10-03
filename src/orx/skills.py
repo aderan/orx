@@ -4,8 +4,16 @@ Canonical copy: ``~/.agents/skills/<name>``. If ``~/.zcode/skills``,
 ``~/.cursor/skills``, or ``~/.codex/skills`` exist, install (or refresh) a
 symlink there pointing at the canonical copy. No per-repo copies.
 
+`skill install` with no names installs the default set (``DEFAULT_SKILLS``).
+Explicit names install only those skills — the installable set is discovered
+dynamically as the packaged-skill subdirectories that contain a SKILL.md, so
+newly packaged skills (e.g. ``orx skill install orx-pbv``) need no code
+change. Installing an already-installed skill refreshes it. Names must be
+directory-safe and available; otherwise ORXError names the available skills.
+
 `skill update` replaces the canonical copy with the packaged one and refreshes
-every symlink.
+every symlink; it only refreshes skills that are already installed in the
+canonical directory and still packaged (it never installs new skills).
 """
 
 from __future__ import annotations
@@ -16,7 +24,9 @@ from pathlib import Path
 
 from orx.records import ORXError
 
-PACKAGED_SKILLS = ("orx-controller", "orx-agent")
+DEFAULT_SKILLS = ("orx-controller", "orx-agent")
+# Backwards-compatible alias for the pre-optional-names constant.
+PACKAGED_SKILLS = DEFAULT_SKILLS
 SYMLINK_SOURCES = (".zcode", ".cursor", ".codex")
 
 
@@ -35,6 +45,25 @@ def packaged_skills_dir() -> Path:
     raise ORXError("packaged skills not found; reinstall orx-agent")
 
 
+def available_skills(source_root: Path | None = None) -> list[str]:
+    """Names installable from the packaged skills dir: its subdirectories
+    that contain a SKILL.md, sorted."""
+    root = source_root if source_root is not None else packaged_skills_dir()
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and (entry / "SKILL.md").is_file()
+    )
+
+
+def _validate_name(name: str) -> None:
+    """Defensive: names become directory names under the canonical root, so
+    reject anything that is not a simple directory-safe name (path
+    separators, traversal, dot-prefixed) before the availability check."""
+    if name.startswith(".") or "/" in name or ".." in name:
+        raise ORXError(f"invalid skill name: {name!r}")
+
+
 def canonical_root(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".agents" / "skills"
 
@@ -47,25 +76,48 @@ def _symlink_dirs(home: Path) -> list[Path]:
     ]
 
 
-def install_skills(home: Path | None = None, only_update: bool = False) -> dict:
+def install_skills(
+    home: Path | None = None,
+    only_update: bool = False,
+    names: list[str] | None = None,
+) -> dict:
     home = home or Path.home()
     source_root = packaged_skills_dir()
     canonical = canonical_root(home)
 
     if only_update:
-        already = [n for n in PACKAGED_SKILLS if (canonical / n).exists()]
-        if not already:
+        # update ignores names: refresh installed ∩ available, install nothing
+        targets = [n for n in available_skills(source_root) if (canonical / n).exists()]
+        # stable order: default skills first (historical order), extras sorted
+        targets = [n for n in DEFAULT_SKILLS if n in targets] + [
+            n for n in targets if n not in DEFAULT_SKILLS
+        ]
+        if not targets:
             return {
                 "canonical_root": str(canonical),
                 "installed": [],
                 "refreshed": [],
                 "symlinked_into": [],
             }
+    elif names is None:
+        targets = list(DEFAULT_SKILLS)
+    else:
+        for name in names:
+            _validate_name(name)
+        available = available_skills(source_root)
+        unknown = [n for n in names if n not in available]
+        if unknown:
+            raise ORXError(
+                f"unknown skill: {', '.join(unknown)} "
+                f"(available: {', '.join(available) if available else 'none'})"
+            )
+        targets = list(dict.fromkeys(names))  # dedupe, keep order
+
     canonical.mkdir(parents=True, exist_ok=True)
 
     installed: list[str] = []
     refreshed: list[str] = []
-    for name in PACKAGED_SKILLS:
+    for name in targets:
         src = source_root / name
         if not src.is_dir():
             raise ORXError(f"packaged skill missing: {src}")

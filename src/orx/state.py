@@ -14,14 +14,14 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 4
+CODE_SCHEMA_VERSION = 6
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -89,6 +89,7 @@ CREATE TABLE tasks (
   scope_json TEXT NOT NULL,
   acceptance_json TEXT NOT NULL,
   verification_json TEXT NOT NULL,
+  preread_json TEXT NOT NULL DEFAULT '[]',
   routing_json TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','runnable','running','waiting_host',
                                          'waiting_external','verifying','passed','failed',
@@ -135,7 +136,8 @@ CREATE TABLE attempts (
   started_at TEXT,
   ended_at TEXT,
   result TEXT,
-  failure_reason TEXT
+  failure_reason TEXT,
+  isolation TEXT
 );
 
 CREATE TABLE evidence (
@@ -300,12 +302,46 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
     )
 
 
+# v5: attempts declare the isolation each launch actually enforced
+# (docs/pbv-mapping.md §4.6) — "read_only"/"workspace_write" for CLI sandbox
+# flags, "prompt_only" for host/external prompt discipline, NULL when the
+# launch claims nothing. The column ships in SCHEMA_V1's CREATE TABLE, so
+# fresh databases (which run every migration) already have it; the ALTER is
+# guarded for them and only fires on databases upgraded from v4.
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(attempts)")}
+    if "isolation" not in columns:
+        conn.execute("ALTER TABLE attempts ADD COLUMN isolation TEXT")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
+# v6: tasks carry `preread` — the bounded read-first file list handed to every
+# worker assignment (docs/pbv-mapping.md §4.1). Ships in SCHEMA_V1's CREATE
+# TABLE for fresh databases; the ALTER only fires on databases upgraded from
+# v5. Existing tasks read as an empty list.
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "preread_json" not in columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN preread_json TEXT NOT NULL DEFAULT '[]'")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
     2: _migrate_v2,
     3: _migrate_v3,
     4: _migrate_v4,
+    5: _migrate_v5,
+    6: _migrate_v6,
 }
 
 
@@ -372,6 +408,7 @@ class TaskRow:
     failure_reason: str | None
     created_at: str
     updated_at: str
+    preread: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -406,6 +443,9 @@ class Attempt:
     ended_at: str | None
     result: str | None
     failure_reason: str | None
+    # Isolation the launch actually enforced (docs/pbv-mapping.md §4.6):
+    # read_only | workspace_write | prompt_only; None = no claim.
+    isolation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -516,6 +556,7 @@ def _task(r: sqlite3.Row) -> TaskRow:
         scope=_j(r["scope_json"], {}),
         acceptance=_j(r["acceptance_json"], []),
         verification=_j(r["verification_json"], []),
+        preread=_j(r["preread_json"], []),
         routing=_j(r["routing_json"], {}),
         status=r["status"],
         failure_reason=r["failure_reason"],
@@ -557,6 +598,7 @@ def _attempt(r: sqlite3.Row) -> Attempt:
         ended_at=r["ended_at"],
         result=r["result"],
         failure_reason=r["failure_reason"],
+        isolation=r["isolation"],
     )
 
 
@@ -947,13 +989,14 @@ class Store:
         verification: list[str],
         routing: dict,
         status: str,
+        preread: list[str] | None = None,
     ) -> TaskRow:
         ts = now()
         with self.tx():
             self.conn.execute(
                 "INSERT INTO tasks(revision_id, task_id, objective, scope_json, acceptance_json,"
-                " verification_json, routing_json, status, created_at, updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                " verification_json, preread_json, routing_json, status, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_row_id,
                     task_id,
@@ -961,6 +1004,7 @@ class Store:
                     json.dumps(scope),
                     json.dumps(acceptance),
                     json.dumps(verification),
+                    json.dumps(preread or []),
                     json.dumps(routing),
                     status,
                     ts,
@@ -1078,13 +1122,14 @@ class Store:
         assignment_id: str | None = None,
         started: bool = True,
         effort_source: str | None = None,
+        isolation: str | None = None,
     ) -> Attempt:
         with self.tx():
             cur = self.conn.execute(
                 "INSERT INTO attempts(revision_id, task_id, assignment_id, role, profile, driver,"
                 " harness, model, requested_effort, actual_effort, effort_source, fallback_used,"
-                " routing_reason, started_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " routing_reason, isolation, started_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_row_id,
                     task_id,
@@ -1099,6 +1144,7 @@ class Store:
                     effort_source,
                     1 if fallback_used else 0,
                     routing_reason,
+                    isolation,
                     now() if started else None,
                 ),
             )
@@ -1164,6 +1210,17 @@ class Store:
                 "INSERT INTO evidence(attempt_id, kind, path, created_at) VALUES(?,?,?,?)",
                 (attempt_id, kind, path, now()),
             )
+
+    def evidence_for_task(self, revision_row_id: int, task_id: str) -> list[tuple[str, str]]:
+        """(kind, path) pairs for every evidence row attached to a task's
+        attempts, oldest first — the verifier context handoff."""
+        rows = self.conn.execute(
+            "SELECT e.kind AS kind, e.path AS path FROM evidence e"
+            " JOIN attempts a ON e.attempt_id = a.id"
+            " WHERE a.revision_id = ? AND a.task_id = ? ORDER BY e.id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [(r["kind"], r["path"]) for r in rows]
 
     # -- verifications ----------------------------------------------------------
 

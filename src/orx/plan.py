@@ -56,6 +56,7 @@ class PlanTask(BaseModel):
     scope: TaskScope
     acceptance: list[str] = Field(default_factory=list)
     verification: list[str] = Field(default_factory=list)
+    preread: list[str] = Field(default_factory=list)
     routing: TaskRouting
 
 
@@ -205,6 +206,11 @@ def validate_ir(
                 errors.append(
                     f"task {task.id}: scope path {path!r} is not a valid project-relative path"
                 )
+        for path in task.preread:
+            if not is_safe_scope_path(path):
+                errors.append(
+                    f"task {task.id}: preread path {path!r} is not a valid project-relative path"
+                )
         if task.routing.complexity not in ("low", "medium", "high"):
             errors.append(
                 f"task {task.id}: routing.complexity {task.routing.complexity!r}"
@@ -342,6 +348,7 @@ PLAN_IR_SCHEMA: dict = {
                 "agent: instruction for an agent verifier",
                 "agent[vision]: instruction requiring a vision-capable verifier",
             ],
+            "preread": ["project/relative/file the worker must read first (tests included)"],
             "routing": {"complexity": "low | medium | high", "required_capabilities": ["coding"]},
         }
     ],
@@ -381,5 +388,8 @@ Rules:
 - order verification deterministic-first: lead with shell checks (compile,
   tests, lint, fixtures); add agent checks only for what shell cannot prove,
   and 'agent[vision]' only for rendered-UI acceptance.
+- preread lists the project-relative files a worker must read before starting
+  (code and tests; first entry may be a per-round plan document). Keep it
+  small — it bounds the worker's exploration surface.
 - do not modify the Goal text.
 """

@@ -55,6 +55,11 @@ class Launch:
     # nothing (set by adapters that pass a validated effort flag).
     planned_effort: EffortOutcome | None = None
     label: str = ""  # adapter name, for logs
+    # Isolation the adapter actually enforced by passing a real sandbox
+    # flag: "read_only" | "workspace_write" (docs/pbv-mapping.md §4.5).
+    # None = the adapter makes no isolation claim; host/prompt-only
+    # discipline is recorded by the caller, not the adapter.
+    sandbox: str | None = None
 
 
 class Adapter(Protocol):

@@ -354,6 +354,7 @@ def plan_route(
             requested_effort=profile.effort.value,
             routing_reason=result.reason,
             fallback_used=result.fallback_used,
+            isolation="prompt_only",
         )
         routing.persist_decision(store, request, result, attempt_id=attempt.id)
 
@@ -427,20 +428,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
             f"planner profile '{profile.name}': adapter capability_mismatch ({probe.detail})"
         )
 
-    attempt = store.attempt_create(
-        revision_row_id=None,
-        role=Role.PLANNER.value,
-        profile=profile.name,
-        driver="cli",
-        harness=profile.harness.value,
-        model_id=profile.model,
-        requested_effort=profile.effort.value,
-        routing_reason=result.reason,
-        fallback_used=result.fallback_used,
-    )
-    routing.persist_decision(store, request, result, attempt_id=attempt.id)
-
-    scratch = _launch_dir(project, run.id, f"plan-{attempt.id}")
+    scratch = _launch_dir(project, run.id, "plan")
     schema_path = scratch / "plan-schema.json"
     schema_path.write_text(
         json.dumps(plan_mod.strict_json_schema(plan_mod.PlanIR.model_json_schema()), indent=2)
@@ -453,6 +441,20 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         timeout=project.config.command_timeout_sec,
         schema_path=schema_path,
     )
+    attempt = store.attempt_create(
+        revision_row_id=None,
+        role=Role.PLANNER.value,
+        profile=profile.name,
+        driver="cli",
+        harness=profile.harness.value,
+        model_id=profile.model,
+        requested_effort=profile.effort.value,
+        routing_reason=result.reason,
+        fallback_used=result.fallback_used,
+        isolation=launch.sandbox,
+    )
+    routing.persist_decision(store, request, result, attempt_id=attempt.id)
+
     run_result = runtime.run_launch(launch)
     # Always persist the raw transcript: paid planner calls need an audit
     # trail on success too, not only on failure.
@@ -609,6 +611,7 @@ def submit_plan(project: Project, ir_data: dict,
                 list(task.verification),
                 task.routing.model_dump(),
                 status.value,
+                preread=list(task.preread),
             )
             store.task_deps_insert(revision.id, task.id, list(task.dependencies))
             machine.record_insert(
@@ -673,24 +676,12 @@ def run_slice(project: Project) -> dict:
         profile = result.profile
         assert profile is not None
         if profile.driver.value == "host":
-            _park_task(store, revision.id, current, result, request, profile, "host")
             out["host_required"].append(
-                {
-                    "task": current.task_id,
-                    "objective": current.objective,
-                    "profile": profile.name,
-                    "claim": f"orx task claim {current.task_id}",
-                }
+                _park_task(project, goal, run, revision.id, current, result, request, profile, "host")
             )
         elif profile.driver.value == "external":
-            _park_task(store, revision.id, current, result, request, profile, "external")
             out["waiting_external"].append(
-                {
-                    "task": current.task_id,
-                    "objective": current.objective,
-                    "profile": profile.name,
-                    "finish_with": f"orx task complete {current.task_id} --evidence <file>",
-                }
+                _park_task(project, goal, run, revision.id, current, result, request, profile, "external")
             )
         else:
             if started >= cap:
@@ -709,7 +700,27 @@ def run_slice(project: Project) -> dict:
     return out
 
 
-def _park_task(store, revision_row_id, task, result, request, profile, kind) -> None:
+def _write_task_assignment_file(project: Project, run_id: str, task_id: str,
+                                prompt: str, label: str | None = None) -> str:
+    """Persist a host/external assignment prompt next to the planner
+    assignments, so the Controller's subagent contract survives the session."""
+    directory = project.root / ".orx" / "runs" / run_id / "assignments"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{label or task_id}.md"
+    path.write_text(prompt)
+    return str(path.relative_to(project.root))
+
+
+def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
+               task: TaskRow, result, request, profile, kind: str) -> dict:
+    """Park a task for host/external execution and return the assignment
+    payload. The prompt is the same composition a CLI launch would receive
+    (constraints, scope, preread, acceptance, prior failure included)."""
+    store = project.store
+    prompt = worker_prompt(
+        goal, task,
+        prior_failure=_prior_failure_context(store, revision_row_id, task.task_id),
+    )
     attempt = store.attempt_create(
         revision_row_id=revision_row_id,
         role=Role.WORKER.value,
@@ -722,6 +733,8 @@ def _park_task(store, revision_row_id, task, result, request, profile, kind) -> 
         fallback_used=result.fallback_used,
         task_id=task.task_id,
         started=False,
+        # The host enforces nothing — the prompt is discipline, not a sandbox.
+        isolation="prompt_only" if kind == "host" else None,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -730,6 +743,20 @@ def _park_task(store, revision_row_id, task, result, request, profile, kind) -> 
         TaskStatus.WAITING_HOST if kind == "host" else TaskStatus.WAITING_EXTERNAL,
         reason=f"routed to {kind} profile '{profile.name}'",
     )
+    entry = {
+        "task": task.task_id,
+        "objective": task.objective,
+        "profile": profile.name,
+        "prompt": prompt,
+        "prompt_file": _write_task_assignment_file(project, run.id, task.task_id, prompt),
+        "preread": list(task.preread),
+    }
+    if kind == "host":
+        entry["claim"] = f"orx task claim {task.task_id}"
+        entry["isolation"] = "prompt_only"
+    else:
+        entry["finish_with"] = f"orx task complete {task.task_id} --evidence <file>"
+    return entry
 
 
 def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision,
@@ -740,6 +767,17 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
 
+    scratch = _launch_dir(project, run.id, f"worker-{task.task_id}")
+    launch = adapter.build_worker_launch(
+        root=project.root,
+        scratch=scratch,
+        profile=profile,
+        prompt=worker_prompt(
+            goal, task,
+            prior_failure=_prior_failure_context(store, revision.id, task.task_id),
+        ),
+        timeout=project.config.command_timeout_sec,
+    )
     attempt = store.attempt_create(
         revision_row_id=revision.id,
         role=Role.WORKER.value,
@@ -752,6 +790,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         fallback_used=result.fallback_used,
         task_id=task.task_id,
         started=False,
+        isolation=launch.sandbox,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -767,17 +806,6 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
                            reason=reason, failure_reason=reason)
         return {"task": task.task_id, "profile": profile.name, "status": "failed", "reason": reason}
 
-    scratch = _launch_dir(project, run.id, f"{task.task_id}-{attempt.id}")
-    launch = adapter.build_worker_launch(
-        root=project.root,
-        scratch=scratch,
-        profile=profile,
-        prompt=worker_prompt(
-            goal, task,
-            prior_failure=_prior_failure_context(store, revision.id, task.task_id),
-        ),
-        timeout=project.config.command_timeout_sec,
-    )
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
@@ -843,13 +871,21 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "") -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
+    constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
+    preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
     return f"""You are an ORX worker for Goal {goal.id}: {goal.objective}
 
 Your assignment is ONE task. Do only this task and stay inside its scope.
 
 Task {task.task_id}: {task.objective}
 
+Goal constraints (binding for this work):
+{constraints}
+
 Scope (write only inside these project-relative paths): {allowed}
+Read these files first — before any exploration, and only these plus the
+files you yourself create or modify (project-relative):
+{preread}
 Acceptance (your work is verified against these, verbatim):
 {acceptance}
 {prior_failure}
@@ -864,8 +900,21 @@ Rules:
 """
 
 
-def verifier_prompt(goal: Goal, task: TaskRow, item) -> str:
+def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
+                    evidence_lines: str = "", prior_issues: str = "") -> str:
     capabilities = ", ".join(item.capabilities) or "none"
+    acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
+    constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
+    context_blocks = ""
+    if gate_summary:
+        context_blocks += (
+            "\nDeterministic checks already run for this task (do not re-run them):\n"
+            f"{gate_summary}\n"
+        )
+    if evidence_lines:
+        context_blocks += f"\nExecution evidence for this task:\n{evidence_lines}\n"
+    if prior_issues:
+        context_blocks += prior_issues
     return f"""You are an ORX verifier for Goal {goal.id}: {goal.objective}
 
 Verify ONE acceptance check for task {task.task_id} ({task.objective}).
@@ -873,6 +922,10 @@ Verify ONE acceptance check for task {task.task_id} ({task.objective}).
 Check to verify (exact instruction): {item.spec}
 Required capabilities: {capabilities}
 
+Goal constraints (the work must respect these):
+{constraints}
+Task acceptance criteria (judge against these, verbatim):
+{acceptance}{context_blocks}
 Look at the project workspace at the current working directory. Then print
 EXACTLY two final lines, nothing after them:
 
@@ -885,6 +938,39 @@ A fail WITHOUT a reason line is an invalid verdict: the Controller cannot
 act on an unexplained failure. Nothing else counts as a verdict. Exit 0
 after printing both lines.
 """
+
+
+def _gate_summary(store: Store, revision_id: int, task: TaskRow) -> str:
+    """Recorded command-check results for a task, for verifier context."""
+    rows = [v for v in store.verifications_for(revision_id, task.task_id) if v.kind == "command"]
+    lines = []
+    for v in rows:
+        exit_note = "denied" if v.exit_code is None else f"exit {v.exit_code}"
+        lines.append(f"  - {v.command} -> {exit_note} ({'passed' if v.passed else 'FAILED'})")
+    return "\n".join(lines)
+
+
+def _evidence_lines(store: Store, revision_id: int, task_id: str) -> str:
+    """Evidence paths attached to a task's attempts (execution logs, completion
+    and verification evidence), most recent last."""
+    rows = store.evidence_for_task(revision_id, task_id)
+    return "\n".join(f"  - [{kind}] {path}" for kind, path in rows[-5:])
+
+
+def _prior_issues(store: Store, revision_id: int, task_id: str) -> str:
+    """Issues from earlier failed attempts/verifications, for re-verification.
+    Verification rows are cleared on retry, so history lives in task_events."""
+    seen: list[str] = []
+    for event in store.task_events(revision_id, task_id):
+        if event.to_status == "failed" and event.reason and event.reason not in seen:
+            seen.append(event.reason)
+    if not seen:
+        return ""
+    issues = "\n".join(f"  - {reason}" for reason in seen[-3:])
+    return (
+        "\nEarlier attempts at this task failed with (check whether these issues"
+        f" are resolved and whether the fix introduced anything new):\n{issues}\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -969,6 +1055,7 @@ def task_complete(project: Project, task_id: str, evidence: str) -> dict:
             model_id="unknown",
             requested_effort="medium",
             task_id=task.task_id,
+            isolation="prompt_only",
         )
     store.evidence_add(attempt.id, "completion", str(evidence_path))
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
@@ -1075,7 +1162,9 @@ def verify_dispatch(project: Project) -> dict:
         )
         verdict = verify.apply_verdict(store, revision.id, task)
         out["checked"].append({"task": task.task_id, "verdict": verdict})
-        for item in verify.pending_agent_entries(store, revision.id, task):
+        if TaskStatus(task.status) is not TaskStatus.VERIFYING:
+            continue  # a failed command gate already failed the task
+        for index, item in enumerate(verify.pending_agent_entries(store, revision.id, task), start=1):
             request = routing.RouteRequest(
                 role=Role.VERIFIER, required_capabilities=item.capabilities
             )
@@ -1102,11 +1191,23 @@ def verify_dispatch(project: Project) -> dict:
                 "driver": profile.driver.value,
             }
             if profile.driver.value == "host":
+                prompt = verifier_prompt(
+                    goal, task, item,
+                    gate_summary=_gate_summary(store, revision.id, task),
+                    evidence_lines=_evidence_lines(store, revision.id, task.task_id),
+                    prior_issues=_prior_issues(store, revision.id, task.task_id),
+                )
+                entry_out["prompt"] = prompt
+                entry_out["prompt_file"] = _write_task_assignment_file(
+                    project, run.id, task.task_id, prompt, label=f"verify-{task.task_id}-{index:02d}"
+                )
+                entry_out["isolation"] = "prompt_only"
                 entry_out["submit_pass"] = (
                     f"orx verify submit {task.task_id} --result pass --entry {item.raw!r}"
                 )
                 entry_out["submit_fail"] = (
                     f"orx verify submit {task.task_id} --result fail --entry {item.raw!r}"
+                    " --reason \"<issues for the fix loop>\""
                 )
                 out["agent_required"].append(entry_out)
             else:
@@ -1127,6 +1228,17 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     store = project.store
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
+    scratch = _launch_dir(project, run.id, f"verify-{task.task_id}")
+    launch = adapter.build_verifier_launch(
+        root=project.root, scratch=scratch, profile=profile,
+        prompt=verifier_prompt(
+            goal, task, item,
+            gate_summary=_gate_summary(store, revision.id, task),
+            evidence_lines=_evidence_lines(store, revision.id, task.task_id),
+            prior_issues=_prior_issues(store, revision.id, task.task_id),
+        ),
+        timeout=project.config.command_timeout_sec,
+    )
     attempt = store.attempt_create(
         revision_row_id=revision.id,
         role=Role.VERIFIER.value,
@@ -1139,6 +1251,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         fallback_used=result.fallback_used,
         task_id=task.task_id,
         started=True,
+        isolation=launch.sandbox,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
 
@@ -1152,12 +1265,6 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         verify.apply_verdict(store, revision.id, task, failure_hint=item.raw)
         return {"task": task.task_id, "entry": item.raw, "verdict": "failed", "reason": reason}
 
-    scratch = _launch_dir(project, run.id, f"verify-{task.task_id}-{attempt.id}")
-    launch = adapter.build_verifier_launch(
-        root=project.root, scratch=scratch, profile=profile,
-        prompt=verifier_prompt(goal, task, item),
-        timeout=project.config.command_timeout_sec,
-    )
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
@@ -1200,9 +1307,12 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
 
 
 def verify_submit(
-    project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None
+    project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None,
+    reason: str | None = None,
 ) -> dict:
-    """Record a host Agent verifier's verdict for one agent verification entry."""
+    """Record a host Agent verifier's verdict for one agent verification entry.
+    `reason` carries the reviewer's issues on a fail; it becomes the recorded
+    failure state and lands in the next worker/verifier prompt (fix loop)."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -1246,13 +1356,16 @@ def verify_submit(
             routing_reason=route_result.reason,
             fallback_used=route_result.fallback_used,
             task_id=task.task_id,
+            isolation="prompt_only" if profile.driver.value == "host" else None,
         )
         routing.persist_decision(store, request, route_result, attempt_id=attempt.id)
         store.attempt_update(
             attempt.id,
             ended_at=db_now(),
             result="pass" if passed else "fail",
-            failure_reason=None if passed else f"agent verifier rejected: {chosen.spec}",
+            failure_reason=None if passed else (
+                f"agent verifier rejected: {reason or chosen.spec}"
+            ),
         )
     else:
         # A verifier must exist to accept a verdict on behalf of an agent.
@@ -1277,7 +1390,7 @@ def verify_submit(
 
     verdict = verify.apply_verdict(
         store, revision.id, store.task_get(revision.id, task.task_id),
-        failure_hint=chosen.raw if not passed else None,
+        failure_hint=reason or (chosen.raw if not passed else None),
     )
     refresh(store, goal, run)
     return {

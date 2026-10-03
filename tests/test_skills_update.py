@@ -66,6 +66,140 @@ def test_update_without_install_is_a_no_op(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Optional per-name install (fake packaged dir; no dependency on skills/orx-pbv)
+
+
+def fake_packaged_skills(tmp_path, monkeypatch, names=("orx-controller", "orx-agent", "orx-pbv")):
+    root = tmp_path / "packaged-skills"
+    for name in names:
+        skill = root / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name} skill\n")
+    monkeypatch.setattr(skills_mod, "packaged_skills_dir", lambda: root)
+    return root
+
+
+def test_available_skills_requires_skill_md(tmp_path, monkeypatch):
+    root = fake_packaged_skills(tmp_path, monkeypatch, names=("orx-agent",))
+    (root / "not-a-skill").mkdir()           # no SKILL.md -> not available
+    (root / "README.md").write_text("file")  # not a directory
+    assert skills_mod.available_skills() == ["orx-agent"]
+
+
+def test_install_no_names_installs_exactly_default_set(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)  # orx-pbv is packaged too
+    home = tmp_path / "home"
+    (home / ".zcode" / "skills").mkdir(parents=True)
+
+    result = skills_mod.install_skills(home=home)
+
+    canonical = home / ".agents" / "skills"
+    assert sorted(result["installed"]) == ["orx-agent", "orx-controller"]
+    assert result["refreshed"] == []
+    for name in ("orx-controller", "orx-agent"):
+        assert (canonical / name / "SKILL.md").is_file()
+        assert (home / ".zcode" / "skills" / name).is_symlink()
+    assert not (canonical / "orx-pbv").exists()  # default set only
+    assert not (home / ".zcode" / "skills" / "orx-pbv").exists()
+
+
+def test_install_explicit_name_installs_only_that_skill(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    (home / ".zcode" / "skills").mkdir(parents=True)
+
+    result = skills_mod.install_skills(home=home, names=["orx-pbv"])
+
+    canonical = home / ".agents" / "skills"
+    assert result["installed"] == ["orx-pbv"]
+    assert (canonical / "orx-pbv" / "SKILL.md").is_file()
+    link = home / ".zcode" / "skills" / "orx-pbv"
+    assert link.is_symlink()
+    assert link.resolve() == (canonical / "orx-pbv").resolve()
+    for name in ("orx-controller", "orx-agent"):
+        assert not (canonical / name).exists()
+
+
+def test_install_multiple_names(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+
+    result = skills_mod.install_skills(home=home, names=["orx-pbv", "orx-agent"])
+
+    canonical = home / ".agents" / "skills"
+    assert sorted(result["installed"]) == ["orx-agent", "orx-pbv"]
+    assert (canonical / "orx-pbv" / "SKILL.md").is_file()
+    assert (canonical / "orx-agent" / "SKILL.md").is_file()
+    assert not (canonical / "orx-controller").exists()
+
+
+def test_reinstall_explicit_name_replaces_stale_content(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    skills_mod.install_skills(home=home, names=["orx-pbv"])
+
+    canonical_skill = home / ".agents" / "skills" / "orx-pbv" / "SKILL.md"
+    packaged = skills_mod.packaged_skills_dir() / "orx-pbv" / "SKILL.md"
+    canonical_skill.write_text("stale local edit")
+
+    result = skills_mod.install_skills(home=home, names=["orx-pbv"])
+
+    assert result["installed"] == [] and result["refreshed"] == ["orx-pbv"]
+    assert canonical_skill.read_text() == packaged.read_text()
+
+
+def test_install_unknown_name_lists_available_skills(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    with pytest.raises(ORXError) as excinfo:
+        skills_mod.install_skills(home=tmp_path / "home", names=["nope"])
+    message = str(excinfo.value)
+    assert "nope" in message
+    for available in ("orx-controller", "orx-agent", "orx-pbv"):
+        assert available in message
+    assert not (tmp_path / "home" / ".agents").exists()  # rejected before any copy
+
+
+@pytest.mark.parametrize("hostile", ["../evil", "a/b", ".hidden"])
+def test_install_rejects_hostile_names(tmp_path, monkeypatch, hostile):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    with pytest.raises(ORXError) as excinfo:
+        skills_mod.install_skills(home=tmp_path / "home", names=[hostile])
+    assert hostile in str(excinfo.value)
+    assert not (tmp_path / "home" / ".agents").exists()
+
+
+def test_update_refreshes_only_installed_and_available_skills(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    (home / ".zcode" / "skills").mkdir(parents=True)
+    skills_mod.install_skills(home=home, names=["orx-pbv"])
+
+    canonical_skill = home / ".agents" / "skills" / "orx-pbv" / "SKILL.md"
+    packaged = skills_mod.packaged_skills_dir() / "orx-pbv" / "SKILL.md"
+    canonical_skill.write_text("stale local edit")
+
+    result = skills_mod.update_skills(home=home)
+
+    assert result["refreshed"] == ["orx-pbv"]
+    assert canonical_skill.read_text() == packaged.read_text()
+    assert (home / ".zcode" / "skills" / "orx-pbv").is_symlink()
+    # packaged but not installed -> update must not install them
+    canonical = home / ".agents" / "skills"
+    assert not (canonical / "orx-controller").exists()
+    assert not (canonical / "orx-agent").exists()
+
+
+def test_update_ignores_names_and_installs_nothing(tmp_path, monkeypatch):
+    fake_packaged_skills(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+
+    result = skills_mod.install_skills(home=home, only_update=True, names=["orx-pbv"])
+
+    assert result["installed"] == [] and result["refreshed"] == []
+    assert not (home / ".agents").exists()
+
+
+# ---------------------------------------------------------------------------
 # Update / install source detection
 
 

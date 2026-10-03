@@ -818,12 +818,13 @@ def verify_submit(
     result: str = typer.Option(..., "--result", help="pass | fail"),
     entry: Optional[str] = typer.Option(None, "--entry", help="Exact agent verification entry this verdict answers."),
     evidence: Optional[Path] = typer.Option(None, "--evidence", help="Optional evidence file."),
+    reason: Optional[str] = typer.Option(None, "--reason", help="On a fail: the reviewer's issues; recorded as the failure state and fed to the next attempt."),
     json_out: bool = JsonOpt,
 ) -> None:
     """Submit a host Agent verifier's verdict for one agent verification entry."""
     project = dispatch.open_project()
     data = dispatch.verify_submit(
-        project, task_id, result, entry, str(evidence) if evidence else None
+        project, task_id, result, entry, str(evidence) if evidence else None, reason
     )
     _ok(json_out, **data)
     if not json_out:
@@ -934,9 +935,23 @@ def completion(
 
 @skill_app.command("install")
 @handle_errors
-def skill_install(json_out: bool = JsonOpt) -> None:
-    """Install packaged skills to ~/.agents/skills (+ symlinks)."""
-    result = skills_mod.install_skills()
+def skill_install(
+    names: list[str] = typer.Argument(
+        None,
+        help=(
+            "Skills to install, e.g. orx-pbv (default: the packaged default "
+            "set orx-controller orx-agent)."
+        ),
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Install packaged skills to ~/.agents/skills (+ symlinks).
+
+    With no NAMES, installs the default set (orx-controller, orx-agent).
+    Explicit names install only those skills; an already-installed skill is
+    refreshed. Unknown names are rejected with the list of available skills.
+    """
+    result = skills_mod.install_skills(names=names or None)
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"canonical: {result['canonical_root']}")

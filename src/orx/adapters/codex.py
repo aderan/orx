@@ -7,9 +7,13 @@
   model in `codex debug models` (local catalog, no completion). Supported ->
   pass `-c model_reasoning_effort=<level>`; unsupported or model unknown ->
   pass nothing and record provider_default.
-- Sandbox: `-s workspace-write`; never --dangerously-bypass...; --ephemeral so
-  ORX runs do not depend on Codex session files; prompt is the positional
-  argument; planner adds `--output-schema <file>`.
+- Sandbox (per-role contract, docs/pbv-mapping.md §4.5): worker launches run
+  `-s workspace-write`; planner and verifier launches run `-s read-only`
+  (planning and verification read the tree, they must not mutate it). The
+  enforced mode is declared on Launch.sandbox ("workspace_write" /
+  "read_only"). Never --dangerously-bypass...; --ephemeral so ORX runs do
+  not depend on Codex session files; prompt is the positional argument;
+  planner adds `--output-schema <file>`.
 - actual_effort: the effort reported in the JSONL event stream if present
   (source=reported); otherwise the catalog-validated value ORX passed
   (source=requested_validated); otherwise provider_default. CONFIRMED against
@@ -115,7 +119,8 @@ class CodexAdapter:
             )
         return [], EffortOutcome(requested=requested)
 
-    def _base_argv(self, *, root: Path, profile, prompt: str, scratch: Path) -> tuple[list[str], EffortOutcome, Path]:
+    def _base_argv(self, *, root: Path, profile, prompt: str, scratch: Path,
+                   sandbox: str = "workspace-write") -> tuple[list[str], EffortOutcome, Path]:
         effort_args, effort = self._effort_flag(profile)
         scratch.mkdir(parents=True, exist_ok=True)
         last_message = scratch / "last-message.txt"
@@ -124,7 +129,7 @@ class CodexAdapter:
             "--json",
             "-m", profile.model,
             "-C", str(root),
-            "-s", "workspace-write",
+            "-s", sandbox,
             "--ephemeral",
             "--output-last-message", str(last_message),
             *effort_args,
@@ -132,19 +137,30 @@ class CodexAdapter:
         ]
         return argv, effort, last_message
 
-    def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
-        argv, effort, last_message = self._base_argv(root=root, profile=profile, prompt=prompt, scratch=scratch)
+    def _launch(self, *, root, scratch, profile, prompt, timeout, sandbox: str) -> Launch:
+        argv, effort, last_message = self._base_argv(
+            root=root, profile=profile, prompt=prompt, scratch=scratch, sandbox=sandbox)
         return Launch(argv=argv, cwd=root, timeout=timeout,
                       last_message_path=last_message, planned_effort=effort,
                       label=f"codex:{profile.name}",
                       # codex exec reads non-TTY stdin as additional prompt
                       # input (observed in a real run, 2026-10-03); never let
                       # it inherit the controller's stdin.
-                      stdin_text="")
+                      stdin_text="",
+                      # The CLI flag value is the isolation claim
+                      # (read-only -> read_only; docs/pbv-mapping.md §4.5).
+                      sandbox=sandbox.replace("-", "_"))
+
+    def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
+        # Workers write code: they keep workspace-write (§4.5).
+        return self._launch(root=root, scratch=scratch, profile=profile,
+                            prompt=prompt, timeout=timeout,
+                            sandbox="workspace-write")
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None) -> Launch:
-        launch = self.build_worker_launch(root=root, scratch=scratch, profile=profile,
-                                          prompt=prompt, timeout=timeout)
+        # Planning reads the tree and must not mutate it (§4.5).
+        launch = self._launch(root=root, scratch=scratch, profile=profile,
+                              prompt=prompt, timeout=timeout, sandbox="read-only")
         if schema_path is not None:
             # Insert before the positional prompt.
             argv = launch.argv[:-1] + ["--output-schema", str(schema_path), launch.argv[-1]]
@@ -152,8 +168,9 @@ class CodexAdapter:
         return launch
 
     def build_verifier_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
-        return self.build_worker_launch(root=root, scratch=scratch, profile=profile,
-                                        prompt=prompt, timeout=timeout)
+        # Verification inspects the work; it must not change it (§4.5).
+        return self._launch(root=root, scratch=scratch, profile=profile,
+                            prompt=prompt, timeout=timeout, sandbox="read-only")
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
         planned = launch.planned_effort or EffortOutcome(requested="medium")

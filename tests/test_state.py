@@ -17,7 +17,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 4
+        assert store.schema_version() == 6
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -31,6 +31,12 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
             "external_events", "inbox_items",
         }
         assert expected <= names
+        # v5: fresh databases create attempts with the isolation column in
+        # place (docs/pbv-mapping.md §4.6); the guarded ALTER is a no-op here.
+        columns = {
+            r["name"] for r in store.conn.execute("PRAGMA table_info(attempts)")
+        }
+        assert "isolation" in columns
     finally:
         store.close()
 
@@ -158,7 +164,7 @@ def test_v1_to_v2_migration_preserves_resource_rows(tmp_path):
     from orx.state import Store
 
     db = tmp_path / "v1.db"
-    store = Store.open(db)  # code is v3; build a v1 db by hand
+    store = Store.open(db)  # code is v5; build a v1 db by hand
     store.close()
     conn = sqlite3.connect(db)
     conn.executescript("""
@@ -181,7 +187,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 4
+        assert reopened.schema_version() == 6
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -193,3 +199,108 @@ INSERT INTO resource_status(profile, status, note, updated_at)
     finally:
         reopened.close()
     assert not list(tmp_path.glob("v1.db.migrate-*")), "stale migration backups"
+
+
+def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
+    """A v4 database (attempts without isolation) upgrades on reopen: the
+    column is added by migration v5, the schema version bumps, and existing
+    rows survive with NULL isolation (docs/pbv-mapping.md §4.6)."""
+    db = tmp_path / "v4.db"
+    store = Store.open(db)  # code is v5; build a v4 db by hand
+    store.conn.execute("ALTER TABLE attempts DROP COLUMN isolation")
+    store.conn.execute(
+        "INSERT INTO attempts(role, profile, driver, harness, model,"
+        " requested_effort) VALUES('worker', 'legacy', 'cli', 'shell', 'm', 'high')"
+    )
+    store.conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
+    store.close()
+    check = sqlite3.connect(db)
+    columns_before = {r[1] for r in check.execute("PRAGMA table_info(attempts)")}
+    check.close()
+    assert "isolation" not in columns_before
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 6
+        columns = {
+            r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
+        }
+        assert "isolation" in columns
+        legacy = reopened.attempts_all()[0]
+        assert legacy.isolation is None  # pre-v5 rows claim nothing
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v4.db.migrate-*")), "stale migration backups"
+
+
+def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
+    """A v5 database (tasks without preread) upgrades on reopen: migration v6
+    adds preread_json, existing tasks read as an empty list (docs/pbv-mapping.md §4.1)."""
+    db = tmp_path / "v5.db"
+    store = Store.open(db)  # code is v6; build a v5 db by hand
+    store.conn.execute("ALTER TABLE tasks DROP COLUMN preread_json")
+    store.conn.execute("PRAGMA foreign_keys=OFF")
+    store.conn.execute(
+        "INSERT INTO tasks(revision_id, task_id, objective, scope_json, acceptance_json,"
+        " verification_json, routing_json, status, created_at, updated_at)"
+        " VALUES(1, 'T001', 'legacy', '{}', '[]', '[]', '{}', 'passed', '0', '0')"
+    )
+    store.conn.execute("PRAGMA foreign_keys=ON")
+    store.conn.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    store.close()
+    check = sqlite3.connect(db)
+    columns_before = {r[1] for r in check.execute("PRAGMA table_info(tasks)")}
+    check.close()
+    assert "preread_json" not in columns_before
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 6
+        columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
+        assert "preread_json" in columns
+        legacy = reopened.tasks_all(1)[0]
+        assert legacy.preread == []  # pre-v6 tasks claim no read-first list
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v5.db.migrate-*")), "stale migration backups"
+
+
+def test_attempt_isolation_roundtrip(project, goal):
+    """attempt_create(..., isolation=...) persists on the attempt row and
+    round-trips through the reader; the default stays None (backward
+    compatible — dispatch call sites wire it in a later slice)."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance),
+    ]))
+    revision = project.store.revision_active(
+        project.store.run_for_goal(goal.id).id)
+    attempt = project.store.attempt_create(
+        revision_row_id=revision.id,
+        role="planner",
+        profile="cli-fake",
+        driver="cli",
+        harness="codex",
+        model_id="fake-codex-model",
+        requested_effort="high",
+        task_id="T001",
+        isolation="read_only",
+    )
+    assert attempt.isolation == "read_only"
+    latest = project.store.attempt_latest_for_task(revision.id, "T001")
+    assert latest is not None
+    assert latest.isolation == "read_only"
+
+    plain = project.store.attempt_create(
+        revision_row_id=revision.id,
+        role="worker",
+        profile="host-worker",
+        driver="host",
+        harness="zcode",
+        model_id="m-worker",
+        requested_effort="medium",
+        task_id="T001",
+    )
+    assert plain.isolation is None  # omitted -> no isolation claim
+    # attempts_all sees both rows with their isolation intact
+    stored = {a.id: a.isolation for a in project.store.attempts_all()}
+    assert stored == {attempt.id: "read_only", plain.id: None}

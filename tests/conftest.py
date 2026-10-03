@@ -153,7 +153,7 @@ def ir_for(goal, tasks):
 
 
 def task_spec(tid, objective="do the thing", deps=(), acceptance=(), verification=(),
-              caps=("coding",), complexity="medium", allowed=("src/",)):
+              caps=("coding",), complexity="medium", allowed=("src/",), preread=()):
     return {
         "id": tid,
         "objective": objective,
@@ -162,6 +162,7 @@ def task_spec(tid, objective="do the thing", deps=(), acceptance=(), verificatio
         "acceptance": list(acceptance),
         "verification": list(verification),
         "routing": {"complexity": complexity, "required_capabilities": list(caps)},
+        "preread": list(preread),
     }
 
 
