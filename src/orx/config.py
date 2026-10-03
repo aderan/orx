@@ -59,6 +59,8 @@ BUILTIN_DEFAULTS: dict = {
     "verify.profiles": [],
     "runtime.max_parallel": 1,
     "runtime.command_timeout_sec": 1800,
+    "inbox.github_labels": [],
+    "inbox.auto_accept": False,
 }
 
 # Effective keys `orx config list/get` report, in stable order. Every one of
@@ -161,6 +163,8 @@ class Config:
     verify_profiles: list[str] = field(default_factory=list)
     max_parallel: int = 1
     command_timeout_sec: int = 1800
+    inbox_github_labels: list[str] = field(default_factory=list)
+    inbox_auto_accept: bool = False
     warnings: tuple[str, ...] = ()
 
     @property
@@ -548,6 +552,8 @@ def load_effective(
         depth_profiles[depth_name] = layered(dotted) or []
     worker_profiles = layered("worker.profiles") or []
     verify_profiles = layered("verify.profiles") or []
+    inbox_labels = layered("inbox.github_labels") or []
+    inbox_auto_accept = layered("inbox.auto_accept")
 
     # --- validation of effective values (M0 rules, unchanged) ---
     if not isinstance(controller_profile, str) or not controller_profile:
@@ -565,9 +571,13 @@ def load_effective(
         ("plan.deep.profiles", depth_profiles["deep"]),
         ("worker.profiles", worker_profiles),
         ("verify.profiles", verify_profiles),
+        ("inbox.github_labels", inbox_labels),
     ):
         if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
             errors.append(f"config.toml: {label} must be a list of strings")
+    if not isinstance(inbox_auto_accept, bool):
+        errors.append("config.toml: [inbox] auto_accept must be a boolean")
+        inbox_auto_accept = False
     if not isinstance(max_parallel, int) or isinstance(max_parallel, bool) or max_parallel < 1:
         errors.append("config.toml: [runtime] max_parallel must be an integer >= 1")
         max_parallel = 1
@@ -619,6 +629,8 @@ def load_effective(
         verify_profiles=verify_profiles,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
+        inbox_github_labels=list(inbox_labels),
+        inbox_auto_accept=inbox_auto_accept,
         warnings=tuple(warnings),
     )
     if check_references:

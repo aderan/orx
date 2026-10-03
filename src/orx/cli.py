@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,7 @@ import typer
 
 from orx import __version__, config as config_mod, dispatch, doctor as doctor_mod
 from orx import skills as skills_mod
+from orx import sources as sources_mod
 from orx import update as update_mod
 from orx.records import ConfigError, NotFoundError, ORXError
 
@@ -32,6 +34,8 @@ task_app = typer.Typer(help="Task commands.", no_args_is_help=True)
 verify_app = typer.Typer(help="Verification commands.", no_args_is_help=True)
 resource_app = typer.Typer(help="Resource runtime status.", no_args_is_help=True)
 skill_app = typer.Typer(help="User-level skills.", no_args_is_help=True)
+inbox_app = typer.Typer(help="Inbox commands.", no_args_is_help=True)
+auth_app = typer.Typer(help="Authentication status (display only).", no_args_is_help=True)
 config_app = typer.Typer(
     help=(
         "Read and write layered configuration. "
@@ -63,6 +67,8 @@ app.add_typer(resource_app, name="resource")
 app.add_typer(skill_app, name="skill")
 app.add_typer(config_app, name="config")
 app.add_typer(agent_app, name="agent")
+app.add_typer(inbox_app, name="inbox")
+app.add_typer(auth_app, name="auth")
 
 
 # ---------------------------------------------------------------------------
@@ -1060,6 +1066,230 @@ def usage(
         )
         for row in result["profiles"]:
             typer.echo(_render_usage_row(row))
+
+
+# ---------------------------------------------------------------------------
+# Inbox / watch / auth
+
+
+def _render_inbox_row(row: dict) -> str:
+    return (
+        f"{row['id']:<4} {row['status']:<10} {row['source'] or '-':<8} "
+        f"{row['created_at']:<32} {row['title']}"
+    )
+
+
+@inbox_app.command("list")
+@handle_errors
+def inbox_list(
+    status: Optional[str] = typer.Option(
+        None, "--status", help="Filter: pending | accepted | rejected | dismissed (default: all)."
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """List inbox items, oldest first.
+
+    Each row joins the item with its external event. Requires a project.
+    --json field items is a list of objects with id, event_id, source,
+    external_id, kind, title, body, url, status, goal_id, created_at, and
+    decided_at. An invalid --status value exits 1. Exit 0 on success, 1 on a
+    domain error, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        items = project.store.inbox_items(status)
+    finally:
+        project.close()
+    _ok(json_out, items=items, count=len(items))
+    if not json_out:
+        if not items:
+            typer.echo("inbox is empty")
+            return
+        typer.echo(f"{'ID':<4} {'STATUS':<10} {'SOURCE':<8} {'CREATED':<32} TITLE")
+        for row in items:
+            typer.echo(_render_inbox_row(row))
+
+
+@inbox_app.command("show")
+@handle_errors
+def inbox_show(
+    item_id: int = typer.Argument(..., metavar="ID", help="Inbox item id from `orx inbox list`."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Show one inbox item in full.
+
+    --json field item is the same object `orx inbox list` reports. The body
+    and the linked goal_id (set by accept) are included. An unknown id
+    exits 1. Exit 0 on success, 1 on a domain error, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        item = project.store.inbox_item_get(item_id)
+    finally:
+        project.close()
+    _ok(json_out, item=item)
+    if not json_out:
+        typer.echo(f"item {item['id']} [{item['status']}] from {item['source']} {item['kind']} {item['external_id']}")
+        typer.echo(f"  title: {item['title']}")
+        if item["url"]:
+            typer.echo(f"  url: {item['url']}")
+        if item["body"]:
+            typer.echo(f"  body: {item['body']}")
+        typer.echo(f"  created_at: {item['created_at']}")
+        if item["decided_at"]:
+            typer.echo(f"  decided_at: {item['decided_at']}")
+        if item["goal_id"]:
+            typer.echo(f"  goal: {item['goal_id']}")
+
+
+def _inbox_decide(item_id: int, status: str, json_out: bool) -> None:
+    project = dispatch.open_project()
+    try:
+        item = project.store.inbox_decide(item_id, status)
+    finally:
+        project.close()
+    _ok(json_out, item=item)
+    if not json_out:
+        typer.echo(f"inbox item {item['id']}: {status}")
+
+
+@inbox_app.command("accept")
+@handle_errors
+def inbox_accept(
+    item_id: int = typer.Argument(..., metavar="ID", help="Inbox item id from `orx inbox list`."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Accept an inbox item: create the active Goal and link it.
+
+    The Goal objective is the item title plus a one-line body summary;
+    acceptance is `the source issue <external_id> is resolved`. ORX keeps one
+    active Goal per project: when a Goal is already active this errors loudly
+    and exits 1, leaving the item pending. The item must be pending.
+    --json fields: item, goal, run. Never launches a completion.
+    """
+    project = dispatch.open_project()
+    try:
+        result = sources_mod.accept_item(project, item_id)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(f"inbox item {item_id} accepted -> Goal {result['goal']['id']} (run {result['run']['id']})")
+        typer.echo(f"  objective: {result['goal']['objective']}")
+        for criterion in result["goal"]["acceptance"]:
+            typer.echo(f"  acceptance: {criterion!r}")
+
+
+@inbox_app.command("reject")
+@handle_errors
+def inbox_reject(
+    item_id: int = typer.Argument(..., metavar="ID", help="Inbox item id from `orx inbox list`."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Reject an inbox item without creating a Goal.
+
+    Sets status rejected and decided_at; goal_id stays null. The item must
+    exist; an unknown id exits 1. --json field item is the updated row.
+    Exit 0 on success, 1 on a domain error, 2 on usage errors.
+    """
+    _inbox_decide(item_id, "rejected", json_out)
+
+
+@inbox_app.command("dismiss")
+@handle_errors
+def inbox_dismiss(
+    item_id: int = typer.Argument(..., metavar="ID", help="Inbox item id from `orx inbox list`."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Dismiss an inbox item without creating a Goal.
+
+    Sets status dismissed and decided_at; goal_id stays null. Use dismiss for
+    not-now and reject for not-ever. An unknown id exits 1. --json field item
+    is the updated row. Exit 0 on success, 1 on a domain error, 2 on usage errors.
+    """
+    _inbox_decide(item_id, "dismissed", json_out)
+
+
+@app.command()
+@handle_errors
+def watch(
+    once: bool = typer.Option(False, "--once", help="Run a single poll pass and exit."),
+    interval: int = typer.Option(
+        300, "--interval", min=1, help="Seconds between passes in long mode (default 300)."
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Poll GitHub issues into the inbox. Never launches a completion.
+
+    One pass runs `gh issue list --json` (gh owns credentials; ORX stores no
+    token), dedupes on (source, external_id) into external_events, and adds a
+    pending inbox item per new event. Policy comes from [inbox]: github_labels
+    filters the query (no filter when empty), auto_accept accepts one new
+    item per pass via the `orx inbox accept` routine — only while no Goal is
+    active. --once prints one report; without it the command loops every
+    --interval seconds until Ctrl-C (clean exit 0). Requires a project and a
+    working `gh` (missing or unauthenticated gh exits 1). --json fields per
+    pass: fetched, new_events, new_items, skipped. Exit 0 on success, 1 on a
+    domain error, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        gh_ok, gh_detail = sources_mod.check_gh()
+        if not gh_ok:
+            raise ORXError(f"watch: {gh_detail}")
+        labels = project.config.inbox_github_labels
+        auto_accept = project.config.inbox_auto_accept
+
+        def one_pass() -> dict:
+            return sources_mod.watch_once(
+                project.store, labels, auto_accept=auto_accept, project=project
+            )
+
+        if once:
+            report = one_pass()
+            _ok(json_out, **report)
+            if not json_out:
+                typer.echo(
+                    f"watch: fetched={report['fetched']} new_events={report['new_events']}"
+                    f" new_items={report['new_items']} skipped={report['skipped']}"
+                )
+            return
+        if not json_out:
+            typer.echo(f"watching every {interval}s (Ctrl-C to stop)")
+        while True:
+            report = one_pass()
+            _ok(json_out, **report)
+            if not json_out:
+                typer.echo(
+                    f"watch: fetched={report['fetched']} new_events={report['new_events']}"
+                    f" new_items={report['new_items']} skipped={report['skipped']}"
+                )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        # Ctrl-C is the intended way to stop the long mode: clean exit.
+        if not json_out:
+            typer.echo("watch stopped")
+        raise typer.Exit(0)
+    finally:
+        project.close()
+
+
+@auth_app.command("status")
+@handle_errors
+def auth_status(json_out: bool = JsonOpt) -> None:
+    """Show GitHub CLI authentication status (display only).
+
+    Delegates to `gh auth status`; ORX never stores or reads a GitHub token
+    and offers no login/logout. Works outside a project. Exit 0 when gh is
+    present and authenticated, 1 otherwise (the reason is the error).
+    --json fields: gh (bool) and detail (the gh auth summary line).
+    """
+    gh_ok, detail = sources_mod.check_gh()
+    if not gh_ok:
+        raise ORXError(detail)
+    _ok(json_out, gh=True, detail=detail)
+    if not json_out:
+        typer.echo(f"gh auth: {detail}")
 
 
 if __name__ == "__main__":

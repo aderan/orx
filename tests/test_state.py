@@ -17,7 +17,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 3
+        assert store.schema_version() == 4
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -28,6 +28,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
             "meta", "goals", "runs", "plan_revisions", "planning_assignments",
             "tasks", "task_dependencies", "task_events", "attempts", "evidence",
             "verifications", "routing_decisions", "resource_status",
+            "external_events", "inbox_items",
         }
         assert expected <= names
     finally:
@@ -157,10 +158,12 @@ def test_v1_to_v2_migration_preserves_resource_rows(tmp_path):
     from orx.state import Store
 
     db = tmp_path / "v1.db"
-    store = Store.open(db)  # code is v2; build a v1 db by hand
+    store = Store.open(db)  # code is v3; build a v1 db by hand
     store.close()
     conn = sqlite3.connect(db)
     conn.executescript("""
+DROP TABLE inbox_items;
+DROP TABLE external_events;
 DROP TABLE resource_status;
 CREATE TABLE resource_status (
   profile TEXT PRIMARY KEY,
@@ -178,7 +181,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 3
+        assert reopened.schema_version() == 4
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
