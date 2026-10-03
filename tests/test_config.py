@@ -595,3 +595,23 @@ def test_user_layer_profiles_validate_like_project(tmp_path):
     with pytest.raises(ConfigError) as exc:
         load_effective(pc, pp, user_config=uc, user_profiles=up)
     assert any("user" in m for m in exc.value.messages)
+
+
+def test_doctor_profile_references_resolve_across_layers(tmp_path, monkeypatch):
+    """A project routing only to user-layer profiles must pass the
+    profile_references check (validated against the effective merge)."""
+    from orx.doctor import run_doctor
+    monkeypatch.chdir(tmp_path)
+    uc, up = _user_layer_files(tmp_path)
+    up.write_text(
+        'schema_version = 1\n[profiles.up-planner]\ndriver = "host"\nharness = "zcode"\n'
+        'model = "u"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n')
+    monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "userlayer"))
+    dispatch.init_project(tmp_path)
+    (tmp_path / ".orx" / "config.toml").write_text(
+        'schema_version = 1\n[controller]\nprofile = "up-planner"\n')
+    (tmp_path / ".orx" / "profiles.toml").write_text("schema_version = 1\n")
+    result = run_doctor(tmp_path)
+    by_name = {c["name"]: c for c in result["checks"]}
+    assert by_name["profile_references"]["state"] == "ok"
+    assert result["ok"]

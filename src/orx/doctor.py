@@ -90,10 +90,18 @@ def run_doctor(root: Path | None) -> dict:
         checks.append(Check("profiles", FAIL, f"{profiles_path} missing"))
 
     if config is not None and profiles is not None:
-        ref_errors = validate_references(config, profiles)
+        # M1: routing references resolve across layers — validate against the
+        # effective (merged) profile set, falling back to the project layer
+        # alone when the merge itself is broken (effective_config reports it).
+        try:
+            effective = load_effective(config_path, profiles_path)
+            ref_config, ref_profiles = effective.config, effective.profiles
+        except ConfigError:
+            ref_config, ref_profiles = config, profiles
+        ref_errors = validate_references(ref_config, ref_profiles)
         checks.append(Check("profile_references", OK if not ref_errors else FAIL,
                             "all configured profiles exist" if not ref_errors else "; ".join(ref_errors)))
-        for name, profile in profiles.items():
+        for name, profile in ref_profiles.items():
             if profile.harness.value == "shell":
                 found = bool(profile.executable and shutil.which(profile.executable))
                 checks.append(Check(f"shell:{name}", OK if found else WARN,
