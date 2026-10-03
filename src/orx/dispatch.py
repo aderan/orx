@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from orx import adapters, machine, plan as plan_mod, routing, runtime, verify
+from orx import adapters, machine, plan as plan_mod, probes, routing, runtime, verify
 from orx.adapters.base import scan_marker
 from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
@@ -1291,6 +1291,117 @@ def resource_list(project: Project) -> list[dict]:
                  "updated_at": row.updated_at}
             )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Agent discovery (M1 P2). Probes never launch a completion.
+
+
+_LAUNCH_CONTRACTS: dict[str, dict] = {
+    "codex": {
+        "kind": "adapter",
+        "summary": (
+            "codex exec --json -m <model> -C <root> -s workspace-write "
+            "--ephemeral --output-last-message <file> "
+            "[-c model_reasoning_effort=<validated>] <prompt>. "
+            "Planner launches may add --output-schema. "
+            "A probe never runs this completion."
+        ),
+    },
+    "cursor": {
+        "kind": "adapter",
+        "summary": (
+            "agent --print --output-format json --workspace <root> --trust "
+            "--model '<id>[effort=<mapped>]' <prompt> "
+            "(--force when the profile sets force). "
+            "A probe never runs this completion."
+        ),
+    },
+    "shell": {
+        "kind": "adapter",
+        "summary": (
+            "Runs the profile executable. prompt_transport delivers the prompt "
+            "on stdin, in an argv {prompt} slot, or via {prompt_file}. "
+            "Nothing to probe; no fixed completion argv."
+        ),
+    },
+    "zcode": {
+        "kind": "host",
+        "summary": (
+            "Host-only harness. The host does the work; there is no CLI launch. "
+            "Submit through orx task claim and orx task complete."
+        ),
+    },
+}
+
+
+def _harness_spec(name: str):
+    try:
+        return probes.HARNESSES[name]
+    except KeyError:
+        known = ", ".join(probes.HARNESSES)
+        raise NotFoundError(
+            f"unknown harness {name!r}; known harnesses: {known}"
+        ) from None
+
+
+def _has_adapter(name: str) -> bool:
+    try:
+        adapters.get_adapter(name)
+    except ORXError:
+        return False
+    return True
+
+
+def agent_list() -> list[dict]:
+    """Harnesses that have an adapter, plus the host-only zcode harness."""
+    rows = []
+    for name, spec in probes.HARNESSES.items():
+        host_only = spec.host_only
+        rows.append(
+            {
+                "harness": name,
+                "binary": spec.binary or None,
+                "adapter": _has_adapter(name),
+                "host_only": host_only,
+                "probeable": not host_only and name != "shell",
+            }
+        )
+    return rows
+
+
+def agent_info(harness: str) -> dict:
+    """Latest persisted snapshot (or null) plus the launch-contract summary.
+
+    Does not probe and does not launch a completion.
+    """
+    spec = _harness_spec(harness)
+    return {
+        "harness": harness,
+        "binary": spec.binary or None,
+        "adapter": _has_adapter(harness),
+        "host_only": spec.host_only,
+        "snapshot": probes.load_snapshot(harness),
+        "launch": dict(_LAUNCH_CONTRACTS[harness]),
+    }
+
+
+def agent_probe(harness: str) -> dict:
+    """Run the shared probes and persist the capability snapshot.
+
+    Host-only and generic harnesses are a domain error. A missing binary is
+    still a successful probe: the snapshot records binary=null.
+    """
+    _harness_spec(harness)
+    try:
+        snapshot = probes.capability_snapshot(harness)
+    except ValueError as exc:
+        raise ORXError(str(exc)) from None
+    return {
+        "harness": harness,
+        "snapshot": snapshot,
+        "path": str(probes.snapshot_path(harness)),
+    }
 
 
 def status_data(project: Project) -> dict:

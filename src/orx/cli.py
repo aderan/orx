@@ -41,6 +41,17 @@ config_app = typer.Typer(
     no_args_is_help=True,
 )
 
+agent_app = typer.Typer(
+    help=(
+        "Discover agent harnesses without launching a completion. "
+        "list shows adapter harnesses (codex, cursor, shell) and marks zcode "
+        "host-only. info reads the latest persisted capability snapshot and "
+        "the launch contract. probe runs the shared local probes and writes "
+        "the snapshot. Exit 0 on success, 1 on a domain error, 2 on usage errors."
+    ),
+    no_args_is_help=True,
+)
+
 app.add_typer(goal_app, name="goal")
 app.add_typer(plan_app, name="plan")
 app.add_typer(task_app, name="task")
@@ -48,6 +59,7 @@ app.add_typer(verify_app, name="verify")
 app.add_typer(resource_app, name="resource")
 app.add_typer(skill_app, name="skill")
 app.add_typer(config_app, name="config")
+app.add_typer(agent_app, name="agent")
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +335,109 @@ def config_set(
         verb = "created" if result["created"] else "updated"
         typer.echo(f"{verb} {layer} config {result['path']}")
         typer.echo(f"{result['key']} = {_format_config_value(result['value'])}")
+
+
+# ---------------------------------------------------------------------------
+# Agent discovery
+
+
+def _render_agent_row(row: dict) -> str:
+    kind = "host-only" if row["host_only"] else "adapter"
+    binary = f"binary={row['binary']}" if row["binary"] else "no binary"
+    probe = "probeable" if row["probeable"] else "no probe"
+    return f"{row['harness']:<8} {kind:<10} {binary:<16} {probe}"
+
+
+@agent_app.command("list")
+@handle_errors
+def agent_list(json_out: bool = JsonOpt) -> None:
+    """List harnesses that have an adapter, plus host-only zcode.
+
+    codex, cursor, and shell have adapters. zcode is host-only: the host
+    does the work, and there is no CLI to probe. This command does not
+    probe and does not launch a completion.
+
+    --json field harnesses is a list of objects with harness, binary,
+    adapter, host_only, and probeable. binary is null when the harness
+    has no fixed CLI name. adapter is true for codex, cursor, and shell.
+    host_only is true only for zcode. probeable is true for codex and cursor.
+    """
+    rows = dispatch.agent_list()
+    _ok(json_out, harnesses=rows)
+    if not json_out:
+        for row in rows:
+            typer.echo(_render_agent_row(row))
+
+
+@agent_app.command("info")
+@handle_errors
+def agent_info(
+    harness: str = typer.Argument(..., metavar="HARNESS", help="codex, cursor, shell, or zcode."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Show the latest capability snapshot and the launch contract.
+
+    Reads the snapshot written by `orx agent probe` from the user data
+    directory (ORX_DATA_DIR, else $XDG_DATA_HOME/orx, else ~/.local/share/orx)
+    at probes/<harness>.json. Does not run probes and does not launch a
+    completion. snapshot is null when no probe has been saved yet. shell
+    and zcode have a launch contract and no probe; zcode is host-only.
+
+    --json fields: harness, binary, adapter, host_only, snapshot, launch.
+    launch has kind (adapter or host) and summary (the argv contract).
+    An unknown harness exits 1. A missing HARNESS argument exits 2.
+    """
+    data = dispatch.agent_info(harness)
+    _ok(json_out, **data)
+    if not json_out:
+        kind = "host-only" if data["host_only"] else "adapter"
+        typer.echo(f"{data['harness']}  {kind}")
+        snap = data["snapshot"]
+        if snap is None:
+            typer.echo("snapshot: (none)")
+        else:
+            typer.echo(f"snapshot: {snap.get('probed_at')}")
+            typer.echo(f"  binary: {snap.get('binary')}")
+            typer.echo(f"  version: {snap.get('version')}")
+            typer.echo(f"  auth: {snap.get('auth')}")
+            typer.echo(f"  models_discoverable: {snap.get('models_discoverable')}")
+            features = snap.get("features") or {}
+            rendered = ", ".join(f"{key}={value}" for key, value in features.items())
+            typer.echo(f"  features: {rendered}")
+        typer.echo(f"launch: {data['launch']['summary']}")
+
+
+@agent_app.command("probe")
+@handle_errors
+def agent_probe(
+    harness: str = typer.Argument(..., metavar="HARNESS", help="codex or cursor."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Probe one harness and write its capability snapshot.
+
+    Runs the shared local checks only: binary presence, version, help text,
+    auth status, and the model catalog. Never launches a completion
+    (no `codex exec` prompt, no `agent --print`). Writes
+    probes/<harness>.json under the user data directory. A missing binary
+    is still success: the snapshot records binary null and auth unknown.
+
+    codex and cursor are probeable. shell and zcode exit 1 (nothing to
+    probe; zcode is host-only). An unknown harness exits 1. A missing
+    HARNESS argument exits 2.
+
+    --json fields: harness, snapshot, path. snapshot is the capability
+    object (harness, binary, version, probed_at, features, auth,
+    models_discoverable).
+    """
+    data = dispatch.agent_probe(harness)
+    _ok(json_out, **data)
+    if not json_out:
+        snap = data["snapshot"]
+        typer.echo(f"probed {data['harness']}")
+        typer.echo(f"  binary: {snap.get('binary')}")
+        typer.echo(f"  version: {snap.get('version')}")
+        typer.echo(f"  auth: {snap.get('auth')}")
+        typer.echo(f"  wrote {data['path']}")
 
 
 # ---------------------------------------------------------------------------

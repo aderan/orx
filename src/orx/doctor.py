@@ -27,45 +27,6 @@ class Check:
     detail: str = ""
 
 
-def _probe(argv: list[str], timeout: float = 10.0) -> tuple[int | None, str]:
-    """Run a local CLI probe. Returns (exit_code, combined output)."""
-    try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout
-        )
-        return proc.returncode, (proc.stdout + "\n" + proc.stderr).strip()
-    except (subprocess.TimeoutExpired, OSError):
-        return None, ""
-
-
-def _check_harness(binary: str, required_flags: tuple[str, ...], help_argv: list[str],
-                   status_argv: list[str], logged_in_marker: str) -> list[Check]:
-    checks: list[Check] = []
-    path = shutil.which(binary)
-    if not path:
-        return [Check(binary, WARN, f"not found on PATH (optional harness)")]
-    code, help_text = _probe(help_argv)
-    missing = [f for f in required_flags if f not in help_text]
-    if code is None:
-        checks.append(Check(binary, WARN, "found; help probe timed out; operational probe not_run"))
-    elif missing:
-        checks.append(
-            Check(binary, WARN, f"found at {path}; help is missing {missing}; adapter would refuse (capability_mismatch)")
-        )
-    else:
-        code, status_text = _probe(status_argv)
-        if logged_in_marker.lower() in status_text.lower():
-            auth = "logged_in"
-        elif status_text:
-            auth = "not_logged_in"
-        else:
-            auth = "unknown"
-        checks.append(
-            Check(binary, OK, f"found at {path}; flags present; auth {auth}; operational probe not_run")
-        )
-    return checks
-
-
 def run_doctor(root: Path | None) -> dict:
     checks: list[Check] = []
 
@@ -87,18 +48,10 @@ def run_doctor(root: Path | None) -> dict:
 
     # Required flags mirror the adapter contracts exactly, so doctor never
     # reports "ok" for a binary the adapter would reject with capability_mismatch.
-    checks.extend(_check_harness(
-        "codex",
-        ("--json", "-m", "-C", "--output-last-message"),
-        ["codex", "exec", "--help"],
-        ["codex", "login", "status"], "logged in",
-    ))
-    checks.extend(_check_harness(
-        "agent",
-        ("--print", "--output-format", "--workspace", "--trust", "--model"),
-        ["agent", "--help"],
-        ["agent", "status"], "logged in",
-    ))
+    # Since M1 P2 the probing lives in orx.probes (shared with
+    # `orx agent probe`); outputs here are byte-compatible with M0.
+    from orx.probes import doctor_harness_checks
+    checks.extend(Check(*triplet) for triplet in doctor_harness_checks())
 
     if root is None:
         checks.append(Check("project", FAIL, "no .orx/ found; run `orx init` here"))

@@ -75,6 +75,23 @@ with `schema_version = 1` and only the key being set. Effective precedence,
 high to low, is environment (`ORX_RUNTIME_MAX_PARALLEL`,
 `ORX_RUNTIME_COMMAND_TIMEOUT_SEC`), project, user, then built-in defaults.
 
+## Agent discovery
+
+```sh
+orx agent list [--json]
+orx agent info <harness> [--json]
+orx agent probe <harness> [--json]
+```
+
+`list` shows the adapter harnesses (`codex`, `cursor`, `shell`) and the
+host-only `zcode` harness. `info` reads the latest capability snapshot (it
+does not probe) and prints that harness's launch contract. `probe` runs the
+shared local checks — binary, version, help, auth, models — and writes
+`probes/<harness>.json` under the user data directory. A probe never
+launches a completion. Only `codex` and `cursor` are probeable; `shell` and
+host-only `zcode` exit 1. Unknown harness names exit 1; a missing argument
+exits 2. `--json` uses the same envelope as the rest of the CLI.
+
 ## Key invariants
 
 - `task complete` means execution finished, not that the task passed. Only

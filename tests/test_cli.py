@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -506,6 +507,181 @@ def test_config_set_outside_project(tmp_path, monkeypatch):
     assert listed["runtime.max_parallel"]["value"] == 2
     assert listed["runtime.max_parallel"]["origin"] == "user"
     assert listed["plan.depth"]["origin"] == "default"
+
+
+# -- orx agent list / info / probe ----------------------------------------
+
+
+def _install_logged_fake(directory: Path, name: str, script: str, log: Path) -> None:
+    body = f"#!/bin/sh\necho \"$*\" >> {str(log)!r}\n{script}\n"
+    path = directory / name
+    path.write_text(body)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def test_agent_help_lists_subcommands():
+    listed = invoke("agent", "--help")
+    assert listed.exit_code == 0
+    for word in ("list", "info", "probe", "host-only", "completion"):
+        assert word in listed.stdout
+    probed = invoke("agent", "probe", "--help")
+    assert probed.exit_code == 0
+    for snippet in ("--json", "codex", "cursor", "zcode", "completion", "exit 1"):
+        assert snippet in probed.stdout
+
+
+def test_agent_usage_exits_2():
+    assert invoke("agent", "info").exit_code == 2
+    assert invoke("agent", "probe").exit_code == 2
+    assert invoke("agent", "nope").exit_code == 2
+
+
+def test_agent_list_marks_adapter_harnesses_and_host_only_zcode():
+    result = invoke("agent", "list", "--json")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    rows = {row["harness"]: row for row in body["harnesses"]}
+    assert list(rows) == ["codex", "cursor", "shell", "zcode"]
+    assert rows["codex"]["adapter"] is True and rows["codex"]["probeable"] is True
+    assert rows["codex"]["binary"] == "codex" and rows["codex"]["host_only"] is False
+    assert rows["cursor"]["adapter"] is True and rows["cursor"]["binary"] == "agent"
+    assert rows["shell"]["adapter"] is True and rows["shell"]["probeable"] is False
+    assert rows["shell"]["binary"] is None
+    assert rows["zcode"] == {
+        "harness": "zcode",
+        "binary": None,
+        "adapter": False,
+        "host_only": True,
+        "probeable": False,
+    }
+    human = invoke("agent", "list")
+    assert human.exit_code == 0
+    assert "zcode" in human.stdout and "host-only" in human.stdout
+    assert "codex" in human.stdout and "adapter" in human.stdout
+
+
+def test_agent_probe_writes_snapshot_and_info_reads_it(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "codex-invocations"
+    monkeypatch.setenv("PATH", str(bindir))
+    _install_logged_fake(bindir, "codex", """
+if [ "$1" = "--version" ]; then echo "codex-cli 0.160.0"; exit 0; fi
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\\n' 'usage: codex exec' '--json' '-m, --model' '-C, --cd' '--output-last-message' 'resume' 'model_reasoning_effort'
+  exit 0
+fi
+if [ "$1" = "login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "$1" = "debug" ]; then echo '{"models":[{"slug":"m"}]}'; exit 0; fi
+echo COMPLETION >> "$0.log"
+exit 99
+""".replace('"$0.log"', repr(str(tmp_path / "completion-flag"))), log)
+
+    result = invoke("agent", "probe", "--json", "codex")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    snap = body["snapshot"]
+    assert snap["harness"] == "codex"
+    assert snap["version"] == "codex-cli 0.160.0"
+    assert snap["auth"] == "logged_in"
+    assert snap["models_discoverable"] is True
+    assert snap["features"]["headless"] is True
+    assert Path(body["path"]).is_file()
+    assert json.loads(Path(body["path"]).read_text()) == snap
+    calls = log.read_text().splitlines()
+    assert calls == ["--version", "exec --help", "login status", "debug models"]
+    assert not (tmp_path / "completion-flag").exists()
+
+    info = invoke("agent", "info", "--json", "codex")
+    assert info.exit_code == 0, info.stdout
+    shown = payload(info)
+    assert shown["ok"] is True
+    assert shown["snapshot"] == snap
+    assert shown["adapter"] is True
+    assert shown["host_only"] is False
+    assert "codex exec --json" in shown["launch"]["summary"]
+    assert "never runs this completion" in shown["launch"]["summary"]
+    human = invoke("agent", "info", "codex")
+    assert human.exit_code == 0
+    assert "codex-cli 0.160.0" in human.stdout
+    assert "logged_in" in human.stdout
+
+
+def test_agent_probe_cursor_fake_never_prints(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "agent-invocations"
+    monkeypatch.setenv("PATH", str(bindir))
+    _install_logged_fake(bindir, "agent", """
+if [ "$1" = "--version" ]; then echo "agent 2026.10.01"; exit 0; fi
+if [ "$1" = "--help" ]; then
+  echo "--print --output-format --workspace --trust --model effort= --resume"
+  exit 0
+fi
+if [ "$1" = "status" ]; then echo "Not logged in"; exit 0; fi
+if [ "$1" = "--list-models" ]; then echo "auto - Auto"; exit 0; fi
+echo COMPLETION
+exit 99
+""", log)
+    result = invoke("agent", "probe", "cursor", "--json")
+    assert result.exit_code == 0, result.stdout
+    snap = payload(result)["snapshot"]
+    assert snap["harness"] == "cursor"
+    assert snap["auth"] == "not_logged_in"
+    assert snap["binary"].endswith("/agent")
+    assert log.read_text().splitlines() == ["--version", "--help", "status", "--list-models"]
+    assert all(not line.startswith("--print") for line in log.read_text().splitlines())
+
+
+def test_agent_probe_missing_binary_is_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+    result = invoke("agent", "probe", "--json", "codex")
+    assert result.exit_code == 0, result.stdout
+    snap = payload(result)["snapshot"]
+    assert snap["binary"] is None
+    assert snap["auth"] == "unknown"
+    assert snap["features"]["headless"] is False
+    info = payload(invoke("agent", "info", "--json", "codex"))
+    assert info["snapshot"] == snap
+
+
+def test_agent_info_without_snapshot_and_host_only_contract():
+    result = invoke("agent", "info", "--json", "zcode")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["snapshot"] is None
+    assert body["host_only"] is True
+    assert body["adapter"] is False
+    assert body["launch"]["kind"] == "host"
+    assert "Host-only" in body["launch"]["summary"]
+    human = invoke("agent", "info", "zcode")
+    assert "host-only" in human.stdout
+    assert "snapshot: (none)" in human.stdout
+
+    shell = payload(invoke("agent", "info", "--json", "shell"))
+    assert shell["adapter"] is True
+    assert shell["snapshot"] is None
+    assert "prompt_transport" in shell["launch"]["summary"]
+
+
+def test_agent_probe_rejects_unprobeable_and_unknown():
+    for name in ("zcode", "shell", "nope"):
+        result = invoke("agent", "probe", "--json", name)
+        assert result.exit_code == 1, (name, result.stdout)
+        body = payload(result)
+        assert body["ok"] is False
+        assert "error" in body
+    zcode = payload(invoke("agent", "probe", "--json", "zcode"))
+    assert "no probe" in zcode["error"]
+    unknown = payload(invoke("agent", "info", "--json", "nope"))
+    assert unknown["ok"] is False
+    assert "unknown harness" in unknown["error"]
+    human = invoke("agent", "probe", "shell")
+    assert human.exit_code == 1
+    assert "error:" in human.stderr or "error:" in human.stdout
 
 
 def test_config_list_json_error_on_bad_env(cli_project, monkeypatch):
