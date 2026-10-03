@@ -54,7 +54,7 @@ attempt/round/retry/Close/Done 的关系：
 | 审查失败 | verify submit fail → task FAILED | 同上，且 verifier 下次 prompt 含 prior issues |
 | 修复成功 | retry → 重建 → 双门禁过 → passed | 第二次 attempt 的 worker/verifier prompt 含前次失败；attempt 隔离记录正确 |
 | 修复耗尽 | 2 次修复后仍 fail → Controller 停止 | 内核无上限（第 3 次 retry 合法），停止是 skill 行为；状态可恢复 |
-| 收尾失败（如提交冲突） | task 已 passed、Close 未完成 | 下一片仍锁定（依赖链）；Controller 报告后可重试 Close |
+| 收尾失败（如提交冲突） | task 已 passed、Close 未完成 | 下一片依赖已解锁（内核在 pass 时解锁，不感知 Close）；skill 层要求 Close 完成前不开工下一片，Controller 报告后可重试 Close |
 | 中途重读状态 | `orx status --json` 是唯一事实源 | 新会话从 status + 轮报告恢复，不依赖聊天记忆 |
 | 范围外失败（既有违规） | skill 层：git blame 归属、最小修复单独提交、Controller 直跑门禁复核并如实记录 | 不重跑全量 agent 审查（skill 纪律） |
 | 权限/配额/环境阻塞 | attempt failed + 错误分类（auth_required/quota_exhausted…）+ resource 状态 | Controller 停止，保留可恢复状态 |
@@ -66,7 +66,7 @@ attempt/round/retry/Close/Done 的关系：
 3. **verifier prompt**：Goal objective + **constraints** + task objective + **acceptance 全列** + 该条检查指令 + **该任务已记录的命令门禁结果** + **执行证据（log/evidence 路径）** + **prior issues（task_events 中最近失败原因）** + verdict 输出契约。
 4. **host/external 任务指派落盘**：`.orx/runs/<run>/assignments/<task>.md`（worker prompt 全文）；`orx run` 返回 payload 增加 prompt/prompt_file/preread/isolation。host verifier 指派同样落盘并在 `orx verify` 输出 prompt 与 prompt_file。
 5. **按角色沙箱**：codex 适配器 planner/verifier launch 用 `-s read-only`，worker 保持 `-s workspace-write`；`Launch.sandbox`（"read_only"|"workspace_write"|None）声明实际隔离。
-6. **隔离记录**：attempts 表新增 `isolation TEXT`（migration v5）：CLI = launch.sandbox；host/external = `"prompt_only"`（明确不是强制沙箱，仅为提示词纪律）；`attempt_create(..., isolation=None)` 向后兼容。
+6. **隔离记录**：attempts 表新增 `isolation TEXT`（migration v5）：CLI = launch.sandbox（"read_only"/"workspace_write"）；host = `"prompt_only"`（明确不是强制沙箱，仅为提示词纪律）；external = NULL（操作者自管，ORX 不作声明）；`attempt_create(..., isolation=None)` 向后兼容。补充（Stage 2 落地时修正）：`orx verify submit` 新增 `--reason`——fail 时审查问题进入 failure 状态，并自动出现在下一次 worker 与 verifier prompt（修复回环的问题回传通道）。
 7. **skill 安装**：`orx skill install [NAMES…]`——无参 = 安装默认集（orx-controller、orx-agent，行为不变）；显式名称 = 只装该 skill（名称按打包目录动态校验，未知名称报错并列出可用项）；`orx skill update` 只刷新 canonical 目录中已安装且仍打包的 skill。
 8. **空验证列表**：内核契约不变（完成即过）；PBV 计划由 skill 审核清单强制要求每片 ≥1 条命令门禁 + ≥1 条 agent 审查，空列表不满足 PBV 完成条件。
 

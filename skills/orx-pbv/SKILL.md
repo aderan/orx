@@ -79,8 +79,9 @@ Plan IR 并提交、在轮报告注明"Controller 改写"。`orx replan` 只用�
    上下文。
 5. **Validate**：`orx verify` 执行命令门禁并派发 agent 审查；host 驱动时
    把返回的 verifier prompt 原样交给子代理运行，裁决经
-   `orx verify submit T00X --result pass|fail --entry '<exact entry>' --evidence <file>`
-   交回。
+   `orx verify submit T00X --result pass|fail --entry '<exact entry>' [--evidence <file>]`
+   交回；fail 时必须带 `--reason "<问题清单>"`——问题经内核进入 failure
+   状态并自动出现在下一次 worker/verifier prompt。
 6. **Gate**：双门禁全过（每条命令门禁 exit 0 且每条 agent 审查 pass）→
    task PASSED；任一失败进修复回环（见 6）。
 7. **Close**：本地提交（不 push）→ 更新项目规划文档状态 → 按
@@ -92,11 +93,12 @@ Plan IR 并提交、在轮报告注明"Controller 改写"。`orx replan` 只用�
 
 ## 6. 修复回环与停止
 
-- 每片预算 = 初始构建 + ≤2 次修复。agent 审查 fail：把问题清单写进 evidence
-  文件，`orx verify submit T00X --result fail --entry '<exact entry>'
-  --evidence <file>` → `orx task retry T00X`（failed → runnable，同一计划）
-  → 重新 Build/Validate。命令门禁非 0 由内核直接判 task FAILED，无需
-  Controller 交裁决。下一次 worker/verifier prompt 自动携带前次问题，不要复述。
+- 每片预算 = 初始构建 + ≤2 次修复。agent 审查 fail：
+  `orx verify submit T00X --result fail --entry '<exact entry>'
+  --reason "<问题清单>"` → `orx task retry T00X`（failed → runnable，同一
+  计划）→ 重新 Build/Validate。命令门禁非 0 由内核直接判 task FAILED，
+  无需 Controller 交裁决。下一次 worker/verifier prompt 自动携带前次
+  问题（含 --reason 的问题清单），不要复述。
 - 预算耗尽即停：task 保持 failed，写轮报告，向用户报告；不 replan 不换图。
 - 连续阻塞（auth/quota/环境）：停止循环，保留可恢复状态（恢复方法见
   references/migration.md）。

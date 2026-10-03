@@ -3,9 +3,10 @@
 每片 verification = ≥1 条命令门禁 + ≥1 条 agent 审查。条目语法三种：shell
 命令（项目根目录执行）、`agent: <说明>`、`agent[vision]: <说明>`。
 
-内核会在 verifier prompt 里自动带上：Goal constraints、acceptance 全列、该条
-检查指令、该任务已记录的命令门禁结果、执行证据路径、复验时的前次问题。
-所以**条目文本只写检查方法本身**，不重复约束、验收、门禁结果或前次问题。
+内核会在 verifier prompt 里自动带上：Goal 目标与 constraints、acceptance
+全列、该条检查指令、该任务已记录的命令门禁结果、执行证据路径、复验时的
+前次问题。所以**条目文本只写检查方法本身**，不重复约束、验收、门禁结果或
+前次问题。
 
 ## 命令门禁条目（确定性，V0）
 
