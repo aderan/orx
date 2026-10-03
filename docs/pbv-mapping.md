@@ -77,6 +77,7 @@ attempt/round/retry/Close/Done 的关系：
 - 复验的"增量"语义来自验证条目文本与 prior issues 注入，内核不感知"哪些文件是本次修复触及的"（由条目文本要求修复代理报告改动文件）。
 - 每项目一个 active Goal、每 Run 一版生效计划：PBV 多轮共用一版计划修订；轮内发现计划错误走 `orx replan`（与旧"Controller 改写"对应）。
 - `scope.allowed` 是路径约束与提示词纪律，不是文件级强制隔离（responsibilities.md 既有限制，不变）。
+- preread 路径在计划提交时冻结：Goal 间轮编号续接（旧 pbv 报告序列）必须在 Round 0 对齐进计划，否则内核 preread 会指向错误文件（G001 实测：T002-T004 的 preread 冻结为 round-2/3/4-plan.md，Controller 在构建契约行中显式纠偏到续接编号 round-10/11/12-plan.md；skill 已加编号规则防再犯）。
 
 ## 6. 验收要求（Stage 5，样本外窗口评估 case）
 

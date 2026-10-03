@@ -18,8 +18,10 @@
 - [ ] objective 引用项目任务规划文档条目（如 docs/DEVELOPMENT_PLAN.md 条目
       号），不另起炉灶。
 - [ ] preread 已设置：项目相对路径、含测试文件、一次列全；**首项 = 轮计划
-      文件路径** `reports/pbv/round-N-plan.md`（N = 该 task 的轮次；文件由
-      每轮 Plan 步产生，Build 前落盘）。
+      文件路径**（文件由每轮 Plan 步产生，Build 前落盘）。**编号在 Round 0
+      对齐一次**：若 reports/pbv/ 已有旧 Goal 的轮文件，新 Goal 的编号必须
+      续接旧序列（旧止于 round-8 则新从 round-9 起；报告与计划同编号），
+      绝不从 1 重起——旧文件是只读历史，覆盖即永久丢失（reports/ 不在 git）。
 - [ ] scope.allowed 只列项目相对路径（绝不绝对路径、不含 `..`），覆盖本片
       全部改动面。
 - [ ] acceptance 含 Goal 验收原文的逐字拷贝（planner 契约要求；释义即拒）。
