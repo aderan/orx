@@ -25,6 +25,7 @@ uv run orx task complete T001 --evidence evidence.json
 uv run orx verify               # deterministic checks + agent verifier dispatch
 uv run orx verify submit T001 --result pass
 uv run orx status
+uv run orx timeline --run R001 --limit 20
 ```
 
 Every command takes `--json` for a machine envelope:
@@ -91,6 +92,19 @@ shared local checks — binary, version, help, auth, models — and writes
 launches a completion. Only `codex` and `cursor` are probeable; `shell` and
 host-only `zcode` exit 1. Unknown harness names exit 1; a missing argument
 exits 2. `--json` uses the same envelope as the rest of the CLI.
+
+## Timeline
+
+```sh
+orx timeline [--run R###] [--task T###] [--profile NAME] [--limit N] [--json]
+```
+
+Read-only history over the tables already in `.orx/state.db` (no new tables):
+goal and run creation, planning assignments, routing decisions, attempts
+(planner, worker, and verifier), task events, and verifications. Entries are
+strictly time-ordered. Each one is `{ts, actor, event, detail}`. Human lines
+are `HH:MM:SS  actor  event  detail`. `--limit` keeps the newest N, still
+oldest-first. An unknown run or task exits 1; a bad `--limit` exits 2.
 
 ## Key invariants
 

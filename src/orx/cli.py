@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -895,6 +896,48 @@ def update(
         typer.echo(f"ran: {result['command']} (exit {result['exit_code']})")
         if result["output"]:
             typer.echo(result["output"])
+
+
+def _timeline_clock(ts: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return ts[11:19] if "T" in ts and len(ts) >= 19 else ts
+    return parsed.strftime("%H:%M:%S")
+
+
+@app.command()
+@handle_errors
+def timeline(
+    run_id: Optional[str] = typer.Option(None, "--run", help="Only entries for this run (R###)."),
+    task_id: Optional[str] = typer.Option(None, "--task", help="Only entries for this task (T###)."),
+    profile: Optional[str] = typer.Option(None, "--profile", help="Only entries for this profile."),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", min=1, help="Newest N entries, still oldest-first."
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Show a strictly time-ordered history merged from existing tables.
+
+    Sources: goal and run creation, planning assignments, routing decisions,
+    attempts (including planner and verifier rows), task events, and
+    verifications. Human lines are `HH:MM:SS  actor  event  detail`.
+    Exit 0 on success, 1 on a domain error, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.timeline(
+            project, run_id=run_id, task_id=task_id, profile=profile, limit=limit
+        )
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        for entry in result["entries"]:
+            typer.echo(
+                f"{_timeline_clock(entry['ts'])}  {entry['actor']}  "
+                f"{entry['event']}  {entry['detail']}"
+            )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,9 @@ CODE_SCHEMA_VERSION = 1
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Sub-second resolution keeps a burst of writes strictly time-ordered
+    # on the timeline. Stored values stay ISO-8601 text.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 SCHEMA_V1 = """
@@ -627,7 +629,7 @@ class Store:
         with self.tx():
             count = self.conn.execute("SELECT COUNT(*) AS c FROM goals").fetchone()["c"]
             goal_id = f"G{count + 1:03d}"
-            ts = now()
+            goal_ts = now()
             self.conn.execute(
                 "INSERT INTO goals(id, objective, constraints_json, acceptance_json, context,"
                 " status, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -638,15 +640,16 @@ class Store:
                     json.dumps(acceptance),
                     context,
                     records.GoalStatus.ACTIVE.value,
-                    ts,
-                    ts,
+                    goal_ts,
+                    goal_ts,
                 ),
             )
             run_count = self.conn.execute("SELECT COUNT(*) AS c FROM runs").fetchone()["c"]
             run_id = f"R{run_count + 1:03d}"
+            run_ts = now()
             self.conn.execute(
                 "INSERT INTO runs(id, goal_id, status, created_at, updated_at) VALUES(?,?,?,?,?)",
-                (run_id, goal_id, records.RunStatus.PLANNING.value, ts, ts),
+                (run_id, goal_id, records.RunStatus.PLANNING.value, run_ts, run_ts),
             )
         return self.goal_get(goal_id), self.run_get(run_id)
 
@@ -679,6 +682,14 @@ class Store:
         ).fetchone()
         return _run(r) if r else None
 
+    def goals_all(self) -> list[Goal]:
+        rows = self.conn.execute("SELECT * FROM goals ORDER BY created_at, id").fetchall()
+        return [_goal(r) for r in rows]
+
+    def runs_all(self) -> list[Run]:
+        rows = self.conn.execute("SELECT * FROM runs ORDER BY created_at, id").fetchall()
+        return [_run(r) for r in rows]
+
     def run_set_status(self, run_id: str, status: records.RunStatus) -> None:
         with self.tx():
             self.conn.execute(
@@ -708,6 +719,12 @@ class Store:
         if not r:
             raise records.NotFoundError(f"planning assignment {assignment_id} not found")
         return _assignment(r)
+
+    def assignments_all(self) -> list[Assignment]:
+        rows = self.conn.execute(
+            "SELECT * FROM planning_assignments ORDER BY created_at, id"
+        ).fetchall()
+        return [_assignment(r) for r in rows]
 
     def assignment_waiting(self, run_id: str) -> Assignment | None:
         r = self.conn.execute(
@@ -755,6 +772,10 @@ class Store:
         if not r:
             raise records.NotFoundError(f"plan revision row {revision_row_id} not found")
         return _revision(r)
+
+    def revisions_all(self) -> list[Revision]:
+        rows = self.conn.execute("SELECT * FROM plan_revisions ORDER BY id").fetchall()
+        return [_revision(r) for r in rows]
 
     def revision_active(self, run_id: str) -> Revision | None:
         r = self.conn.execute(
@@ -811,6 +832,10 @@ class Store:
         if not r:
             raise records.NotFoundError(f"task {task_id} not found in revision row {revision_row_id}")
         return _task(r)
+
+    def tasks_every(self) -> list[TaskRow]:
+        rows = self.conn.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+        return [_task(r) for r in rows]
 
     def tasks_all(self, revision_row_id: int) -> list[TaskRow]:
         rows = self.conn.execute(
@@ -878,6 +903,12 @@ class Store:
                 (revision_row_id, task_id, from_status, to_status, event, reason, now()),
             )
 
+    def task_events_all(self) -> list[TaskEvent]:
+        rows = self.conn.execute(
+            "SELECT * FROM task_events ORDER BY created_at, id"
+        ).fetchall()
+        return [_event(r) for r in rows]
+
     def task_events(self, revision_row_id: int, task_id: str) -> list[TaskEvent]:
         rows = self.conn.execute(
             "SELECT * FROM task_events WHERE revision_id = ? AND task_id = ? ORDER BY id",
@@ -928,6 +959,10 @@ class Store:
             )
             aid = cur.lastrowid
         return self.attempt_get(aid)
+
+    def attempts_all(self) -> list[Attempt]:
+        rows = self.conn.execute("SELECT * FROM attempts ORDER BY id").fetchall()
+        return [_attempt(r) for r in rows]
 
     def attempt_get(self, attempt_id: int) -> Attempt:
         r = self.conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
@@ -1011,6 +1046,12 @@ class Store:
             vid = cur.lastrowid
         r = self.conn.execute("SELECT * FROM verifications WHERE id = ?", (vid,)).fetchone()
         return _verification(r)
+
+    def verifications_all(self) -> list[Verification]:
+        rows = self.conn.execute(
+            "SELECT * FROM verifications ORDER BY created_at, id"
+        ).fetchall()
+        return [_verification(r) for r in rows]
 
     def verifications_for(self, revision_row_id: int, task_id: str) -> list[Verification]:
         rows = self.conn.execute(

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from orx import adapters, machine, plan as plan_mod, probes, routing, runtime, verify
@@ -1433,3 +1434,196 @@ def status_data(project: Project) -> dict:
         "resources": resource_list(project),
         "result": run.status,
     }
+
+
+# ---------------------------------------------------------------------------
+# Timeline (read model; no new tables)
+
+
+def _parse_ts(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _ts_key(ts: str) -> tuple:
+    try:
+        return (0, _parse_ts(ts))
+    except ValueError:
+        return (1, ts)
+
+
+def _detail(*parts: str) -> str:
+    text = " ".join(part.strip() for part in parts if part and part.strip())
+    return " ".join(text.split())
+
+
+def _run_at(stamp: str | None, runs: list[Run]) -> str | None:
+    """Run whose creation is the latest one at or before `stamp`."""
+    if not runs:
+        return None
+    if stamp is None:
+        return runs[0].id if len(runs) == 1 else None
+    eligible = [run for run in runs if run.created_at <= stamp]
+    if not eligible:
+        return runs[0].id if len(runs) == 1 else None
+    eligible.sort(key=lambda run: (run.created_at, run.id))
+    return eligible[-1].id
+
+
+def _nearest_attempt(event, attempts: list):
+    related = [
+        attempt for attempt in attempts
+        if attempt.revision_id == event.revision_id and attempt.task_id == event.task_id
+    ]
+    if not related:
+        return None
+    best = None
+    best_dist: float | None = None
+    for attempt in related:
+        stamps = [stamp for stamp in (attempt.started_at, attempt.ended_at) if stamp]
+        if not stamps:
+            dist = None
+        else:
+            try:
+                dist = min(abs((_parse_ts(event.created_at) - _parse_ts(stamp)).total_seconds())
+                           for stamp in stamps)
+            except ValueError:
+                dist = None
+        if best is None or (dist is not None and (best_dist is None or dist < best_dist)):
+            best = attempt
+            best_dist = dist if dist is not None else best_dist
+    return best
+
+
+def timeline(
+    project: Project,
+    run_id: str | None = None,
+    task_id: str | None = None,
+    profile: str | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Merge existing audit rows into time-ordered `{ts, actor, event, detail}`.
+
+    Sources: goal and run creation, planning assignments, routing decisions,
+    attempts (planner, worker, verifier), task events, and verifications.
+    `limit` keeps the newest N entries, still oldest-first.
+    """
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise ORXError("limit must be a positive integer")
+
+    store = project.store
+    goals = store.goals_all()
+    runs = store.runs_all()
+    if run_id is not None and not any(run.id == run_id for run in runs):
+        raise NotFoundError(f"run {run_id} not found")
+    known_tasks = {task.task_id for task in store.tasks_every()}
+    if task_id is not None and task_id not in known_tasks:
+        raise NotFoundError(f"task {task_id} not found")
+
+    revisions = store.revisions_all()
+    rev_run = {revision.id: revision.run_id for revision in revisions}
+    attempts = store.attempts_all()
+    attempts_by_id = {attempt.id: attempt for attempt in attempts}
+    first_run: dict[str, str] = {}
+    for run in runs:
+        first_run.setdefault(run.goal_id, run.id)
+
+    raw: list[dict] = []
+    seq = 0
+
+    def add(ts: str | None, actor: str | None, event: str, detail: str, *,
+            run: str | None, task: str | None, prof: str | None) -> None:
+        nonlocal seq
+        if not ts:
+            return
+        seq += 1
+        raw.append({
+            "ts": ts,
+            "actor": actor or "orx",
+            "event": event,
+            "detail": detail or "-",
+            "_run": run,
+            "_task": task,
+            "_profile": prof,
+            "_seq": seq,
+        })
+
+    for goal in goals:
+        add(goal.created_at, "orx", "goal.created", _detail(goal.id, goal.objective),
+            run=first_run.get(goal.id), task=None, prof=None)
+    for run in runs:
+        add(run.created_at, "orx", "run.created", _detail(run.id, "goal", run.goal_id),
+            run=run.id, task=None, prof=None)
+
+    for assignment in store.assignments_all():
+        add(assignment.created_at, assignment.profile, "plan.assign",
+            _detail(assignment.id, assignment.depth),
+            run=assignment.run_id, task=None, prof=assignment.profile)
+        if assignment.submitted_at:
+            add(assignment.submitted_at, assignment.profile, "plan.submit",
+                _detail(assignment.id, "submitted"),
+                run=assignment.run_id, task=None, prof=assignment.profile)
+
+    for attempt in attempts:
+        run = None
+        if attempt.revision_id is not None:
+            run = rev_run.get(attempt.revision_id)
+        if run is None:
+            run = _run_at(attempt.started_at or attempt.ended_at, runs)
+        label = attempt.task_id or attempt.assignment_id or "-"
+        if attempt.started_at:
+            add(attempt.started_at, attempt.profile, "attempt.start",
+                _detail(attempt.role, label),
+                run=run, task=attempt.task_id, prof=attempt.profile)
+        if attempt.ended_at:
+            add(attempt.ended_at, attempt.profile, "attempt.end",
+                _detail(attempt.role, label, attempt.result or "-"),
+                run=run, task=attempt.task_id, prof=attempt.profile)
+
+    for decision in store.routing_decisions_all():
+        attempt = attempts_by_id.get(decision.attempt_id) if decision.attempt_id else None
+        if attempt is not None and attempt.revision_id is not None:
+            run = rev_run.get(attempt.revision_id)
+        else:
+            run = _run_at(decision.created_at, runs)
+        task = attempt.task_id if attempt is not None else None
+        prof = attempt.profile if attempt is not None else decision.selected
+        add(decision.created_at, prof, "route",
+            _detail(decision.role, decision.selected or "-", decision.reason or ""),
+            run=run, task=task, prof=prof)
+
+    for event in store.task_events_all():
+        nearest = _nearest_attempt(event, attempts)
+        prof = nearest.profile if nearest is not None else None
+        actor = prof or "orx"
+        add(event.created_at, actor, event.event,
+            _detail(event.task_id, f"{event.from_status or '-'} -> {event.to_status}",
+                    event.reason or ""),
+            run=rev_run.get(event.revision_id), task=event.task_id, prof=prof)
+
+    for verification in store.verifications_all():
+        attempt = attempts_by_id.get(verification.attempt_id) if verification.attempt_id else None
+        prof = attempt.profile if attempt is not None else None
+        outcome = "verify.pass" if verification.passed else "verify.fail"
+        add(verification.created_at, prof, outcome,
+            _detail(verification.task_id, verification.command),
+            run=rev_run.get(verification.revision_id), task=verification.task_id, prof=prof)
+
+    selected = []
+    for entry in raw:
+        if run_id is not None and entry["_run"] != run_id:
+            continue
+        if task_id is not None and entry["_task"] != task_id:
+            continue
+        if profile is not None and entry["_profile"] != profile:
+            continue
+        selected.append(entry)
+
+    selected.sort(key=lambda entry: (_ts_key(entry["ts"]), entry["_seq"]))
+    if limit is not None:
+        selected = selected[-limit:]
+
+    entries = [
+        {"ts": entry["ts"], "actor": entry["actor"], "event": entry["event"], "detail": entry["detail"]}
+        for entry in selected
+    ]
+    return {"entries": entries, "count": len(entries)}
