@@ -1,0 +1,39 @@
+# ORX reference radar — watched upstream projects and the areas we learn
+# from. Repo engineering process only; never a runtime dependency.
+# (docs/m1-plan.md P7; reviewed at each milestone.)
+
+[[projects]]
+repo = "astral-sh/uv"
+areas = ["install", "update", "config", "cli-ux"]
+
+[[projects]]
+repo = "cli/cli"
+areas = ["auth", "config", "json-output", "extensions", "multi-account"]
+
+[[projects]]
+repo = "openai/codex"
+areas = ["agent-cli", "config-layering", "model-discovery", "effort"]
+
+[[projects]]
+repo = "anomalyco/opencode"
+areas = ["profiles", "providers", "auth", "skills"]
+
+[[projects]]
+repo = "google-gemni/gemini-cli"  # corrected at next review if moved
+areas = ["usage-observation", "quota"]
+
+[[projects]]
+repo = "BerriAI/litellm"
+areas = ["retry", "fallback", "cooldown", "usage"]
+
+[[projects]]
+repo = "apache/airflow"
+areas = ["task-history", "attempts", "timeline", "recovery"]
+
+[[projects]]
+repo = "n8n-io/n8n"
+areas = ["triggers", "external-events", "execution-history"]
+
+[[projects]]
+repo = "OpenHands/OpenHands"
+areas = ["automation", "dispatch", "webhooks"]

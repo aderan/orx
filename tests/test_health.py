@@ -177,3 +177,115 @@ command_timeout_sec = 30
         assert started["status"] == "passed"
     finally:
         project.close()
+
+
+def test_backoff_grows_with_streak_and_caps(tmp_path, monkeypatch):
+    import time
+    from datetime import datetime, timedelta, timezone
+    from orx.health import cooldown_until, record_attempt_outcome
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-worker",))
+    try:
+        import time
+        windows = []
+        for i in range(1, 8):
+            before = datetime.now(timezone.utc)
+            until = datetime.fromisoformat(cooldown_until(i))
+            windows.append((until - before).total_seconds())
+        # exponential growth with the 2**5 cap: window(7) ~= window(6) (capped)
+        assert windows[1] > windows[0]              # 2x streak 1
+        assert abs(windows[-1] - windows[-2]) < 90  # capped at 2**5, jitter only
+        base_cap = 60 * 2**5 + 30
+        assert windows[-1] <= base_cap
+        # success clears cooldown fields
+        record_attempt_outcome(store, "host-worker", ok=False, error_kind="rate_limited")
+        assert store.resource_row("host-worker").cooldown_until is not None
+        record_attempt_outcome(store, "host-worker", ok=True)
+        assert store.resource_row("host-worker").cooldown_until is None
+    finally:
+        project.close()
+
+
+def test_quota_records_reset_when_known(tmp_path, monkeypatch):
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-worker",))
+    try:
+        health.record_attempt_outcome(store, "host-worker", ok=False,
+                                      error_kind="quota_exhausted",
+                                      quota_reset_at="2099-01-01T00:00:00+00:00")
+        row = store.resource_row("host-worker")
+        assert row.status == "exhausted" and row.quota_reset_at == "2099-01-01T00:00:00+00:00"
+    finally:
+        project.close()
+
+
+def test_error_kinds_each_drive_expected_status(tmp_path, monkeypatch):
+    """Parametrized truth table: kind -> resulting status (or None = never gates)."""
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-worker",))
+    expectations = {
+        "auth_required": "auth_required",
+        "quota_exhausted": "exhausted",
+        "rate_limited": "cooldown",
+        "model_unavailable": None,
+        "context_exceeded": None,
+        "invalid_request": None,
+        "process_failure": None,
+        "cancelled": None,
+    }
+    try:
+        for kind, expected in expectations.items():
+            store.resource_set("host-worker", ResourceStatus.UNKNOWN)
+            store.resource_clear("host-worker")
+            health.record_attempt_outcome(store, "host-worker", ok=False, error_kind=kind)
+            status = store.resource_row("host-worker").status
+            if expected is None:
+                assert status not in ("cooldown", "auth_required", "exhausted"), kind
+            else:
+                assert status == expected, kind
+            assert store.resource_row("host-worker").last_failure_at is not None
+    finally:
+        project.close()
+
+
+def test_planner_failure_learns_health_too(tmp_path, monkeypatch):
+    """The health hook is on every launch path, planner included."""
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-planner",))
+    try:
+        from orx.adapters.base import classify_failure
+
+        class FakeResult:
+            exit_code = 1
+            stdout = ""
+            stderr = "Error: Not logged in"
+
+        assert classify_failure(FakeResult()) == "auth_required"
+        health.record_attempt_outcome(store, "host-planner", ok=False,
+                                      error_kind=classify_failure(FakeResult()))
+        assert store.resource_row("host-planner").status == "auth_required"
+    finally:
+        project.close()
+
+
+def test_success_after_auth_required_recovers(tmp_path, monkeypatch):
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-worker",))
+    try:
+        health.record_attempt_outcome(store, "host-worker", ok=False, error_kind="auth_required")
+        assert store.resource_row("host-worker").status == "auth_required"
+        # operator re-login + a successful run must clear the gate
+        health.record_attempt_outcome(store, "host-worker", ok=True)
+        assert store.resource_row("host-worker").status == "available"
+    finally:
+        project.close()
+
+
+def test_cooldown_expiry_exact_boundary(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("host-worker",))
+    try:
+        from orx import health as health_mod
+        row_now = (datetime.now(timezone.utc)).isoformat()
+        # exactly now -> not active (retry time reached)
+        store.seed_resources(["host-worker"])
+        store.resource_learn("host-worker", status="cooldown",
+                             cooldown_until=datetime.now(timezone.utc).isoformat())
+        assert health_mod.cooldown_active(store.resource_row("host-worker")) is False
+    finally:
+        project.close()

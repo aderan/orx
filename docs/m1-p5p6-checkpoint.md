@@ -56,3 +56,15 @@ p6-inbox, merged here with its migration renumbered v3->v4).
 
 Items 2–7 **passed**. Item 1 partial (298 of 320+ target). P7 (completion,
 help audit, reference-radar, m1-report, final regression) remains.
+
+## Audit remediation (two rounds, both auditor findings correct)
+
+1. First fail: the merge was uncommitted (MERGE_HEAD open) — concluded with
+   commit acc02e4, retried.
+2. Second fail: checklist item 6 needed real-run codex evidence. The P7
+   replan ran through codex-frontier (paid): usage_observations now holds
+   its exact row (in 362813 / out 5261 / cached 305664). Aggregation
+   semantics refined while fixing: partial coverage is `estimated` (real
+   but partial sums), not `unknown` — pre-v3 attempts without observations
+   no longer discard observed data. `orx usage` now shows every CLI profile
+   with live token sums; orx-host stays honestly unknown.

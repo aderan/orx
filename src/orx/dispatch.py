@@ -1756,17 +1756,21 @@ def _token_sum(rows: list, key: str) -> int | None:
 
 
 def _accuracy_label(attempts: list, rows: list) -> str:
-    """Worst stored label. A gap (an attempt with no observation) is unknown.
+    """Coverage-aware label. All attempts covered and all rows exact -> exact;
+    SOME attempts covered -> estimated (the token sums are real but partial —
+    pre-v3 history and shell runs record nothing); no rows at all -> unknown.
 
-    Unknown is a legal result: shell runs and truncated streams record no tokens.
+    Unknown is a legal result: shell runs and truncated streams record no
+    tokens. A missing observation never zero-fills or discards observed sums.
     """
     if not rows:
         return "unknown"
     covered = {row["attempt_id"] for row in rows}
-    if any(attempt.id not in covered for attempt in attempts):
-        return "unknown"
     labels = [row["accuracy"] for row in rows]
-    return max(labels, key=lambda label: _ACCURACY_RANK.get(label, 2))
+    worst = max(labels, key=lambda label: _ACCURACY_RANK.get(label, 2))
+    if any(attempt.id not in covered for attempt in attempts):
+        return "estimated" if worst != "unknown" else "unknown"
+    return worst
 
 
 def _usage_entry(name: str, attempts: list, rows: list) -> dict:

@@ -900,6 +900,34 @@ def resource_clear(
         typer.echo(f"{result['profile']}: auto-learning re-enabled")
 
 
+@app.command()
+@handle_errors
+def completion(
+    shell: str = typer.Argument(..., help="zsh | bash | fish"),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Emit a shell completion script for the orx command tree.
+
+    Usage: eval "$(orx completion zsh)". The script drives the hidden
+    _ORX_COMPLETE protocol; no project required; exit 0 on success, 1 when
+    the shell name is unknown, 2 on usage errors.
+    """
+    # typer >= 0.27 ships its own completion script generator
+    try:
+        from typer._completion_shared import get_completion_script
+        script = get_completion_script(prog_name="orx",
+                                       complete_var="_ORX_COMPLETE", shell=shell)
+    except ImportError:  # pragma: no cover - older typer
+        from click.shell_completion import get_completion_class
+        comp_cls = get_completion_class(shell)
+        comp = comp_cls(cli=app, ctx_args={}, prog_name="orx", complete_var="_ORX_COMPLETE")
+        script = comp.source()
+    if json_out:
+        _ok(True, shell=shell, script=script)
+    else:
+        typer.echo(script)
+
+
 # ---------------------------------------------------------------------------
 # Skills / update
 

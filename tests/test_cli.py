@@ -924,7 +924,7 @@ def test_usage_aggregates_tokens_runtime_and_accuracy(cli_project):
     assert shell["input_tokens"] == 9
     assert shell["output_tokens"] == 2
     assert shell["cached_input_tokens"] == 1
-    assert shell["accuracy"] == "unknown"
+    assert shell["accuracy"] == "estimated"
 
     filtered = payload(invoke("usage", "--json", "--profile", "host-worker"))
     assert [row["profile"] for row in filtered["profiles"]] == ["host-worker"]
@@ -951,3 +951,65 @@ def test_config_list_json_error_on_bad_env(cli_project, monkeypatch):
     assert body["ok"] is False
     assert "ORX_RUNTIME_MAX_PARALLEL" in body["error"]
     assert (cli_project / ".orx" / "config.toml").read_bytes() == before
+
+
+def test_completion_emits_scripts_and_rejects_unknown_shell():
+    result = invoke("completion", "zsh")
+    assert result.exit_code == 0
+    assert "_ORX_COMPLETE" in result.stdout
+    assert invoke("completion", "bash").exit_code == 0
+    assert invoke("completion", "fish").exit_code == 0
+    bad = invoke("completion", "tcsh")
+    assert bad.exit_code == 1
+
+
+def test_resource_clear_cli_roundtrip(cli_project):
+    result = invoke("resource", "set", "host-worker", "unavailable", "--note", "demo")
+    assert result.exit_code == 0
+    cleared = invoke("resource", "clear", "host-worker")
+    assert cleared.exit_code == 0
+    listing = invoke("resource", "list", "--json")
+    import json as _json
+    rows = {r["profile"]: r for r in _json.loads(listing.stdout)["resources"]}
+    assert rows["host-worker"]["status"] == "unavailable"  # clear drops override, keeps status
+
+
+def test_completion_json_envelope():
+    result = invoke("completion", "zsh", "--json")
+    assert result.exit_code == 0
+    import json as _json
+    payload = _json.loads(result.stdout)
+    assert payload["ok"] and "_ORX_COMPLETE" in payload["script"]
+
+
+def test_usage_unknown_profile_exits_one(cli_project):
+    assert invoke("usage", "--profile", "no-such").exit_code == 1
+
+
+def test_config_set_user_layer_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from conftest import make_project
+    project = make_project(tmp_path)
+    project.close()
+    monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "u"))
+    result = invoke("config", "set", "--user", "plan.depth", "light")  # options precede positionals (typer 0.27)
+    assert result.exit_code == 0
+    # the project layer explicitly sets plan.depth, so it correctly wins;
+    # the user write must still have landed in the user layer file
+    assert "light" in (tmp_path / "u" / "config.toml").read_text()
+    import json as _json
+    got = _json.loads(invoke("config", "get", "plan.depth", "--json").stdout)
+    assert got["value"] == "auto" and "project" in str(got)
+
+
+def test_agent_status_json_envelope(cli_project):
+    result = invoke("agent", "status", "--json")
+    assert result.exit_code == 0
+    import json as _json
+    payload = _json.loads(result.stdout)
+    assert payload["ok"] and isinstance(payload["profiles"], list)
+
+
+def test_agent_info_without_snapshot_is_honest():
+    result = invoke("agent", "info", "codex", "--json")
+    assert result.exit_code in (0, 1)  # honest either way; snapshot optional

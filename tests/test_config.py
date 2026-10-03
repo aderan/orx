@@ -568,3 +568,30 @@ def test_migrate_profiles_preserves_resource_identity(tmp_path, monkeypatch):
             project.close()
         except Exception:
             pass
+
+
+def test_env_layer_overrides_user_and_project(tmp_path, monkeypatch):
+    uc, up = _write_user_layer(tmp_path, config_toml='schema_version = 1\n[runtime]\nmax_parallel = 4\n')
+    pc, pp = _project_files(tmp_path)
+    (pc).write_text((pc).read_text() + "[runtime]\nmax_parallel = 2\n")
+    monkeypatch.setenv("ORX_RUNTIME_MAX_PARALLEL", "5")
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.max_parallel == 5
+    assert eff.origins["runtime.max_parallel"] == "env"
+
+
+def test_routing_section_list_types_validated(tmp_path):
+    pc, pp = _project_files(tmp_path)
+    (pc).write_text((pc).read_text() + '[worker]\nprofiles = "not-a-list"\n')
+    with pytest.raises(ConfigError):
+        load_effective(pc, pp, user_config=tmp_path / "n" / "c.toml",
+                       user_profiles=tmp_path / "n" / "p.toml")
+
+
+def test_user_layer_profiles_validate_like_project(tmp_path):
+    uc, up = _write_user_layer(
+        tmp_path, profiles_toml='schema_version = 1\n[profiles.bad]\ndriver = "warp"\n')
+    pc, pp = _project_files(tmp_path)
+    with pytest.raises(ConfigError) as exc:
+        load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert any("user" in m for m in exc.value.messages)

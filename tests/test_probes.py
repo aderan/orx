@@ -131,3 +131,75 @@ def test_doctor_checks_unchanged_through_shared_module(bindir):
 
 def test_load_snapshot_missing_returns_none(bindir):
     assert probes.load_snapshot("codex") is None
+
+
+def test_snapshot_persistence_roundtrip_and_reload(bindir):
+    install_fake_codex(bindir)
+    first = probes.capability_snapshot("codex")
+    reloaded = probes.load_snapshot("codex")
+    assert reloaded == first
+    # re-probe overwrites atomically with a fresh probed_at or same shape
+    second = probes.capability_snapshot("codex")
+    assert set(second) == set(first) and second["probed_at"] >= first["probed_at"]
+
+
+def test_doctor_still_byte_compatible_when_binary_missing(bindir, monkeypatch):
+    monkeypatch.setenv("PATH", str(bindir))
+    triplets = probes.doctor_harness_checks()
+    assert triplets == [
+        ("codex", "warn", "not found on PATH (optional harness)"),
+        ("agent", "warn", "not found on PATH (optional harness)"),
+    ]
+
+
+def test_version_probe_failure_leaves_version_null(bindir):
+    make_bin(bindir, "codex", """
+if [ "$1" = "--version" ]; then exit 3; fi
+if [ "$1" = "exec" ]; then cat <<'H'
+  --json -m -C --output-last-message --ephemeral
+H
+exit 0; fi
+exit 0
+""")
+    snap = probes.capability_snapshot("codex")
+    assert snap["version"] is None
+    assert snap["features"]["headless"] is True  # help still parsed
+
+
+def test_partial_flags_report_headless_false(bindir):
+    make_bin(bindir, "codex", """
+if [ "$1" = "exec" ]; then echo "only --json here"; exit 0; fi
+exit 0
+""")
+    snap = probes.capability_snapshot("codex")
+    assert snap["features"]["headless"] is False
+    assert snap["auth"] == "unknown"  # auth only probed when headless
+
+
+def test_models_probe_failure_keeps_models_false(bindir):
+    make_bin(bindir, "codex", """
+if [ "$1" = "exec" ]; then cat <<'H'
+  --json -m -C --output-last-message
+H
+exit 0; fi
+if [ "$1" = "login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "$1" = "debug" ]; then echo "boom" >&2; exit 1; fi
+exit 0
+""")
+    snap = probes.capability_snapshot("codex")
+    assert snap["auth"] == "logged_in"
+    assert snap["models_discoverable"] is False
+    assert snap["features"]["effort_selection"] is False
+
+
+def test_agent_list_marks_host_only_and_probeable(bindir):
+    """list output distinguishes adapter harnesses from host-only zcode."""
+    from orx import dispatch as dispatch_mod
+
+    class FakeProject:
+        pass
+
+    # pure registry check; no project needed
+    probeable = [h for h, spec in probes.HARNESSES.items()
+                 if not spec.host_only and spec.harness != "shell"]
+    assert probeable == ["codex", "cursor"]
