@@ -21,7 +21,10 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 2
+CODE_SCHEMA_VERSION = 3
+
+INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
+INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
 
 
 def now() -> str:
@@ -233,10 +236,47 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+# v3: inbox + external sources. Additive only — existing tables and rows are
+# untouched, so the migration is a pure CREATE TABLE pass.
+SCHEMA_V3_INBOX = """
+CREATE TABLE external_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  UNIQUE(source, external_id)
+);
+
+CREATE TABLE inbox_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES external_events(id),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected','dismissed')),
+  goal_id TEXT NULL,
+  created_at TEXT NOT NULL,
+  decided_at TEXT NULL
+);
+"""
+
+
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V3_INBOX)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
     2: _migrate_v2,
+    3: _migrate_v3,
 }
 
 
@@ -1245,3 +1285,107 @@ class Store:
                     " VALUES(?, 'unknown', '', ?)",
                     (name, now()),
                 )
+
+    # -- inbox / external events -------------------------------------------------
+
+    def external_event_find(self, source: str, external_id: str) -> int | None:
+        """Row id of (source, external_id), or None when never fetched."""
+        row = self.conn.execute(
+            "SELECT id FROM external_events WHERE source = ? AND external_id = ?",
+            (source, external_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def external_event_add(self, source: str, external_id: str, kind: str, payload: dict) -> int:
+        """INSERT OR IGNORE-style dedupe: when (source, external_id) already
+        exists the existing row id is returned and the row is never rewritten
+        (the first fetch's payload and fetched_at stay authoritative)."""
+        with self.tx():
+            self.conn.execute(
+                "INSERT OR IGNORE INTO external_events(source, external_id, kind,"
+                " payload_json, fetched_at) VALUES(?,?,?,?,?)",
+                (source, external_id, kind, json.dumps(payload), now()),
+            )
+            row = self.conn.execute(
+                "SELECT id FROM external_events WHERE source = ? AND external_id = ?",
+                (source, external_id),
+            ).fetchone()
+        return row["id"]
+
+    def _inbox_row(self, r: sqlite3.Row) -> dict:
+        event = self.conn.execute(
+            "SELECT source, external_id, kind FROM external_events WHERE id = ?",
+            (r["event_id"],),
+        ).fetchone()
+        return {
+            "id": r["id"],
+            "event_id": r["event_id"],
+            "source": event["source"] if event else None,
+            "external_id": event["external_id"] if event else None,
+            "kind": event["kind"] if event else None,
+            "title": r["title"],
+            "body": r["body"],
+            "url": r["url"],
+            "status": r["status"],
+            "goal_id": r["goal_id"],
+            "created_at": r["created_at"],
+            "decided_at": r["decided_at"],
+        }
+
+    def inbox_add(self, event_id: int, title: str, body: str = "", url: str = "") -> int:
+        """Create the pending inbox item for an event. At most one item exists
+        per event: when one already exists its id is returned unchanged."""
+        with self.tx():
+            row = self.conn.execute(
+                "SELECT id FROM inbox_items WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            if row is not None:
+                return row["id"]
+            cur = self.conn.execute(
+                "INSERT INTO inbox_items(event_id, title, body, url, status, created_at)"
+                " VALUES(?,?,?,?,'pending',?)",
+                (event_id, title, body, url, now()),
+            )
+            return cur.lastrowid
+
+    def inbox_items(self, status: str | None = None) -> list[dict]:
+        """Inbox rows joined with their event source, oldest first.
+        status filters to one of pending|accepted|rejected|dismissed."""
+        if status is not None and status not in INBOX_ITEM_STATUSES:
+            raise records.ORXError(
+                f"invalid inbox status {status!r}"
+                f" (expected {' | '.join(INBOX_ITEM_STATUSES)})"
+            )
+        if status is None:
+            rows = self.conn.execute("SELECT * FROM inbox_items ORDER BY id").fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM inbox_items WHERE status = ? ORDER BY id", (status,)
+            ).fetchall()
+        return [self._inbox_row(r) for r in rows]
+
+    def inbox_item_get(self, item_id: int) -> dict:
+        r = self.conn.execute(
+            "SELECT * FROM inbox_items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if not r:
+            raise records.NotFoundError(f"inbox item {item_id} not found")
+        return self._inbox_row(r)
+
+    def inbox_decide(self, item_id: int, status: str, goal_id: str | None = None) -> dict:
+        """Move a pending item to accepted/rejected/dismissed, optionally
+        linking the Goal an acceptance created."""
+        if status not in INBOX_DECIDED_STATUSES:
+            raise records.ORXError(
+                f"invalid inbox decision {status!r}"
+                f" (expected {' | '.join(INBOX_DECIDED_STATUSES)})"
+            )
+        with self.tx():
+            cur = self.conn.execute(
+                "UPDATE inbox_items SET status = ?, goal_id = ?, decided_at = ?"
+                " WHERE id = ?",
+                (status, goal_id, now(), item_id),
+            )
+            if cur.rowcount == 0:
+                raise records.NotFoundError(f"inbox item {item_id} not found")
+        return self.inbox_item_get(item_id)

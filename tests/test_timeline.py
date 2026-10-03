@@ -31,6 +31,8 @@ SCHEMA_TABLES = {
     "verifications",
     "routing_decisions",
     "resource_status",
+    "external_events",
+    "inbox_items",
 }
 
 
