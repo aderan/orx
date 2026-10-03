@@ -1,7 +1,13 @@
 # ORX
 
-ORX orchestrates host and CLI coding agents against a single authoritative
-plan. SQLite is the state authority; TOML holds only static configuration.
+ORX controls agent scheduling to carry out a Goal: it validates plans, routes
+assignments, records execution, and coordinates verification. The host
+Controller drives the loop; agents plan, perform the work, and judge results.
+SQLite is the state authority; TOML holds only static configuration.
+
+The product boundary is the Goal execution control layer. See
+[职责与边界](docs/responsibilities.md) for what ORX executes, delegates, and
+excludes, and [CONTEXT.md](CONTEXT.md) for the shared domain vocabulary.
 
 **M0 is complete.** The CLI drives the full lifecycle — Goal → Plan →
 Tasks (host, CLI, or external) → verification → Done — and the adapters
@@ -167,6 +173,9 @@ orx update --check  # install source + upgrade path (uv tool installs only)
 
 ## Docs
 
+- [职责与边界](docs/responsibilities.md) — responsibility baseline, scope
+  decisions, and current implementation limits
+- [CONTEXT.md](CONTEXT.md) — Goal, Run, Task, agent roles, and related terms
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
