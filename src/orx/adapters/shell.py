@@ -87,7 +87,7 @@ class ShellAdapter:
         return self._launch(root=root, scratch=scratch, profile=profile, prompt=prompt, timeout=timeout)
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
-        requested = launch.planned_effort.requested if launch.planned_effort else "standard"
+        requested = launch.planned_effort.requested if launch.planned_effort else "medium"
         reported = scan_marker(run_result.stdout, "ORX_ACTUAL_EFFORT")
         if reported:
             return EffortOutcome(

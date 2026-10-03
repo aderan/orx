@@ -88,9 +88,10 @@ class ModelClass(str, Enum):
 
 
 class Effort(str, Enum):
-    QUICK = "quick"
-    STANDARD = "standard"
-    DEEP = "deep"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
     MAX = "max"
 
 

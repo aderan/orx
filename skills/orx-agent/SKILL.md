@@ -36,6 +36,9 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 ## If the assignment is a VERIFICATION
 
 - Verify only the instruction you were given.
+- You are an independent judge: judge against the acceptance criteria as
+  written — never relax or reinterpret them to make a pass happen. You do not
+  fix the work; you report it.
 - Print exactly two final lines, nothing after them:
   `ORX_REASON=<what you checked; for a fail, what is missing>` then
   `ORX_VERDICT=pass` or `ORX_VERDICT=fail`.
@@ -45,4 +48,5 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 ## If your harness can report effort
 
 Print a line `ORX_ACTUAL_EFFORT=<level>` in your output so the attempt record
-shows the real level instead of `provider_default`.
+shows the real level instead of `provider_default`. Levels are
+`low | medium | high | xhigh | max`.

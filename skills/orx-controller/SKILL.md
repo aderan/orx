@@ -42,6 +42,22 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
 { "summary": "", "commands": [], "artifacts": [] }
 ```
 
+## Escalation & acceptance (routing strategy: docs/routing-strategy.md)
+
+- Default posture is operational, not strategic: read state, pick the next
+  step, dispatch. Deep deliberation is for planners and repeated failures.
+- Build fails once → retry with feedback (same plan, same rung).
+- Same acceptance criterion fails twice → escalate one rung of the worker
+  ladder (`cursor-strong` → `cursor-strong-high` → frontier profiles) by
+  pinning the stronger profile for that retry.
+- Plan/verification disagreement, scope drift, or a wrong dependency graph →
+  `orx replan`, not another retry.
+- Effort ladder on the host (GLM) already runs at `max`; escalate by moving
+  work to a stronger class, not by thinking harder about state transitions.
+- Accept a run as Done only with all three: acceptance criteria met,
+  evidence files complete, verifications passed (`orx status --json` is the
+  arbiter).
+
 ## Hard rules
 
 - One active plan revision controls the run; ignore cancelled tasks from old

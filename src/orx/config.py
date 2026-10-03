@@ -30,7 +30,7 @@ SCHEMA_VERSION = 1
 VALID_DRIVERS = "host | cli | external"
 VALID_HARNESSES = "zcode | codex | cursor | shell"
 VALID_CLASSES = "frontier | strong | economy"
-VALID_EFFORTS = "quick | standard | deep | max"
+VALID_EFFORTS = "low | medium | high | xhigh | max"
 VALID_TRANSPORTS = "stdin | argument | file"
 VALID_DEPTHS = "light | standard | deep"
 

@@ -156,7 +156,7 @@ class CodexAdapter:
                                         prompt=prompt, timeout=timeout)
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
-        planned = launch.planned_effort or EffortOutcome(requested="standard")
+        planned = launch.planned_effort or EffortOutcome(requested="medium")
         for line in run_result.stdout.splitlines():
             line = line.strip()
             if not line.startswith("{"):

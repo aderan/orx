@@ -95,7 +95,7 @@ executable = "fake-planner"
 prompt_transport = "stdin"
 model = "fake"
 class = "strong"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 
 [profiles.shell-worker]
@@ -105,7 +105,7 @@ executable = "fake-worker"
 prompt_transport = "stdin"
 model = "fake"
 class = "strong"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 
 [profiles.shell-verifier]
@@ -115,7 +115,7 @@ executable = "fake-verifier"
 prompt_transport = "stdin"
 model = "fake"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 """ + profiles_extra
     monkeypatch.chdir(tmp_path)
@@ -158,7 +158,7 @@ args = ["{prompt}"]
 prompt_transport = "argument"
 model = "fake"
 class = "strong"
-effort = "quick"
+effort = "low"
 capabilities = ["coding"]
 """,
         config_replacements=(('profiles = ["shell-worker"]',
@@ -188,7 +188,7 @@ args = ["--prompt-file", "{prompt_file}"]
 prompt_transport = "file"
 model = "fake"
 class = "strong"
-effort = "quick"
+effort = "low"
 capabilities = ["coding"]
 """,
         config_replacements=(('profiles = ["shell-worker"]',
@@ -377,7 +377,7 @@ driver = "cli"
 harness = "codex"
 model = "{model}"
 class = "frontier"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 """
     replacements = []
@@ -403,7 +403,7 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         profile = Profile(
             name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
             model="fake-codex-model", model_class=ModelClass.FRONTIER,
-            effort=Effort.DEEP, capabilities=("coding",),
+            effort=Effort.HIGH, capabilities=("coding",),
         )
         scratch = tmp_path / "scratch"
         launch = adapter.build_worker_launch(
@@ -418,7 +418,7 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         assert "--ephemeral" in argv
         assert argv[-1] == "DO THE WORK"  # prompt positional
         assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-        # deep -> high is supported by fake-codex-model: effort flag present
+        # mapped level high is supported by fake-codex-model: effort flag present
         effort_index = argv.index("-c")
         assert argv[effort_index + 1] == "model_reasoning_effort=high"
     finally:
@@ -434,7 +434,7 @@ def test_codex_effort_flag_omitted_when_unsupported(tmp_path, bindir, monkeypatc
     profile = Profile(
         name="codex-limited", driver=Driver.CLI, harness=Harness.CODEX,
         model="limited-model", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),  # deep->high not supported
+        effort=Effort.HIGH, capabilities=("coding",),  # mapped high not in catalog
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s2", profile=profile,
@@ -445,7 +445,7 @@ def test_codex_effort_flag_omitted_when_unsupported(tmp_path, bindir, monkeypatc
     unknown = Profile(
         name="codex-unknown", driver=Driver.CLI, harness=Harness.CODEX,
         model="not-in-catalog", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),
+        effort=Effort.HIGH, capabilities=("coding",),
     )
     launch2 = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s3", profile=unknown,
@@ -488,7 +488,7 @@ def test_cli_launches_never_inherit_stdin(tmp_path, bindir, monkeypatch):
     profile = Profile(
         name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
         model="fake-codex-model", model_class=ModelClass.FRONTIER,
-        effort=Effort.STANDARD, capabilities=("coding",),
+        effort=Effort.MEDIUM, capabilities=("coding",),
     )
     worker = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s1", profile=profile,
@@ -502,7 +502,7 @@ def test_cli_launches_never_inherit_stdin(tmp_path, bindir, monkeypatch):
     cursor_profile = Profile(
         name="cursor-x", driver=Driver.CLI, harness=Harness.CURSOR,
         model="fake-cursor", model_class=ModelClass.FRONTIER,
-        effort=Effort.STANDARD, capabilities=("coding",),
+        effort=Effort.MEDIUM, capabilities=("coding",),
     )
     launch = cursor.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s2", profile=cursor_profile,
@@ -530,7 +530,7 @@ def test_codex_catalog_larger_than_stream_limit_still_validated(tmp_path, bindir
     profile = Profile(
         name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
         model="fake-codex-model", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),
+        effort=Effort.HIGH, capabilities=("coding",),
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s", profile=profile,
@@ -621,7 +621,7 @@ driver = "cli"
 harness = "cursor"
 model = "{model}"
 class = "frontier"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 force = {"true" if force else "false"}
 """
@@ -697,7 +697,7 @@ def test_cursor_worker_effort_validated_only_when_output_confirms(tmp_path, bind
 
 
 def test_effort_map_shared_definition():
-    assert EFFORT_MAP == {"quick": "low", "standard": "medium", "deep": "high", "max": "max"}
+    assert EFFORT_MAP == {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"}
 
 
 def test_codex_real_160_stream_reports_no_effort(tmp_path, bindir, monkeypatch):
@@ -724,7 +724,7 @@ def test_codex_real_160_stream_reports_no_effort(tmp_path, bindir, monkeypatch):
     profile = Profile(
         name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
         model="fake-codex-model", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),
+        effort=Effort.HIGH, capabilities=("coding",),
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s", profile=profile,
@@ -760,7 +760,7 @@ def test_cursor_listed_slug_variant_replaces_bracket(tmp_path, bindir, monkeypat
     profile = Profile(
         name="cursor-x", driver=Driver.CLI, harness=Harness.CURSOR,
         model="fake-cursor", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),  # deep -> high
+        effort=Effort.HIGH, capabilities=("coding",),  # high maps to -high slug
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s", profile=profile,
@@ -795,7 +795,7 @@ def test_cursor_listed_slug_without_variant_stays_bare(tmp_path, bindir, monkeyp
     profile = Profile(
         name="cursor-x", driver=Driver.CLI, harness=Harness.CURSOR,
         model="fake-cursor", model_class=ModelClass.FRONTIER,
-        effort=Effort.STANDARD, capabilities=("coding",),  # medium variant absent
+        effort=Effort.MEDIUM, capabilities=("coding",),  # medium variant absent
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s", profile=profile,
@@ -846,7 +846,7 @@ def test_cursor_suffixed_only_family_rewrites_variant(tmp_path, bindir, monkeypa
     profile = Profile(
         name="cursor-frontier", driver=Driver.CLI, harness=Harness.CURSOR,
         model="claude-opus-5-5", model_class=ModelClass.FRONTIER,
-        effort=Effort.DEEP, capabilities=("coding",),  # deep -> high
+        effort=Effort.HIGH, capabilities=("coding",),  # high maps to -high slug
     )
     launch = adapter.build_worker_launch(
         root=tmp_path, scratch=tmp_path / "s", profile=profile,
@@ -883,7 +883,7 @@ driver = "cli"
 harness = "cursor"
 model = "fake-cursor"
 class = "frontier"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 """,
         config_replacements=(('profiles = ["shell-verifier"]', 'profiles = ["cursor-verifier"]'),),

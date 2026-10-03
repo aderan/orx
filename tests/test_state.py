@@ -111,7 +111,7 @@ def test_foreign_keys_enforced(project, goal):
             driver="host",
             harness="zcode",
             model_id="m-worker",
-            requested_effort="standard",
+            requested_effort="medium",
         )
 
 
@@ -134,7 +134,7 @@ def test_attempt_effort_observability_roundtrip(project, goal):
         driver="cli",
         harness="shell",
         model_id="fake-model",
-        requested_effort="deep",
+        requested_effort="high",
         task_id="T001",
     )
     assert attempt.actual_effort is None and attempt.effort_source is None
@@ -143,7 +143,7 @@ def test_attempt_effort_observability_roundtrip(project, goal):
         ended_at="2026-10-03T00:00:00+00:00", result="completed",
     )
     stored = project.store.attempt_get(attempt.id)
-    assert stored.requested_effort == "deep"
+    assert stored.requested_effort == "high"
     assert stored.actual_effort == "high"
     assert stored.effort_source == "requested_validated"
 

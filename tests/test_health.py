@@ -134,7 +134,7 @@ executable = "ratey"
 prompt_transport = "argument"
 model = "m"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 
 [profiles.oksh]
@@ -144,7 +144,7 @@ executable = "oksh"
 prompt_transport = "argument"
 model = "m"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 """,
         config_toml="""schema_version = 1

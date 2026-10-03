@@ -378,5 +378,8 @@ Rules:
 - verification entries are either a shell command (run from the project root),
   'agent: <instruction>' for an agent verifier, or 'agent[vision]: <instruction>'
   when the verifier must see images or rendered UI.
+- order verification deterministic-first: lead with shell checks (compile,
+  tests, lint, fixtures); add agent checks only for what shell cannot prove,
+  and 'agent[vision]' only for rendered-UI acceptance.
 - do not modify the Goal text.
 """

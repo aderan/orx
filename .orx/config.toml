@@ -1,5 +1,10 @@
 schema_version = 1
 
+# Routing strategy (2026-10-03) — the executed form of docs/routing-strategy.md.
+# Tiers: frontier (codex/claude flagships) / strong (glm, grok, deepseek) /
+# economy (flash/compose). Effort: low|medium|high|xhigh|max.
+
+# Controller: strong + max (GLM host compensates class with max depth).
 [controller]
 profile = "orx-host"
 
@@ -7,22 +12,28 @@ profile = "orx-host"
 depth = "auto"
 allow_class_downgrade = false
 
+# light = trivial single-task plans stay on strong+medium; standard/deep run
+# the frontier pool at high effort (deep keeps the frontier-only gate).
 [plan.light]
 profiles = ["cursor-strong"]
 
 [plan.standard]
-profiles = ["codex-frontier"]
+profiles = ["codex-frontier", "cursor-frontier"]
 
 [plan.deep]
-profiles = ["codex-frontier"]
+profiles = ["codex-frontier", "cursor-frontier"]
 
-# user directive 2026-10-03: cursor-agent does the build execution,
-# codex-frontier stays primary for planning and is the build fallback.
+# Escalation ladder in list order: strong+medium -> strong+high -> host(strong)
+# -> frontier+high. user directive 2026-10-03: cursor-agent does the build
+# execution; codex-frontier stays primary for planning and is the build
+# fallback of last resort.
 [worker]
-profiles = ["cursor-strong", "codex-frontier", "orx-host"]
+profiles = ["cursor-strong", "cursor-strong-high", "orx-host", "cursor-frontier", "codex-frontier"]
 
+# V0 deterministic checks run as shell commands (no LLM). Agent checks:
+# economy+medium first (structural), strong fallback (semantic).
 [verify]
-profiles = ["cursor-economy", "orx-host"]
+profiles = ["cursor-economy", "cursor-strong", "orx-host"]
 
 [runtime]
 max_parallel = 1

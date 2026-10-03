@@ -176,6 +176,8 @@ orx update --check  # install source + upgrade path (uv tool installs only)
 - [职责与边界](docs/responsibilities.md) — responsibility baseline, scope
   decisions, and current implementation limits
 - [CONTEXT.md](CONTEXT.md) — Goal, Run, Task, agent roles, and related terms
+- [Routing strategy](docs/routing-strategy.md) — model tiering convention,
+  role × class × effort defaults, V0–V3 validation layers, escalation ladder
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)

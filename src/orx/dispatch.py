@@ -85,7 +85,7 @@ driver = "host"
 harness = "zcode"
 model = "unconfigured"
 class = "frontier"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 """
 
@@ -967,7 +967,7 @@ def task_complete(project: Project, task_id: str, evidence: str) -> dict:
             driver="host",
             harness="zcode",
             model_id="unknown",
-            requested_effort="standard",
+            requested_effort="medium",
             task_id=task.task_id,
         )
     store.evidence_add(attempt.id, "completion", str(evidence_path))

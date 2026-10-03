@@ -39,7 +39,7 @@ def test_invalid_profile_enums_rejected(tmp_path, field, value):
     _write(tmp_path, profiles=HOST_PROFILES_TOML.replace(
         {
             "class": 'class = "strong"',
-            "effort": 'effort = "deep"',
+            "effort": 'effort = "high"',
             "driver": 'driver = "host"',
         }[field], value, 1))
     with pytest.raises(ConfigError) as excinfo:
@@ -128,7 +128,7 @@ driver = "cli"
 harness = "cursor"
 model = "m-x[effort=high]"
 class = "strong"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 force = true
 """
@@ -177,7 +177,7 @@ def _project_files(tmp_path):
     (orx / "profiles.toml").write_text(
         'schema_version = 1\n[profiles.host-planner]\ndriver = "host"\n'
         'harness = "zcode"\nmodel = "m"\nclass = "strong"\n'
-        'effort = "deep"\ncapabilities = ["coding"]\n'
+        'effort = "high"\ncapabilities = ["coding"]\n'
     )
     return orx / "config.toml", orx / "profiles.toml"
 
@@ -189,7 +189,7 @@ def test_layered_project_over_user_scalars(tmp_path):
                     '[runtime]\ncommand_timeout_sec = 99\n',
         profiles_toml='schema_version = 1\n[profiles.user-planner]\ndriver = "host"\n'
                       'harness = "zcode"\nmodel = "u"\nclass = "strong"\n'
-                      'effort = "deep"\ncapabilities = ["coding"]\n',
+                      'effort = "high"\ncapabilities = ["coding"]\n',
     )
     pc, pp = _project_files(tmp_path)
     eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
@@ -209,9 +209,9 @@ def test_layered_user_fills_unset_sections(tmp_path):
                     '[worker]\nprofiles = ["user-worker"]\n',
         profiles_toml='schema_version = 1\n'
                       '[profiles.user-planner]\ndriver = "host"\nharness = "zcode"\n'
-                      'model = "u1"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+                      'model = "u1"\nclass = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
                       '[profiles.user-worker]\ndriver = "host"\nharness = "zcode"\n'
-                      'model = "u2"\nclass = "strong"\neffort = "standard"\ncapabilities = ["coding"]\n',
+                      'model = "u2"\nclass = "strong"\neffort = "medium"\ncapabilities = ["coding"]\n',
     )
     pc, pp = _project_files(tmp_path)
     eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
@@ -236,9 +236,9 @@ def test_layered_project_section_shadows_user_whole(tmp_path):
     )
     (orx / "profiles.toml").write_text(
         'schema_version = 1\n[profiles.p]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "m"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'model = "m"\nclass = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
         '[profiles.proj-worker]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "m2"\nclass = "strong"\neffort = "standard"\ncapabilities = ["coding"]\n'
+        'model = "m2"\nclass = "strong"\neffort = "medium"\ncapabilities = ["coding"]\n'
     )
     eff = load_effective(orx / "config.toml", orx / "profiles.toml",
                          user_config=uc, user_profiles=up)
@@ -251,14 +251,14 @@ def test_layered_same_name_profile_complete_replacement(tmp_path):
         tmp_path,
         profiles_toml='schema_version = 1\n[profiles.shared]\ndriver = "host"\n'
                       'harness = "zcode"\nmodel = "user-model"\nclass = "strong"\n'
-                      'effort = "deep"\ncapabilities = ["coding", "vision"]\n',
+                      'effort = "high"\ncapabilities = ["coding", "vision"]\n',
     )
     pc, pp = _project_files(tmp_path)
     # project redefines shared with different everything
     (pp).write_text((pp).read_text() +
                     '[profiles.shared]\ndriver = "host"\nharness = "zcode"\n'
                     'model = "proj-model"\nclass = "economy"\n'
-                    'effort = "quick"\ncapabilities = ["coding"]\n')
+                    'effort = "low"\ncapabilities = ["coding"]\n')
     eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
     assert eff.profile_origins["shared"] == "project"
     assert eff.profiles["shared"].model == "proj-model"
@@ -331,9 +331,9 @@ def test_open_project_routes_to_user_layer_profiles(tmp_path, monkeypatch):
     up.write_text(
         'schema_version = 1\n'
         '[profiles.user-planner]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "u1"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'model = "u1"\nclass = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
         '[profiles.user-worker]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "u2"\nclass = "strong"\neffort = "standard"\ncapabilities = ["coding"]\n'
+        'model = "u2"\nclass = "strong"\neffort = "medium"\ncapabilities = ["coding"]\n'
     )
     monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "userlayer"))
     project = make_project(
@@ -358,7 +358,7 @@ def test_doctor_reports_user_layer_and_effective_config(tmp_path, monkeypatch):
     uc, up = _user_layer_files(tmp_path)
     up.write_text(
         'schema_version = 1\n[profiles.extra]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "x"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'model = "x"\nclass = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
     )
     monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "userlayer"))
     dispatch.init_project(tmp_path)
@@ -494,9 +494,9 @@ def test_migrate_profiles_collision_safe_and_idempotent(tmp_path):
     project.write_text(
         'schema_version = 1\n'
         '[profiles.alpha]\ndriver = "host"\nharness = "zcode"\nmodel = "a"\n'
-        'class = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'class = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
         '[profiles.beta]\ndriver = "cli"\nharness = "codex"\nmodel = "b"\n'
-        'class = "frontier"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n'
     )
 
     # 1. fresh migration moves everything verbatim
@@ -518,7 +518,7 @@ def test_migrate_profiles_collision_safe_and_idempotent(tmp_path):
     project.write_text(
         'schema_version = 1\n'
         '[profiles.alpha]\ndriver = "host"\nharness = "zcode"\nmodel = "a"\n'
-        'class = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'class = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
     )
     report3 = migrate_profiles_to_user(project, user)
     assert report3["moved"] == ["alpha"] and report3["preserved"] == ["beta"]
@@ -528,7 +528,7 @@ def test_migrate_profiles_collision_safe_and_idempotent(tmp_path):
     project.write_text(
         'schema_version = 1\n'
         '[profiles.alpha]\ndriver = "cli"\nharness = "cursor"\nmodel = "CHANGED"\n'
-        'class = "frontier"\neffort = "deep"\ncapabilities = ["coding"]\n'
+        'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n'
     )
     before = user.read_text()
     with pytest.raises(ConfigError) as exc:
@@ -605,7 +605,7 @@ def test_doctor_profile_references_resolve_across_layers(tmp_path, monkeypatch):
     uc, up = _user_layer_files(tmp_path)
     up.write_text(
         'schema_version = 1\n[profiles.up-planner]\ndriver = "host"\nharness = "zcode"\n'
-        'model = "u"\nclass = "strong"\neffort = "deep"\ncapabilities = ["coding"]\n')
+        'model = "u"\nclass = "strong"\neffort = "high"\ncapabilities = ["coding"]\n')
     monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "userlayer"))
     dispatch.init_project(tmp_path)
     (tmp_path / ".orx" / "config.toml").write_text(

@@ -789,7 +789,7 @@ def test_agent_status_rows_health_and_marks_override(cli_project):
 
 def _seed_attempt(store, profile, task_id, started_at, ended_at):
     attempt = store.attempt_create(
-        None, "worker", profile, "cli", "codex", "m", "standard",
+        None, "worker", profile, "cli", "codex", "m", "medium",
         task_id=task_id, started=False,
     )
     store.attempt_update(attempt.id, started_at=started_at, ended_at=ended_at)

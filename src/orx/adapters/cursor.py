@@ -156,7 +156,7 @@ class CursorAdapter:
         return self._launch(root=root, profile=profile, prompt=prompt, timeout=timeout)
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
-        planned = launch.planned_effort or EffortOutcome(requested="standard")
+        planned = launch.planned_effort or EffortOutcome(requested="medium")
         if planned.source == EFFORT_SOURCE_REQUESTED_VALIDATED:
             bracketed = next(
                 (a for a in launch.argv if "[" in a and "effort=" in a), None

@@ -14,10 +14,14 @@ from typing import Protocol
 
 # ORX effort -> provider reasoning level (codex model_reasoning_effort,
 # cursor model bracket effort=). Defined once; adapters reference this.
+# The vocabularies currently coincide; the map stays as the seam so a
+# provider that diverges is a one-line change. Adapters validate the mapped
+# level against the provider catalog and fall back to provider_default.
 EFFORT_MAP: dict[str, str] = {
-    "quick": "low",
-    "standard": "medium",
-    "deep": "high",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
     "max": "max",
 }
 

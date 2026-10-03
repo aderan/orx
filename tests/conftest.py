@@ -24,7 +24,7 @@ driver = "host"
 harness = "zcode"
 model = "m-planner"
 class = "strong"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 
 [profiles.host-worker]
@@ -32,7 +32,7 @@ driver = "host"
 harness = "zcode"
 model = "m-worker"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 
 [profiles.host-frontier]
@@ -40,7 +40,7 @@ driver = "host"
 harness = "zcode"
 model = "m-frontier"
 class = "frontier"
-effort = "deep"
+effort = "high"
 capabilities = ["coding"]
 
 [profiles.host-external]
@@ -48,7 +48,7 @@ driver = "external"
 harness = "zcode"
 model = "m-ext"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 
 [profiles.host-verifier]
@@ -56,7 +56,7 @@ driver = "host"
 harness = "zcode"
 model = "m-verifier"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding"]
 
 [profiles.host-vision]
@@ -64,7 +64,7 @@ driver = "host"
 harness = "zcode"
 model = "m-vision"
 class = "strong"
-effort = "standard"
+effort = "medium"
 capabilities = ["coding", "vision"]
 
 [profiles.cli-fake]
@@ -74,7 +74,7 @@ executable = "true"
 prompt_transport = "stdin"
 model = "fake-model"
 class = "economy"
-effort = "quick"
+effort = "low"
 capabilities = ["coding"]
 """
 
