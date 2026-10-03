@@ -1,0 +1,51 @@
+---
+name: orx-controller
+description: Drive ORX runs as the host Controller — read status, launch subagents for host assignments, claim tasks, submit results, and land the run at done.
+---
+
+# ORX Controller
+
+You orchestrate an ORX run. ORX owns the state machine; you execute host work
+and keep the loop moving. Never edit `.orx/state.db` directly.
+
+## The loop
+
+1. Read `orx status --json` before acting. It is the only source of truth.
+2. Treat `mode = "host_required"` from `orx plan` (or an entry in
+   `host_required` from `orx run`) as your cue to launch a subagent — it is
+   never a failure.
+3. Pass the assignment `prompt` and `schema` through to the subagent
+   **unchanged**. Do not paraphrase the prompt or trim the schema.
+4. For a planning assignment: run the prompt in a subagent, have it produce
+   Plan IR JSON, save it to a file, then `orx plan submit --file plan.json`.
+   If validation returns `errors`, fix the plan per the errors and resubmit;
+   the assignment stays `waiting_host`.
+5. For a host task: `orx task claim <id>` FIRST, then do the work, then submit
+   the result. Claiming after working invites a conflict exit.
+6. When the work is done, write an evidence file and
+   `orx task complete <id> --evidence evidence.json`. Completion means
+   "execution finished", NOT "passed" — verification decides.
+7. When the work failed, `orx task fail <id> --reason "<why>"`.
+8. Retry (`orx task retry <id>`) for test failures, process crashes, or
+   incomplete implementations. Retry keeps the same plan.
+9. Replan (`orx replan`) only when an assumption or the dependency graph is
+   wrong. Replan is rejected while tasks are running or verifying.
+10. When any task is in `verifying`, run `orx verify`. Agent checks come back
+    to you as assignments; submit each verdict with
+    `orx verify submit <task> --result pass|fail [--entry '<exact entry>'] --evidence <file>`.
+11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
+    Not when output "looks finished".
+
+## Evidence file
+
+```json
+{ "summary": "", "commands": [], "artifacts": [] }
+```
+
+## Hard rules
+
+- One active plan revision controls the run; ignore cancelled tasks from old
+  revisions (`task claim` on them fails — that is correct).
+- Do not invent verification commands. Only the plan's list runs.
+- If routing fails (profile unavailable/exhausted, capability missing), fix
+  profiles.toml or `orx resource set` — do not bypass routing.

@@ -1,0 +1,196 @@
+"""Doctor: environment and project checks. No paid model calls, no agent
+sessions. A binary being found is never reported as "works"."""
+
+from __future__ import annotations
+
+import shutil
+import sqlite3
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from orx import __version__
+from orx.config import load_config, load_profiles, validate_references
+from orx.records import ConfigError
+from orx.state import CODE_SCHEMA_VERSION
+
+OK = "ok"
+WARN = "warn"
+FAIL = "fail"
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    state: str
+    detail: str = ""
+
+
+def _probe(argv: list[str], timeout: float = 10.0) -> tuple[int | None, str]:
+    """Run a local CLI probe. Returns (exit_code, combined output)."""
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout
+        )
+        return proc.returncode, (proc.stdout + "\n" + proc.stderr).strip()
+    except (subprocess.TimeoutExpired, OSError):
+        return None, ""
+
+
+def _check_harness(binary: str, required_flags: tuple[str, ...], help_argv: list[str],
+                   status_argv: list[str], logged_in_marker: str) -> list[Check]:
+    checks: list[Check] = []
+    path = shutil.which(binary)
+    if not path:
+        return [Check(binary, WARN, f"not found on PATH (optional harness)")]
+    code, help_text = _probe(help_argv)
+    missing = [f for f in required_flags if f not in help_text]
+    if code is None:
+        checks.append(Check(binary, WARN, "found; help probe timed out; operational probe not_run"))
+    elif missing:
+        checks.append(
+            Check(binary, WARN, f"found at {path}; help is missing {missing}; adapter would refuse (capability_mismatch)")
+        )
+    else:
+        code, status_text = _probe(status_argv)
+        if logged_in_marker.lower() in status_text.lower():
+            auth = "logged_in"
+        elif status_text:
+            auth = "not_logged_in"
+        else:
+            auth = "unknown"
+        checks.append(
+            Check(binary, OK, f"found at {path}; flags present; auth {auth}; operational probe not_run")
+        )
+    return checks
+
+
+def run_doctor(root: Path | None) -> dict:
+    checks: list[Check] = []
+
+    if sys.version_info >= (3, 12):
+        checks.append(Check("python", OK, f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"))
+    else:
+        checks.append(Check("python", FAIL, f"3.12 required, running {sys.version_info.major}.{sys.version_info.minor}"))
+
+    checks.append(Check("uv", OK if shutil.which("uv") else WARN,
+                        "on PATH" if shutil.which("uv") else "not on PATH (required for `orx update`)"))
+    checks.append(Check("git", OK if shutil.which("git") else WARN,
+                        "on PATH" if shutil.which("git") else "not on PATH"))
+
+    inside_repo = any(
+        (p / ".git").exists() for p in ((root or Path.cwd()), *(root or Path.cwd()).parents)
+    )
+    checks.append(Check("git_repo", OK if inside_repo else WARN,
+                        "inside a git repository" if inside_repo else "not inside a git repository"))
+
+    # Required flags mirror the adapter contracts exactly, so doctor never
+    # reports "ok" for a binary the adapter would reject with capability_mismatch.
+    checks.extend(_check_harness(
+        "codex",
+        ("--json", "-m", "-C", "--output-last-message"),
+        ["codex", "exec", "--help"],
+        ["codex", "login", "status"], "logged in",
+    ))
+    checks.extend(_check_harness(
+        "agent",
+        ("--print", "--output-format", "--workspace", "--trust", "--model"),
+        ["agent", "--help"],
+        ["agent", "status"], "logged in",
+    ))
+
+    if root is None:
+        checks.append(Check("project", FAIL, "no .orx/ found; run `orx init` here"))
+        checks.extend(_skill_checks())
+        return _summary(checks)
+
+    orx_dir = root / ".orx"
+    config_path = orx_dir / "config.toml"
+    profiles_path = orx_dir / "profiles.toml"
+    db_path = orx_dir / "state.db"
+
+    checks.append(Check("orx_dir", OK if orx_dir.is_dir() else FAIL,
+                        ".orx/ present" if orx_dir.is_dir() else ".orx/ missing"))
+
+    config = None
+    profiles: dict = {}
+    if config_path.exists():
+        try:
+            config = load_config(config_path)
+            warnings = list(config.warnings)
+            if config.max_parallel != 1:
+                warnings.append(f"max_parallel = {config.max_parallel}; M0 forces effective parallelism 1")
+            checks.append(Check("config", OK, "; ".join(warnings) or "valid"))
+        except ConfigError as exc:
+            checks.append(Check("config", FAIL, "; ".join(exc.messages)))
+    else:
+        checks.append(Check("config", FAIL, f"{config_path} missing"))
+
+    if profiles_path.exists():
+        try:
+            profiles = load_profiles(profiles_path)
+            checks.append(Check("profiles", OK, f"{len(profiles)} profile(s) defined"))
+        except ConfigError as exc:
+            checks.append(Check("profiles", FAIL, "; ".join(exc.messages)))
+    else:
+        checks.append(Check("profiles", FAIL, f"{profiles_path} missing"))
+
+    if config is not None and profiles is not None:
+        ref_errors = validate_references(config, profiles)
+        checks.append(Check("profile_references", OK if not ref_errors else FAIL,
+                            "all configured profiles exist" if not ref_errors else "; ".join(ref_errors)))
+        for name, profile in profiles.items():
+            if profile.harness.value == "shell":
+                found = bool(profile.executable and shutil.which(profile.executable))
+                checks.append(Check(f"shell:{name}", OK if found else WARN,
+                                    f"executable {profile.executable!r} found" if found
+                                    else f"executable {profile.executable!r} not found on PATH"))
+
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                checks.append(Check("state_db", FAIL, "no schema_version in meta"))
+            else:
+                version = int(row[0])
+                if version > CODE_SCHEMA_VERSION:
+                    checks.append(Check("state_db", FAIL,
+                                        f"schema version {version} newer than supported {CODE_SCHEMA_VERSION}"))
+                else:
+                    checks.append(Check("state_db", OK, f"schema_version {version}"))
+        except sqlite3.Error as exc:
+            checks.append(Check("state_db", FAIL, f"cannot open: {exc}"))
+    else:
+        checks.append(Check("state_db", FAIL, f"{db_path} missing"))
+
+    checks.extend(_skill_checks())
+
+    return _summary(checks)
+
+
+def _skill_checks() -> list[Check]:
+    home = Path.home()
+    checks: list[Check] = []
+    for skill in ("orx-controller", "orx-agent"):
+        target = home / ".agents" / "skills" / skill
+        checks.append(Check(f"skill:{skill}", OK,
+                            "installed" if target.exists() else "not installed (`orx skill install`)"))
+    return checks
+
+
+def _summary(checks: list[Check]) -> dict:
+    # Warnings (missing optional CLIs, no git repo) do not fail doctor;
+    # only failures (invalid config/state) do.
+    failures = sum(1 for c in checks if c.state == FAIL)
+    return {
+        "version": __version__,
+        "checks": [{"name": c.name, "state": c.state, "detail": c.detail} for c in checks],
+        "ok": failures == 0,
+        "failures": failures,
+        "warnings": sum(1 for c in checks if c.state == WARN),
+    }

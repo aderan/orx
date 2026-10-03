@@ -1,0 +1,1270 @@
+"""Orchestration: project discovery/init and the plan/run/task/verify flows.
+
+This module wires config + state + machine + routing + verify together. The
+CLI is a thin translation layer over these functions.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from orx import adapters, machine, plan as plan_mod, routing, runtime, verify
+from orx.adapters.base import scan_marker
+from orx.config import Config, Profile, load_project_config
+from orx.records import (
+    ACTIVE_EXECUTION_STATUSES,
+    AssignmentStatus,
+    ConflictError,
+    GoalStatus,
+    NotFoundError,
+    ORXError,
+    PlanDepth,
+    PlanValidationError,
+    ResourceStatus,
+    ReplanRejectedError,
+    Role,
+    RoutingError,
+    RunStatus,
+    TaskStatus,
+    UNFINISHED_TASK_STATUSES,
+)
+from orx.state import Assignment, Goal, Run, Revision, Store, TaskRow, now as db_now
+
+DEFAULT_CONFIG_TOML = """\
+schema_version = 1
+
+# Static definitions only. Runtime resource/quota state lives in SQLite
+# (.orx/state.db) and is managed with `orx resource set`; it never rewrites
+# these files or their ordering.
+
+[controller]
+profile = "orx-host"
+
+[plan]
+depth = "auto"
+allow_class_downgrade = false
+
+[plan.light]
+profiles = ["orx-host"]
+
+[plan.standard]
+profiles = ["orx-host"]
+
+[plan.deep]
+profiles = ["orx-host"]
+
+[worker]
+profiles = ["orx-host"]
+
+[verify]
+profiles = ["orx-host"]
+
+[runtime]
+# M0 shares one working tree: effective CLI parallelism is 1 regardless of
+# this value; a higher setting produces an explicit doctor warning.
+max_parallel = 1
+command_timeout_sec = 1800
+"""
+
+DEFAULT_PROFILES_TOML = """\
+schema_version = 1
+
+# The default profile routes every role to the host driver: work is done by
+# you (or your host agent) and submitted back through the CLI. Replace or
+# extend with cli/external profiles as you adopt real agent harnesses.
+
+[profiles.orx-host]
+driver = "host"
+harness = "zcode"
+model = "unconfigured"
+class = "frontier"
+effort = "standard"
+capabilities = ["coding"]
+"""
+
+
+@dataclass
+class Project:
+    root: Path
+    config: Config
+    profiles: dict[str, Profile]
+    store: Store
+
+    @property
+    def config_path(self) -> Path:
+        return self.root / ".orx" / "config.toml"
+
+    @property
+    def profiles_path(self) -> Path:
+        return self.root / ".orx" / "profiles.toml"
+
+    @property
+    def db_path(self) -> Path:
+        return self.root / ".orx" / "state.db"
+
+    def close(self) -> None:
+        self.store.close()
+
+
+def find_project_root(start: Path | None = None) -> Path | None:
+    """Walk parents looking for `.orx`. ORX_PROJECT env var wins."""
+    env = os.environ.get("ORX_PROJECT")
+    current = (Path(env) if env else (start or Path.cwd())).resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".orx").is_dir():
+            return candidate
+    return None
+
+
+def init_project(root: Path) -> dict:
+    """Create .orx/ if missing; refuse to clobber a non-empty config."""
+    root = root.resolve()
+    orx_dir = root / ".orx"
+    orx_dir.mkdir(parents=True, exist_ok=True)
+    (orx_dir / "runs").mkdir(exist_ok=True)
+
+    created: list[str] = []
+    config_path = orx_dir / "config.toml"
+    profiles_path = orx_dir / "profiles.toml"
+    if config_path.exists() and config_path.stat().st_size > 0:
+        raise ORXError(f"refusing to overwrite non-empty {config_path}")
+    if profiles_path.exists() and profiles_path.stat().st_size > 0:
+        raise ORXError(f"refusing to overwrite non-empty {profiles_path}")
+    if not config_path.exists() or config_path.stat().st_size == 0:
+        config_path.write_text(DEFAULT_CONFIG_TOML)
+        created.append(".orx/config.toml")
+    if not profiles_path.exists() or profiles_path.stat().st_size == 0:
+        profiles_path.write_text(DEFAULT_PROFILES_TOML)
+        created.append(".orx/profiles.toml")
+
+    store = Store.open(orx_dir / "state.db")
+    try:
+        config, profiles = load_project_config(config_path, profiles_path)
+        store.seed_resources(list(profiles))
+        created.append(".orx/state.db")
+    finally:
+        store.close()
+    return {"root": str(root), "created": created}
+
+
+def open_project() -> Project:
+    root = find_project_root()
+    if root is None:
+        raise NotFoundError(
+            "not an ORX project: no .orx/ directory found in this or any parent "
+            "(run `orx init` first, or set ORX_PROJECT)"
+        )
+    orx_dir = root / ".orx"
+    config, profiles = load_project_config(orx_dir / "config.toml", orx_dir / "profiles.toml")
+    store = Store.open(orx_dir / "state.db")
+    return Project(root=root, config=config, profiles=profiles, store=store)
+
+
+# ---------------------------------------------------------------------------
+# Context helpers
+
+
+def _active_context(project: Project) -> tuple[Goal, Run]:
+    """The active Goal, or the most recent Goal when the active one finished
+    (`orx status` must keep working after the Run reaches done)."""
+    goal = project.store.goal_active()
+    if goal is None:
+        row = project.store.conn.execute(
+            "SELECT id FROM goals WHERE status != 'cancelled' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is not None:
+            goal = project.store.goal_get(row["id"])
+    if goal is None:
+        raise NotFoundError("no active Goal; run `orx goal new` first")
+    run = project.store.run_for_goal(goal.id)
+    if run is None:
+        raise NotFoundError(f"goal {goal.id} has no Run")
+    return goal, run
+
+
+def _active_revision(project: Project, run: Run) -> Revision | None:
+    return project.store.revision_active(run.id)
+
+
+def _active_task(project: Project, run: Run, task_id: str) -> tuple[Revision, TaskRow]:
+    revision = _active_revision(project, run)
+    if revision is None:
+        raise NotFoundError("no active plan revision; submit a plan first (`orx plan submit`)")
+    task = project.store.task_get(revision.id, task_id)
+    return revision, task
+
+
+def _known_capabilities(project: Project) -> set[str]:
+    caps: set[str] = set()
+    for profile in project.profiles.values():
+        caps.update(profile.capabilities)
+    return caps
+
+
+def refresh_readiness(store: Store, run: Run) -> None:
+    """Delegates to the state machine (single owner of status recomputation)."""
+    machine.refresh_readiness(store, run)
+
+
+def refresh_run(store: Store, goal: Goal, run: Run) -> None:
+    machine.refresh_run(store, goal, run)
+
+
+def refresh(store: Store, goal: Goal, run: Run) -> None:
+    machine.refresh(store, goal, run)
+
+
+# ---------------------------------------------------------------------------
+# Goal
+
+
+def create_goal(
+    project: Project,
+    objective: str,
+    acceptance: list[str],
+    constraints: list[str] | None = None,
+    context: str = "",
+) -> tuple[Goal, Run]:
+    if not objective.strip():
+        raise ORXError("objective must be a non-empty string")
+    if not acceptance or not all(a.strip() for a in acceptance):
+        raise ORXError("at least one non-empty --acceptance criterion is required")
+    if project.store.goal_active() is not None:
+        active = project.store.goal_active()
+        raise ORXError(
+            f"goal {active.id} is already active; ORX M0 keeps one active Goal per project"
+        )
+    return project.store.goal_create(objective, acceptance, constraints or [], context)
+
+
+def goal_show(project: Project) -> dict:
+    goal = project.store.goal_active()
+    if goal is None:
+        raise NotFoundError("no active Goal")
+    run = project.store.run_for_goal(goal.id)
+    return {
+        "goal": {
+            "id": goal.id,
+            "objective": goal.objective,
+            "constraints": goal.constraints,
+            "acceptance": goal.acceptance,
+            "context": goal.context,
+            "status": goal.status,
+        },
+        "run": {"id": run.id, "status": run.status} if run else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Planning
+
+
+def _check_replan_allowed(store: Store, run: Run) -> None:
+    revision = store.revision_active(run.id)
+    if revision is None:
+        return
+    busy = [
+        t.task_id
+        for t in store.tasks_all(revision.id)
+        if TaskStatus(t.status) in (TaskStatus.RUNNING, TaskStatus.VERIFYING)
+    ]
+    if busy:
+        raise ReplanRejectedError(
+            "replan rejected while tasks are running or verifying: " + ", ".join(busy)
+        )
+
+
+def _resolve_depth(project: Project, goal: Goal, explicit: str | None) -> PlanDepth:
+    if explicit:
+        return plan_mod.resolve_depth(goal.objective, explicit)
+    if project.config.plan_depth_default == "auto":
+        return plan_mod.resolve_depth(goal.objective, None)
+    return PlanDepth(project.config.plan_depth_default)
+
+
+def plan_route(
+    project: Project, depth_flag: str | None = None, profile_flag: str | None = None
+) -> dict:
+    """Route the planner. Host driver -> waiting assignment. CLI execution is
+    not implemented in the M0 core kernel, so a CLI-driver result is returned
+    as `mode: incomplete` rather than faked."""
+    store = project.store
+    goal, run = _active_context(project)
+    _check_replan_allowed(store, run)
+
+    depth = _resolve_depth(project, goal, depth_flag)
+    request = routing.RouteRequest(
+        role=Role.PLANNER,
+        depth=depth,
+        pinned_profile=profile_flag,
+        allow_class_downgrade=project.config.allow_class_downgrade,
+    )
+    result = routing.route(store, project.config, project.profiles, request)
+    if not result.ok:
+        routing.persist_decision(store, request, result)
+        raise RoutingError(result.error or "planner routing failed")
+
+    profile = result.profile
+    assert profile is not None
+    if profile.driver.value == "host":
+        revision = _active_revision(project, run)
+        attempt = store.attempt_create(
+            revision_row_id=revision.id if revision else None,
+            role=Role.PLANNER.value,
+            profile=profile.name,
+            driver=profile.driver.value,
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+
+        assignment = store.assignment_waiting(run.id)
+        if assignment is None:
+            if run.status == RunStatus.DONE.value:
+                store.run_set_status(run.id, RunStatus.PLANNING)
+                store.goal_set_status(goal.id, GoalStatus.ACTIVE)
+            prompt = plan_mod.planner_prompt(goal, depth)
+            assignment = store.assignment_create(
+                run.id, profile.name, depth.value, prompt
+            )
+            _write_assignment_file(project, run, assignment)
+        return {
+            "mode": "host_required",
+            "depth": depth.value,
+            "assignment": _assignment_payload(project, assignment),
+            "routing": _routing_payload(result),
+        }
+
+    if profile.driver.value == "cli":
+        return _run_cli_planner(project, goal, run, depth, profile, request, result)
+
+    # driver external: ORX does not launch external planners; the human runs
+    # the prompt wherever they want and submits the result by hand.
+    routing.persist_decision(store, request, result)
+    return {
+        "mode": "incomplete",
+        "reason": "external_execution_not_supported_for_planning",
+        "depth": depth.value,
+        "selected_profile": profile.name,
+        "detail": (
+            "External planners are not dispatched by ORX. Use a driver = 'host' "
+            "profile to get a planning assignment, run the prompt externally "
+            "yourself, then `orx plan submit --file plan.json`."
+        ),
+        "routing": _routing_payload(result),
+    }
+
+
+def _launch_dir(project: Project, run_id: str, label: str) -> Path:
+    directory = project.root / ".orx" / "runs" / run_id / "launch" / label
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _record_execution_log(project: Project, run_id: str, label: str,
+                          run_result) -> str:
+    directory = project.root / ".orx" / "runs" / run_id / "exec"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{label}.log"
+    path.write_text(
+        f"$ {run_result.command}\n[exit {'timeout' if run_result.timed_out else run_result.exit_code}"
+        f" in {run_result.duration_sec:.2f}s]\n{run_result.stdout}"
+        + (f"\n[stderr]\n{run_result.stderr}" if run_result.stderr else "")
+    )
+    return str(path.relative_to(project.root))
+
+
+def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
+                     profile, request: routing.RouteRequest,
+                     result: routing.RouteResult) -> dict:
+    """Launch a CLI planner through its adapter, parse the Plan IR it printed,
+    and submit it. Completion is real — never faked."""
+    store = project.store
+    adapter = adapters.get_adapter(profile.harness.value)
+    probe = adapter.probe()
+    if not probe.ok:
+        routing.persist_decision(store, request, result)
+        raise RoutingError(
+            f"planner profile '{profile.name}': adapter capability_mismatch ({probe.detail})"
+        )
+
+    attempt = store.attempt_create(
+        revision_row_id=None,
+        role=Role.PLANNER.value,
+        profile=profile.name,
+        driver="cli",
+        harness=profile.harness.value,
+        model_id=profile.model,
+        requested_effort=profile.effort.value,
+        routing_reason=result.reason,
+        fallback_used=result.fallback_used,
+    )
+    routing.persist_decision(store, request, result, attempt_id=attempt.id)
+
+    scratch = _launch_dir(project, run.id, f"plan-{attempt.id}")
+    schema_path = scratch / "plan-schema.json"
+    schema_path.write_text(
+        json.dumps(plan_mod.strict_json_schema(plan_mod.PlanIR.model_json_schema()), indent=2)
+    )
+    launch = adapter.build_planner_launch(
+        root=project.root,
+        scratch=scratch,
+        profile=profile,
+        prompt=plan_mod.planner_prompt(goal, depth),
+        timeout=project.config.command_timeout_sec,
+        schema_path=schema_path,
+    )
+    run_result = runtime.run_launch(launch)
+    # Always persist the raw transcript: paid planner calls need an audit
+    # trail on success too, not only on failure.
+    log = _record_execution_log(project, run.id, f"plan-{attempt.id}", run_result)
+    effort = adapter.effort_outcome(launch, run_result)
+    store.attempt_update(
+        attempt.id,
+        ended_at=db_now(),
+        result="completed" if run_result.ok else "failed",
+        actual_effort=effort.actual if effort.actual else None,
+        effort_source=effort.source,
+        failure_reason=None if run_result.ok else _failure_excerpt(run_result),
+    )
+    if not run_result.ok:
+        raise ORXError(
+            f"planner '{profile.name}' failed ({_failure_excerpt(run_result)}); log: {log}"
+        )
+
+    text = adapter.extract_text(launch, run_result)
+    ir_data = json.loads(text) if text.strip().startswith("{") else None
+    if ir_data is None:
+        # Real CLI agents wrap the JSON document in narrative text even when
+        # told to emit only JSON (Cursor, 2026-10-03); recover the embedded
+        # object before giving up.
+        ir_data = plan_mod.extract_json_object(text)
+    if ir_data is None:
+        raise ORXError(
+            f"planner '{profile.name}' did not emit valid Plan IR JSON; log: {log}"
+        )
+    submitted = submit_plan(project, ir_data,
+                            planner_profile=profile.name, depth_hint=depth.value)
+    return {
+        "mode": "completed",
+        "depth": depth.value,
+        "profile": profile.name,
+        "routing": _routing_payload(result),
+        **submitted,
+    }
+
+
+def _failure_excerpt(run_result) -> str:
+    if run_result.timed_out:
+        return f"timed out after {run_result.duration_sec:.0f}s"
+    excerpt = (run_result.stderr or run_result.stdout).strip().splitlines()
+    tail = " | ".join(excerpt[-3:]) if excerpt else "no output"
+    return f"exit {run_result.exit_code}: {tail[:300]}"
+
+
+def _assignment_payload(project: Project, assignment: Assignment) -> dict:
+    run_id = assignment.run_id
+    prompt_file = project.root / ".orx" / "runs" / run_id / "assignments" / f"{assignment.id}.md"
+    return {
+        "id": assignment.id,
+        "run": run_id,
+        "role": "planner",
+        "profile": assignment.profile,
+        "depth": assignment.depth,
+        "prompt": assignment.prompt,
+        "prompt_file": str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None,
+        "schema": plan_mod.PLAN_IR_SCHEMA,
+        "submit": "orx plan submit --file plan.json",
+    }
+
+
+def _write_assignment_file(project: Project, run: Run, assignment: Assignment) -> None:
+    directory = project.root / ".orx" / "runs" / run.id / "assignments"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{assignment.id}.md").write_text(assignment.prompt)
+
+
+def _routing_payload(result: routing.RouteResult) -> dict:
+    return {
+        "selected": result.selected,
+        "reason": result.reason,
+        "fallback_used": result.fallback_used,
+        "downgrade_blocked": result.downgrade_blocked,
+        "candidates": [c.to_dict() for c in result.candidates],
+    }
+
+
+def submit_plan(project: Project, ir_data: dict,
+                planner_profile: str | None = None, depth_hint: str | None = None) -> dict:
+    store = project.store
+    goal, run = _active_context(project)
+
+    # The replan guard runs before validation: a rejected replan should say
+    # why it was rejected, not surface unrelated plan errors first.
+    _check_replan_allowed(store, run)
+
+    ir = plan_mod.parse_ir(ir_data)
+    errors = plan_mod.validate_ir(ir, goal.id, goal.acceptance, _known_capabilities(project))
+    if errors:
+        raise PlanValidationError(errors)
+
+    assignment = store.assignment_waiting(run.id)
+    depth_value = (
+        assignment.depth if assignment
+        else (depth_hint or _resolve_depth(project, goal, None).value)
+    )
+    planner = (
+        assignment.profile if assignment
+        else (planner_profile or "host-manual")
+    )
+
+    old = store.revision_active(run.id)
+    cancelled_old: list[str] = []
+    with store.tx():
+        if old is not None:
+            store.revision_mark_superseded(old.id)
+            for task in store.tasks_all(old.id):
+                if TaskStatus(task.status) in UNFINISHED_TASK_STATUSES:
+                    machine.transition(
+                        store, old.id, task.task_id, "superseded", TaskStatus.CANCELLED,
+                        reason=f"revision {old.revision} superseded",
+                    )
+                    cancelled_old.append(task.task_id)
+
+        revision = store.revision_create(run.id, depth_value, planner, ir_data)
+        for task in ir.tasks:
+            has_unmet = bool(task.dependencies)
+            status = TaskStatus.PENDING if has_unmet else TaskStatus.RUNNABLE
+            store.task_insert(
+                revision.id,
+                task.id,
+                task.objective,
+                task.scope.model_dump(),
+                list(task.acceptance),
+                list(task.verification),
+                task.routing.model_dump(),
+                status.value,
+            )
+            store.task_deps_insert(revision.id, task.id, list(task.dependencies))
+            machine.record_insert(
+                store, revision.id, task.id, status,
+                reason="waiting on dependencies" if has_unmet else "no unmet dependencies",
+            )
+        if assignment is not None:
+            store.assignment_set_status(
+                assignment.id, AssignmentStatus.SUBMITTED, mark_submitted=True
+            )
+
+    if run.status == RunStatus.DONE.value:
+        store.goal_set_status(goal.id, GoalStatus.ACTIVE)
+    refresh(store, goal, run)
+    return {
+        "revision": revision.revision,
+        "depth": revision.depth,
+        "planner_profile": revision.planner_profile,
+        "tasks": len(ir.tasks),
+        "superseded_revision": old.revision if old else None,
+        "cancelled_tasks": cancelled_old,
+        "assignment": assignment.id if assignment else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Run slice (route runnable tasks; M0 parks host/external work)
+
+
+def run_slice(project: Project) -> dict:
+    """Route runnable tasks. Host/external work is parked; CLI work is
+    executed through adapters, at most `effective_parallelism` (1) process
+    per invocation — `orx run` returns so the Controller stays in the loop."""
+    store = project.store
+    goal, run = _active_context(project)
+    revision = _active_revision(project, run)
+    out = {
+        "started": [],
+        "host_required": [],
+        "waiting_external": [],
+        "failed": [],
+        "deferred": [],
+        "routing_errors": [],
+    }
+    if revision is None:
+        out["note"] = "no active plan revision"
+        return out
+
+    started = 0
+    cap = project.config.effective_parallelism
+    for task in store.tasks_all(revision.id):
+        current = store.task_get(revision.id, task.task_id)
+        if TaskStatus(current.status) is not TaskStatus.RUNNABLE:
+            continue
+        caps = tuple(current.routing.get("required_capabilities", []))
+        request = routing.RouteRequest(role=Role.WORKER, required_capabilities=caps)
+        result = routing.route(store, project.config, project.profiles, request)
+        if not result.ok:
+            routing.persist_decision(store, request, result)
+            out["routing_errors"].append({"task": current.task_id, "error": result.error})
+            continue
+        profile = result.profile
+        assert profile is not None
+        if profile.driver.value == "host":
+            _park_task(store, revision.id, current, result, request, profile, "host")
+            out["host_required"].append(
+                {
+                    "task": current.task_id,
+                    "objective": current.objective,
+                    "profile": profile.name,
+                    "claim": f"orx task claim {current.task_id}",
+                }
+            )
+        elif profile.driver.value == "external":
+            _park_task(store, revision.id, current, result, request, profile, "external")
+            out["waiting_external"].append(
+                {
+                    "task": current.task_id,
+                    "objective": current.objective,
+                    "profile": profile.name,
+                    "finish_with": f"orx task complete {current.task_id} --evidence <file>",
+                }
+            )
+        else:
+            if started >= cap:
+                out["deferred"].append(
+                    {"task": current.task_id, "reason": "parallelism cap (M0: 1 process per run)"}
+                )
+                continue
+            outcome = _execute_cli_task(project, goal, run, revision, current, result, request, profile)
+            started += 1
+            if outcome["status"] == "failed":
+                out["failed"].append(outcome)
+            else:
+                out["started"].append(outcome)
+
+    refresh(store, goal, run)
+    return out
+
+
+def _park_task(store, revision_row_id, task, result, request, profile, kind) -> None:
+    attempt = store.attempt_create(
+        revision_row_id=revision_row_id,
+        role=Role.WORKER.value,
+        profile=profile.name,
+        driver=profile.driver.value,
+        harness=profile.harness.value,
+        model_id=profile.model,
+        requested_effort=profile.effort.value,
+        routing_reason=result.reason,
+        fallback_used=result.fallback_used,
+        task_id=task.task_id,
+        started=False,
+    )
+    routing.persist_decision(store, request, result, attempt_id=attempt.id)
+    machine.transition(
+        store, revision_row_id, task.task_id,
+        "route_host" if kind == "host" else "route_external",
+        TaskStatus.WAITING_HOST if kind == "host" else TaskStatus.WAITING_EXTERNAL,
+        reason=f"routed to {kind} profile '{profile.name}'",
+    )
+
+
+def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision,
+                      task: TaskRow, result, request, profile) -> dict:
+    """One CLI task execution: probe, launch, record, verify. Execution
+    finished != passed — verification still decides."""
+    store = project.store
+    adapter = adapters.get_adapter(profile.harness.value)
+    probe = adapter.probe()
+
+    attempt = store.attempt_create(
+        revision_row_id=revision.id,
+        role=Role.WORKER.value,
+        profile=profile.name,
+        driver="cli",
+        harness=profile.harness.value,
+        model_id=profile.model,
+        requested_effort=profile.effort.value,
+        routing_reason=result.reason,
+        fallback_used=result.fallback_used,
+        task_id=task.task_id,
+        started=False,
+    )
+    routing.persist_decision(store, request, result, attempt_id=attempt.id)
+    machine.transition(
+        store, revision.id, task.task_id, "route_cli", TaskStatus.RUNNING,
+        reason=f"routed to cli profile '{profile.name}'",
+    )
+
+    if not probe.ok:
+        reason = f"capability_mismatch: {probe.detail}"
+        store.attempt_update(attempt.id, ended_at=db_now(), result="failed",
+                             failure_reason=reason)
+        machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+                           reason=reason, failure_reason=reason)
+        return {"task": task.task_id, "profile": profile.name, "status": "failed", "reason": reason}
+
+    scratch = _launch_dir(project, run.id, f"{task.task_id}-{attempt.id}")
+    launch = adapter.build_worker_launch(
+        root=project.root,
+        scratch=scratch,
+        profile=profile,
+        prompt=worker_prompt(goal, task),
+        timeout=project.config.command_timeout_sec,
+    )
+    run_result = runtime.run_launch(launch)
+    log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
+    effort = adapter.effort_outcome(launch, run_result)
+    store.evidence_add(attempt.id, "execution", log)
+    store.attempt_update(
+        attempt.id, ended_at=db_now(),
+        result="completed" if run_result.ok else "failed",
+        actual_effort=effort.actual if effort.actual else None,
+        effort_source=effort.source,
+        failure_reason=None if run_result.ok else _failure_excerpt(run_result),
+    )
+
+    if not run_result.ok:
+        reason = _failure_excerpt(run_result)
+        machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+                           reason=reason, failure_reason=reason)
+        return {"task": task.task_id, "profile": profile.name, "status": "failed",
+                "reason": reason, "log": log}
+
+    machine.transition(store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
+                       reason="cli execution finished; verification starting")
+    verify.run_command_verifications(
+        store, project.root, run.id, revision.id,
+        store.task_get(revision.id, task.task_id),
+        timeout=project.config.command_timeout_sec,
+        attempt_id=attempt.id,
+    )
+    verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
+    refresh(store, goal, run)
+    return {
+        "task": task.task_id,
+        "profile": profile.name,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "verdict": verdict,
+        "log": log,
+        "attempt": attempt.id,
+        "actual_effort": effort.actual,
+        "effort_source": effort.source,
+    }
+
+
+def worker_prompt(goal: Goal, task: TaskRow) -> str:
+    acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
+    verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
+    allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
+    return f"""You are an ORX worker for Goal {goal.id}: {goal.objective}
+
+Your assignment is ONE task. Do only this task and stay inside its scope.
+
+Task {task.task_id}: {task.objective}
+
+Scope (write only inside these project-relative paths): {allowed}
+Acceptance (your work is verified against these, verbatim):
+{acceptance}
+
+How your work will be checked:
+{verification}
+
+Rules:
+- do not modify the Goal text or other tasks' scope
+- if you are blocked, leave the workspace unchanged and exit non-zero with the
+  blocker in your output; do not widen scope
+- exit 0 when the task is done
+"""
+
+
+def verifier_prompt(goal: Goal, task: TaskRow, item) -> str:
+    capabilities = ", ".join(item.capabilities) or "none"
+    return f"""You are an ORX verifier for Goal {goal.id}: {goal.objective}
+
+Verify ONE acceptance check for task {task.task_id} ({task.objective}).
+
+Check to verify (exact instruction): {item.spec}
+Required capabilities: {capabilities}
+
+Look at the project workspace at the current working directory. Then print
+EXACTLY one final line:
+
+ORX_VERDICT=pass
+or
+ORX_VERDICT=fail
+
+Nothing else counts as a verdict. Exit 0 after printing it.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Task lifecycle
+
+
+def task_list(project: Project) -> list[dict]:
+    goal, run = _active_context(project)
+    revision = _active_revision(project, run)
+    if revision is None:
+        return []
+    rows = []
+    for task in project.store.tasks_all(revision.id):
+        attempt = project.store.attempt_latest_for_task(revision.id, task.task_id)
+        deps = project.store.deps_for(revision.id, task.task_id)
+        statuses = {
+            t.task_id: TaskStatus(t.status) for t in project.store.tasks_all(revision.id)
+        }
+        blocked_by = [d for d in deps if statuses.get(d) is not TaskStatus.PASSED]
+        rows.append(
+            {
+                "id": task.task_id,
+                "objective": task.objective,
+                "status": task.status,
+                "profile": attempt.profile if attempt else None,
+                "dependencies": deps,
+                "blocked_by": blocked_by,
+                "failure_reason": task.failure_reason,
+            }
+        )
+    return rows
+
+
+def task_claim(project: Project, task_id: str) -> dict:
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) not in (TaskStatus.WAITING_HOST,):
+        if TaskStatus(task.status) is TaskStatus.RUNNABLE:
+            raise ConflictError(
+                f"task {task_id} is runnable but not routed yet; run `orx run` first"
+            )
+        raise ConflictError(f"task {task_id} is {task.status}, not waiting_host")
+    machine.claim(store, revision.id, task.task_id)
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    if attempt is not None and attempt.started_at is None:
+        store.attempt_update(attempt.id, started_at=db_now())
+    refresh_run(store, goal, run)
+    return {
+        "task": task.task_id,
+        "status": "running",
+        "attempt": attempt.id if attempt else None,
+        "driver": "host",
+    }
+
+
+def task_complete(project: Project, task_id: str, evidence: str) -> dict:
+    """Record evidence and enter verification. Completion is NOT success:
+    the task passes only when every verification entry passes."""
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) not in (TaskStatus.RUNNING, TaskStatus.WAITING_EXTERNAL):
+        raise ConflictError(
+            f"task {task_id} is {task.status}; `task complete` requires running or waiting_external"
+        )
+
+    evidence_path = Path(evidence).expanduser()
+    if not evidence_path.is_absolute():
+        evidence_path = (Path.cwd() / evidence_path).resolve()
+    if not evidence_path.exists():
+        raise NotFoundError(f"evidence file not found: {evidence}")
+
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    if attempt is None:
+        attempt = store.attempt_create(
+            revision_row_id=revision.id,
+            role=Role.WORKER.value,
+            profile="unrouted-host",
+            driver="host",
+            harness="zcode",
+            model_id="unknown",
+            requested_effort="standard",
+            task_id=task.task_id,
+        )
+    store.evidence_add(attempt.id, "completion", str(evidence_path))
+    store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
+    machine.transition(
+        store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
+        reason="completion claimed; verification starting",
+    )
+
+    verify.run_command_verifications(
+        store,
+        project.root,
+        run.id,
+        revision.id,
+        store.task_get(revision.id, task.task_id),
+        timeout=project.config.command_timeout_sec,
+        attempt_id=attempt.id,
+    )
+    verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
+    refresh(store, goal, run)
+    counts = _verification_counts(store, revision)
+    return {
+        "task": task.task_id,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "verdict": verdict,
+        "verification": counts,
+        "attempt": attempt.id,
+    }
+
+
+def task_fail(project: Project, task_id: str, reason: str) -> dict:
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) not in (TaskStatus.RUNNING, TaskStatus.WAITING_EXTERNAL):
+        raise ConflictError(
+            f"task {task_id} is {task.status}; `task fail` requires running or waiting_external"
+        )
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    if attempt is not None:
+        store.attempt_update(
+            attempt.id,
+            ended_at=db_now(),
+            result="failed",
+            failure_reason=reason,
+        )
+    machine.transition(
+        store, revision.id, task.task_id, "fail", TaskStatus.FAILED, reason=reason,
+        failure_reason=reason,
+    )
+    refresh(store, goal, run)
+    return {"task": task.task_id, "status": "failed"}
+
+
+def task_retry(project: Project, task_id: str) -> dict:
+    """Retry a failed task on the same plan: failed -> runnable. Not a replan."""
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) is not TaskStatus.FAILED:
+        raise ConflictError(f"task {task_id} is {task.status}; `task retry` requires failed")
+    store.verifications_clear(revision.id, task.task_id)
+    machine.transition(
+        store, revision.id, task.task_id, "retry", TaskStatus.RUNNABLE,
+        reason="operator requested retry; new attempt will be routed by `orx run`",
+    )
+    refresh_run(store, goal, run)
+    return {"task": task.task_id, "status": "runnable"}
+
+
+def _verification_counts(store: Store, revision: Revision) -> dict:
+    rows = []
+    for task in store.tasks_all(revision.id):
+        rows.extend(store.verifications_for(revision.id, task.task_id))
+    pending = 0
+    for task in store.tasks_all(revision.id):
+        if TaskStatus(task.status) is TaskStatus.VERIFYING:
+            pending += len(verify.pending_agent_entries(store, revision.id, task))
+    return {
+        "passed": sum(1 for v in rows if v.passed),
+        "failed": sum(1 for v in rows if not v.passed),
+        "awaiting_agent": pending,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Verification dispatch + submission
+
+
+def verify_dispatch(project: Project) -> dict:
+    store = project.store
+    goal, run = _active_context(project)
+    revision = _active_revision(project, run)
+    out = {"checked": [], "agent_required": [], "launched": []}
+    if revision is None:
+        out["note"] = "no active plan revision"
+        return out
+
+    for task in store.tasks_all(revision.id):
+        if TaskStatus(task.status) is not TaskStatus.VERIFYING:
+            continue
+        verify.run_command_verifications(
+            store, project.root, run.id, revision.id, task,
+            timeout=project.config.command_timeout_sec,
+        )
+        verdict = verify.apply_verdict(store, revision.id, task)
+        out["checked"].append({"task": task.task_id, "verdict": verdict})
+        for item in verify.pending_agent_entries(store, revision.id, task):
+            request = routing.RouteRequest(
+                role=Role.VERIFIER, required_capabilities=item.capabilities
+            )
+            result = routing.route(store, project.config, project.profiles, request)
+            if not result.ok:
+                routing.persist_decision(store, request, result)
+                out["agent_required"].append(
+                    {
+                        "task": task.task_id,
+                        "entry": item.raw,
+                        "required_capabilities": list(item.capabilities) or ["coding"],
+                        "error": result.error,
+                    }
+                )
+                continue
+            routing.persist_decision(store, request, result)
+            profile = result.profile
+            assert profile is not None
+            entry_out = {
+                "task": task.task_id,
+                "entry": item.raw,
+                "required_capabilities": list(item.capabilities) or ["coding"],
+                "profile": profile.name,
+                "driver": profile.driver.value,
+            }
+            if profile.driver.value == "host":
+                entry_out["submit_pass"] = (
+                    f"orx verify submit {task.task_id} --result pass --entry {item.raw!r}"
+                )
+                entry_out["submit_fail"] = (
+                    f"orx verify submit {task.task_id} --result fail --entry {item.raw!r}"
+                )
+                out["agent_required"].append(entry_out)
+            else:
+                out["launched"].append(
+                    _run_cli_verifier(project, goal, run, revision, task, item,
+                                      profile, request, result)
+                )
+
+    refresh(store, goal, run)
+    return out
+
+
+def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision,
+                      task: TaskRow, item, profile, request, result) -> dict:
+    """Launch a CLI verifier. The deterministic verdict contract is one line
+    `ORX_VERDICT=pass` or `ORX_VERDICT=fail`; anything else is a failed
+    verification (a broken verifier must not hang the run forever)."""
+    store = project.store
+    adapter = adapters.get_adapter(profile.harness.value)
+    probe = adapter.probe()
+    attempt = store.attempt_create(
+        revision_row_id=revision.id,
+        role=Role.VERIFIER.value,
+        profile=profile.name,
+        driver="cli",
+        harness=profile.harness.value,
+        model_id=profile.model,
+        requested_effort=profile.effort.value,
+        routing_reason=result.reason,
+        fallback_used=result.fallback_used,
+        task_id=task.task_id,
+        started=True,
+    )
+    routing.persist_decision(store, request, result, attempt_id=attempt.id)
+
+    if not probe.ok:
+        reason = f"capability_mismatch: {probe.detail}"
+        store.attempt_update(attempt.id, ended_at=db_now(), result="failed", failure_reason=reason)
+        store.verification_add(
+            revision.id, task.task_id, "agent", item.raw, passed=False,
+            attempt_id=attempt.id, required_capabilities=list(item.capabilities),
+        )
+        verify.apply_verdict(store, revision.id, task, failure_hint=item.raw)
+        return {"task": task.task_id, "entry": item.raw, "verdict": "failed", "reason": reason}
+
+    scratch = _launch_dir(project, run.id, f"verify-{task.task_id}-{attempt.id}")
+    launch = adapter.build_verifier_launch(
+        root=project.root, scratch=scratch, profile=profile,
+        prompt=verifier_prompt(goal, task, item),
+        timeout=project.config.command_timeout_sec,
+    )
+    run_result = runtime.run_launch(launch)
+    log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
+    # Scan the agent's extracted message FIRST: CLI agents wrap their output
+    # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
+    # line inside the raw stdout never appears as a standalone line. The raw
+    # stream remains the fallback (shell workers print markers directly).
+    verdict_text = scan_marker(adapter.extract_text(launch, run_result), "ORX_VERDICT") \
+        or scan_marker(run_result.stdout, "ORX_VERDICT") \
+        or scan_marker(run_result.stderr, "ORX_VERDICT")
+    if run_result.ok and verdict_text in ("pass", "fail"):
+        passed = verdict_text == "pass"
+    else:
+        passed = False
+        verdict_text = "no ORX_VERDICT line" if run_result.ok else _failure_excerpt(run_result)
+    store.attempt_update(
+        attempt.id, ended_at=db_now(),
+        result="pass" if passed else "fail",
+        failure_reason=None if passed else f"agent verifier: {verdict_text}",
+    )
+    store.verification_add(
+        revision.id, task.task_id, "agent", item.raw, passed=passed,
+        attempt_id=attempt.id, output_path=log,
+        required_capabilities=list(item.capabilities),
+    )
+    verify.apply_verdict(store, revision.id, task, failure_hint=item.raw if not passed else None)
+    return {
+        "task": task.task_id,
+        "entry": item.raw,
+        "verdict": "pass" if passed else "fail",
+        "detail": verdict_text,
+        "log": log,
+    }
+
+
+def verify_submit(
+    project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None
+) -> dict:
+    """Record a host Agent verifier's verdict for one agent verification entry."""
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) is not TaskStatus.VERIFYING:
+        raise ConflictError(f"task {task_id} is {task.status}, not verifying")
+
+    if result_value not in ("pass", "fail"):
+        raise ORXError("--result must be 'pass' or 'fail'")
+    passed = result_value == "pass"
+
+    pending = verify.pending_agent_entries(store, revision.id, task)
+    chosen = None
+    if entry is not None:
+        matches = [i for i in pending if i.raw == entry]
+        if not matches:
+            raise NotFoundError(f"no pending agent verification matching --entry {entry!r}")
+        chosen = matches[0]
+    elif pending:
+        chosen = pending[0]
+    else:
+        raise NotFoundError(
+            f"task {task_id} has no pending agent verification entries"
+        )
+
+    request = routing.RouteRequest(
+        role=Role.VERIFIER, required_capabilities=chosen.capabilities
+    )
+    route_result = routing.route(store, project.config, project.profiles, request)
+    attempt = None
+    if route_result.ok:
+        profile = route_result.profile
+        assert profile is not None
+        attempt = store.attempt_create(
+            revision_row_id=revision.id,
+            role=Role.VERIFIER.value,
+            profile=profile.name,
+            driver=profile.driver.value,
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=route_result.reason,
+            fallback_used=route_result.fallback_used,
+            task_id=task.task_id,
+        )
+        routing.persist_decision(store, request, route_result, attempt_id=attempt.id)
+        store.attempt_update(
+            attempt.id,
+            ended_at=db_now(),
+            result="pass" if passed else "fail",
+            failure_reason=None if passed else f"agent verifier rejected: {chosen.spec}",
+        )
+    else:
+        # A verifier must exist to accept a verdict on behalf of an agent.
+        routing.persist_decision(store, request, route_result)
+        raise RoutingError(route_result.error or "verifier routing failed")
+
+    evidence_rel = None
+    if evidence:
+        evidence_path = Path(evidence).expanduser()
+        if not evidence_path.is_absolute():
+            evidence_path = (Path.cwd() / evidence_path).resolve()
+        if not evidence_path.exists():
+            raise NotFoundError(f"evidence file not found: {evidence}")
+        evidence_rel = str(evidence_path)
+        store.evidence_add(attempt.id, "verification", evidence_rel)
+
+    store.verification_add(
+        revision.id, task.task_id, "agent", chosen.raw, passed=passed,
+        attempt_id=attempt.id, exit_code=None, output_path=evidence_rel,
+        required_capabilities=list(chosen.capabilities),
+    )
+
+    verdict = verify.apply_verdict(
+        store, revision.id, store.task_get(revision.id, task.task_id),
+        failure_hint=chosen.raw if not passed else None,
+    )
+    refresh(store, goal, run)
+    return {
+        "task": task.task_id,
+        "entry": chosen.raw,
+        "result": result_value,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "verdict": verdict,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Resources / status
+
+
+def resource_set(project: Project, profile_name: str, status_value: str, note: str = "") -> dict:
+    if profile_name not in project.profiles:
+        raise NotFoundError(
+            f"profile {profile_name!r} is not defined in profiles.toml"
+        )
+    try:
+        status = ResourceStatus(status_value)
+    except ValueError:
+        raise ORXError(
+            f"invalid resource status {status_value!r} (expected one of: "
+            + " | ".join(s.value for s in ResourceStatus) + ")"
+        ) from None
+    project.store.resource_set(profile_name, status, note)
+    return {"profile": profile_name, "status": status.value, "note": note}
+
+
+def resource_list(project: Project) -> list[dict]:
+    rows = {r.profile: r for r in project.store.resource_rows()}
+    out = []
+    for name in project.profiles:
+        row = rows.get(name)
+        out.append(
+            {
+                "profile": name,
+                "status": row.status if row else "unknown",
+                "note": row.note if row else "",
+                "updated_at": row.updated_at if row else None,
+            }
+        )
+    for name, row in rows.items():
+        if name not in project.profiles:
+            out.append(
+                {"profile": name, "status": row.status, "note": row.note,
+                 "updated_at": row.updated_at}
+            )
+    return out
+
+
+def status_data(project: Project) -> dict:
+    goal, run = _active_context(project)
+    revision = _active_revision(project, run)
+    plan_info = None
+    if revision is not None:
+        plan_info = {
+            "revision": revision.revision,
+            "depth": revision.depth,
+            "planner_profile": revision.planner_profile,
+            "status": revision.status,
+        }
+    return {
+        "goal": {
+            "id": goal.id,
+            "objective": goal.objective,
+            "acceptance": goal.acceptance,
+            "constraints": goal.constraints,
+            "status": goal.status,
+        },
+        "run": {"id": run.id, "status": run.status},
+        "plan": plan_info,
+        "tasks": task_list(project),
+        "verification": (
+            _verification_counts(project.store, revision) if revision
+            else {"passed": 0, "failed": 0, "awaiting_agent": 0}
+        ),
+        "resources": resource_list(project),
+        "result": run.status,
+    }

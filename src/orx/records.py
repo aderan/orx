@@ -1,0 +1,184 @@
+"""Domain enums and shared exceptions.
+
+Static profile configuration lives in TOML; temporary runtime state lives in
+SQLite. Nothing in this module reads either store.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+class ORXError(Exception):
+    """Base class for all ORX domain errors."""
+
+
+class ConfigError(ORXError):
+    """config.toml / profiles.toml failed validation. Carries every message."""
+
+    def __init__(self, messages: list[str] | None = None, message: str | None = None):
+        self.messages = list(messages or [])
+        super().__init__(message or "; ".join(self.messages) or "invalid configuration")
+
+
+class MigrationError(ORXError):
+    """SQLite schema version is missing, unknown, or newer than the code."""
+
+
+class NotFoundError(ORXError):
+    """A referenced entity (goal, task, assignment, ...) does not exist."""
+
+
+class ConflictError(ORXError):
+    """A compare-and-set style update lost (e.g. two hosts claimed one task)."""
+
+
+class TransitionError(ORXError):
+    """An illegal task state transition was requested."""
+
+
+class PlanSyntaxError(ORXError):
+    """Plan IR is not parseable as the IR shape. Carries per-field messages."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__("invalid plan IR: " + "; ".join(self.errors))
+
+
+class PlanValidationError(ORXError):
+    """Plan IR parses but violates plan semantics. Carries every error."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = list(errors)
+        super().__init__("plan rejected: " + "; ".join(self.errors))
+
+
+class RoutingError(ORXError):
+    """No usable profile for a request (or a pinned profile is unusable)."""
+
+
+class ReplanRejectedError(ORXError):
+    """Replan attempted while tasks are running or verifying."""
+
+
+class Role(str, Enum):
+    CONTROLLER = "controller"
+    PLANNER = "planner"
+    WORKER = "worker"
+    VERIFIER = "verifier"
+
+
+class Driver(str, Enum):
+    HOST = "host"
+    CLI = "cli"
+    EXTERNAL = "external"
+
+
+class Harness(str, Enum):
+    ZCODE = "zcode"
+    CODEX = "codex"
+    CURSOR = "cursor"
+    SHELL = "shell"
+
+
+class ModelClass(str, Enum):
+    FRONTIER = "frontier"
+    STRONG = "strong"
+    ECONOMY = "economy"
+
+
+class Effort(str, Enum):
+    QUICK = "quick"
+    STANDARD = "standard"
+    DEEP = "deep"
+    MAX = "max"
+
+
+class PlanDepth(str, Enum):
+    LIGHT = "light"
+    STANDARD = "standard"
+    DEEP = "deep"
+
+
+class GoalStatus(str, Enum):
+    ACTIVE = "active"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
+class RunStatus(str, Enum):
+    PLANNING = "planning"
+    RUNNING = "running"
+    BLOCKED = "blocked"
+    DONE = "done"
+
+
+class RevisionStatus(str, Enum):
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+
+
+class AssignmentStatus(str, Enum):
+    WAITING_HOST = "waiting_host"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNABLE = "runnable"
+    RUNNING = "running"
+    WAITING_HOST = "waiting_host"
+    WAITING_EXTERNAL = "waiting_external"
+    VERIFYING = "verifying"
+    PASSED = "passed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+class ResourceStatus(str, Enum):
+    ABUNDANT = "abundant"
+    AVAILABLE = "available"
+    CONSTRAINED = "constrained"
+    EXHAUSTED = "exhausted"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
+# Terminal means "this task will never execute again without an explicit
+# user-driven action (retry) or revision supersession".
+TERMINAL_TASK_STATUSES: frozenset[TaskStatus] = frozenset(
+    {TaskStatus.PASSED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+)
+UNFINISHED_TASK_STATUSES: frozenset[TaskStatus] = frozenset(TaskStatus) - TERMINAL_TASK_STATUSES
+
+# Statuses that keep a Run in the `running` aggregate state.
+ACTIVE_EXECUTION_STATUSES: frozenset[TaskStatus] = frozenset(
+    {
+        TaskStatus.RUNNABLE,
+        TaskStatus.RUNNING,
+        TaskStatus.WAITING_HOST,
+        TaskStatus.WAITING_EXTERNAL,
+        TaskStatus.VERIFYING,
+    }
+)
+
+# Resource statuses that never take part in routing.
+NON_ROUTABLE_RESOURCE_STATUSES: frozenset[ResourceStatus] = frozenset(
+    {ResourceStatus.UNAVAILABLE, ResourceStatus.EXHAUSTED}
+)
+# Preferred resource statuses, in configured list order.
+PREFERRED_RESOURCE_STATUSES: frozenset[ResourceStatus] = frozenset(
+    {ResourceStatus.ABUNDANT, ResourceStatus.AVAILABLE, ResourceStatus.UNKNOWN}
+)
+LAST_RESORT_RESOURCE_STATUS = ResourceStatus.CONSTRAINED
+
+
+def parse_enum(enum_cls: type[Enum], value: str) -> Enum | None:
+    """Return the member whose value equals `value`, or None."""
+    try:
+        return enum_cls(value)
+    except ValueError:
+        return None
