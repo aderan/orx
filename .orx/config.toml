@@ -1,0 +1,29 @@
+schema_version = 1
+
+[controller]
+profile = "orx-host"
+
+[plan]
+depth = "auto"
+allow_class_downgrade = false
+
+[plan.light]
+profiles = ["cursor-strong"]
+
+[plan.standard]
+profiles = ["codex-frontier"]
+
+[plan.deep]
+profiles = ["codex-frontier"]
+
+# user directive 2026-10-03: cursor-agent does the build execution,
+# codex-frontier stays primary for planning and is the build fallback.
+[worker]
+profiles = ["cursor-strong", "codex-frontier", "orx-host"]
+
+[verify]
+profiles = ["cursor-economy", "orx-host"]
+
+[runtime]
+max_parallel = 1
+command_timeout_sec = 1800

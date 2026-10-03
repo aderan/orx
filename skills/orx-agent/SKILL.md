@@ -36,8 +36,11 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 ## If the assignment is a VERIFICATION
 
 - Verify only the instruction you were given.
-- Print exactly one final line: `ORX_VERDICT=pass` or `ORX_VERDICT=fail`.
-  Nothing else counts as a verdict.
+- Print exactly two final lines, nothing after them:
+  `ORX_REASON=<what you checked; for a fail, what is missing>` then
+  `ORX_VERDICT=pass` or `ORX_VERDICT=fail`.
+- Nothing else counts as a verdict; a fail without a reason is invalid —
+  the Controller cannot act on an unexplained failure.
 
 ## If your harness can report effort
 

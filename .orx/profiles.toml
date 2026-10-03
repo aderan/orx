@@ -1,0 +1,4 @@
+schema_version = 1
+
+# Profile definitions live in the user layer (~/.config/orx/profiles.toml)
+# since M1; this project keeps only routing (config.toml).

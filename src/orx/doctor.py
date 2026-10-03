@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from orx import __version__
-from orx.config import load_config, load_profiles, validate_references
+from orx.config import load_config, load_effective, load_profiles, validate_references
 from orx.records import ConfigError
 from orx.state import CODE_SCHEMA_VERSION
 
@@ -146,6 +146,32 @@ def run_doctor(root: Path | None) -> dict:
                 checks.append(Check(f"shell:{name}", OK if found else WARN,
                                     f"executable {profile.executable!r} found" if found
                                     else f"executable {profile.executable!r} not found on PATH"))
+
+    # M1 layered configuration: the user layer is informational (absent is
+    # fine); the effective merge is what actually runs, so it gets its own
+    # check, and shell-profile executable checks cover the merged set.
+    from orx.config import user_config_path, user_profiles_path
+    uc, up = user_config_path(), user_profiles_path()
+    present = [p.name for p in (uc, up) if p.exists()]
+    checks.append(Check("user_layer", OK,
+                        f"{', '.join(present)} at {uc.parent}" if present
+                        else "absent (project layer + defaults only)"))
+    try:
+        effective = load_effective(config_path, profiles_path)
+        layers = {v for v in effective.profile_origins.values()}
+        checks.append(Check("effective_config", OK,
+                            f"{len(effective.profiles)} effective profile(s)"
+                            f" (layers: {', '.join(sorted(layers)) or 'project'});"
+                            f" controller from {effective.origins.get('controller.profile', 'default')}"))
+        for name, profile in effective.profiles.items():
+            if profile.harness.value == "shell" and name not in profiles:
+                found = bool(profile.executable and shutil.which(profile.executable))
+                checks.append(Check(f"shell:{name}", OK if found else WARN,
+                                    f"executable {profile.executable!r} found" if found
+                                    else f"executable {profile.executable!r} not found on PATH"
+                                         f" (user-layer profile)"))
+    except ConfigError as exc:
+        checks.append(Check("effective_config", FAIL, "; ".join(exc.messages)))
 
     if db_path.exists():
         try:

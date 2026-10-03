@@ -7,6 +7,15 @@ import pytest
 
 from orx import dispatch
 
+
+@pytest.fixture(autouse=True)
+def isolate_user_layer(tmp_path, monkeypatch):
+    """Every test sees an empty M1 user layer: a real ~/.config/orx on the
+    developer machine must never leak into test projects."""
+    monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "isolated-config"))
+    monkeypatch.setenv("ORX_DATA_DIR", str(tmp_path / "isolated-data"))
+    yield
+
 HOST_PROFILES_TOML = """\
 schema_version = 1
 

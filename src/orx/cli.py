@@ -14,10 +14,10 @@ from typing import Optional
 
 import typer
 
-from orx import __version__, dispatch, doctor as doctor_mod
+from orx import __version__, config as config_mod, dispatch, doctor as doctor_mod
 from orx import skills as skills_mod
 from orx import update as update_mod
-from orx.records import ORXError
+from orx.records import ConfigError, NotFoundError, ORXError
 
 app = typer.Typer(
     name="orx",
@@ -31,6 +31,15 @@ task_app = typer.Typer(help="Task commands.", no_args_is_help=True)
 verify_app = typer.Typer(help="Verification commands.", no_args_is_help=True)
 resource_app = typer.Typer(help="Resource runtime status.", no_args_is_help=True)
 skill_app = typer.Typer(help="User-level skills.", no_args_is_help=True)
+config_app = typer.Typer(
+    help=(
+        "Read and write layered configuration. "
+        "Precedence, high to low: environment overrides, project .orx/, "
+        "user config, built-in defaults. "
+        "Exit 0 on success, 1 when a read or write is rejected, 2 on usage errors."
+    ),
+    no_args_is_help=True,
+)
 
 app.add_typer(goal_app, name="goal")
 app.add_typer(plan_app, name="plan")
@@ -38,6 +47,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(verify_app, name="verify")
 app.add_typer(resource_app, name="resource")
 app.add_typer(skill_app, name="skill")
+app.add_typer(config_app, name="config")
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +131,198 @@ def doctor(json_out: bool = JsonOpt) -> None:
         )
     if not result["ok"]:
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+
+
+def _format_config_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return json.dumps(value)
+    return str(value)
+
+
+def _project_root() -> Path | None:
+    return dispatch.find_project_root()
+
+
+def _load_effective(project_root: Path | None):
+    if project_root is None:
+        absent = Path("/__orx_no_project__/config.toml")
+        return config_mod.load_effective(
+            absent, absent.with_name("profiles.toml"), check_references=False
+        )
+    orx_dir = project_root / ".orx"
+    return config_mod.load_effective(
+        orx_dir / "config.toml", orx_dir / "profiles.toml", check_references=False
+    )
+
+
+def _profile_names(project_root: Path | None) -> set[str]:
+    names = config_mod.profile_names_in(config_mod.user_profiles_path())
+    if project_root is not None:
+        names |= config_mod.profile_names_in(project_root / ".orx" / "profiles.toml")
+    return names
+
+
+def _config_set_help() -> str:
+    lines = [
+        "Write one validated value to the project layer, or the user layer with --user.",
+        "",
+        "The project layer is .orx/config.toml (the project that contains the",
+        "working directory, or ORX_PROJECT). --user writes only the user",
+        "config.toml: ORX_CONFIG_DIR if set, else $XDG_CONFIG_HOME/orx,",
+        "else ~/.config/orx/config.toml. A missing user or project file is",
+        "created with schema_version = 1 and the single key being set.",
+        "Project values, environment overrides, and built-in defaults are not copied in.",
+        "",
+        "The value is parsed and checked before either target file is changed.",
+        "An invalid value or an unsupported key leaves the files byte-for-byte",
+        "unchanged. schema_version cannot be set. Other keys already in the",
+        "file, including ones this version does not interpret, are kept.",
+        "",
+        "config get reports the effective value after precedence is applied.",
+        "A user-layer write can be hidden by the project file or by an",
+        "environment override (ORX_RUNTIME_MAX_PARALLEL,",
+        "ORX_RUNTIME_COMMAND_TIMEOUT_SEC). A project-layer write can be",
+        "hidden by those environment overrides.",
+        "",
+        "Writable keys:",
+    ]
+    for key, desc in config_mod.WRITABLE_SPEC.items():
+        lines.append(f"  {key}    {desc}")
+    lines += [
+        "",
+        "Lists accept comma-separated names (a, b) or a JSON array.",
+        "Booleans are true or false. Integers are decimal digits, with an",
+        "optional leading minus. A value that starts with a dash is the",
+        "value, then validated; it is not a flag. Put options before KEY.",
+        "",
+        "--json prints ok, key, value, layer, path, and created.",
+        "value is typed (string, boolean, integer, or array), the same kinds",
+        "config get returns. layer is project or user.",
+        "Exit 1 rejects the write. Exit 2 is a usage error.",
+    ]
+    return "\n".join(lines)
+
+
+@config_app.command("path")
+@handle_errors
+def config_path(json_out: bool = JsonOpt) -> None:
+    """Show resolved user and project configuration paths.
+
+    user_config and user_profiles honor ORX_CONFIG_DIR, then
+    XDG_CONFIG_HOME/orx, then ~/.config/orx. user_data honors ORX_DATA_DIR,
+    then XDG_DATA_HOME/orx, then ~/.local/share/orx. project_config and
+    project_profiles are the .orx files of the project found from the
+    working directory or ORX_PROJECT. Those two are null when no project
+    applies. Paths are reported even when the files do not exist yet.
+
+    --json fields: user_config, user_profiles, user_data, project_config,
+    project_profiles.
+    """
+    paths = config_mod.resolved_paths(_project_root())
+    _ok(json_out, **paths)
+    if not json_out:
+        typer.echo(f"user config:       {paths['user_config']}")
+        typer.echo(f"user profiles:     {paths['user_profiles']}")
+        typer.echo(f"user data:         {paths['user_data']}")
+        typer.echo(f"project config:    {paths['project_config'] or '(none)'}")
+        typer.echo(f"project profiles:  {paths['project_profiles'] or '(none)'}")
+
+
+@config_app.command("list")
+@handle_errors
+def config_list(json_out: bool = JsonOpt) -> None:
+    """Show effective recognized values and the layer that won for each.
+
+    Layers, high to low: env, project, user, default. Environment overrides
+    are only ORX_RUNTIME_MAX_PARALLEL and ORX_RUNTIME_COMMAND_TIMEOUT_SEC.
+    Routing lists (plan.light.profiles, plan.standard.profiles,
+    plan.deep.profiles, worker.profiles, verify.profiles) come from the
+    project file when that file sets the list, otherwise from the user file.
+
+    --json field values is a list of objects with key, value, and origin.
+    origin is env, project, user, or default. value is typed.
+    Exit 1 when the effective configuration cannot be loaded.
+    """
+    entries = config_mod.config_entries(_load_effective(_project_root()))
+    _ok(json_out, values=entries)
+    if not json_out:
+        width = max(len(row["key"]) for row in entries)
+        for row in entries:
+            rendered = _format_config_value(row["value"])
+            typer.echo(f"{row['key']:<{width}}  {rendered}  ({row['origin']})")
+
+
+@config_app.command("get")
+@handle_errors
+def config_get(
+    key: str = typer.Argument(..., metavar="KEY", help="Dotted key, for example runtime.max_parallel."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Show one effective value and the layer it came from.
+
+    The value and origin match the entry config list reports for the same
+    key. Recognized keys are the writable keys of config set. schema_version
+    is not an effective value. An unknown key exits 1.
+
+    --json fields: key, value, origin. value is typed (string, boolean,
+    integer, or array), not the text stored on disk when a higher layer wins.
+    """
+    entries = config_mod.config_entries(_load_effective(_project_root()))
+    found = next((row for row in entries if row["key"] == key), None)
+    if found is None:
+        known = ", ".join(config_mod.RECOGNIZED_KEYS)
+        raise ConfigError([
+            f"unknown config key {key!r}",
+            f"recognized keys: {known}",
+        ])
+    _ok(json_out, **found)
+    if not json_out:
+        typer.echo(f"{found['key']} = {_format_config_value(found['value'])} ({found['origin']})")
+
+
+@config_app.command(
+    "set",
+    help=_config_set_help(),
+    context_settings={"allow_interspersed_args": False},
+)
+@handle_errors
+def config_set(
+    key: str = typer.Argument(..., metavar="KEY", help="Dotted key. See this command's help for the writable set."),
+    value: str = typer.Argument(..., metavar="VALUE", help="New value: scalar text, comma-separated names, or a JSON array."),
+    user_layer: bool = typer.Option(
+        False,
+        "--user",
+        help="Write only the user config.toml. Default: write the project .orx/config.toml.",
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    root = _project_root()
+    if user_layer:
+        target = config_mod.user_config_path()
+        layer = "user"
+    else:
+        if root is None:
+            raise NotFoundError(
+                "not an ORX project: no .orx/ directory found "
+                "(run `orx init`, set ORX_PROJECT, or pass --user to write the user layer)"
+            )
+        target = root / ".orx" / "config.toml"
+        layer = "project"
+    names = _profile_names(root) if key in config_mod.PROFILE_KEYS else None
+    result = config_mod.set_config_value(
+        target, key, value, create=True, profile_names=names
+    )
+    _ok(json_out, layer=layer, **result)
+    if not json_out:
+        verb = "created" if result["created"] else "updated"
+        typer.echo(f"{verb} {layer} config {result['path']}")
+        typer.echo(f"{result['key']} = {_format_config_value(result['value'])}")
 
 
 # ---------------------------------------------------------------------------
@@ -477,10 +679,12 @@ def verify_submit(
 @app.command()
 @handle_errors
 def profiles(json_out: bool = JsonOpt) -> None:
-    """List parsed profiles and their runtime resource status."""
+    """List parsed profiles (with config layer origin) and resource status."""
     project = dispatch.open_project()
     rows = [
-        {**profile.to_dict(), "resource_status": project.store.resource_get(name).value}
+        {**profile.to_dict(),
+         "layer": project.profile_origins.get(name, "project"),
+         "resource_status": project.store.resource_get(name).value}
         for name, profile in project.profiles.items()
     ]
     _ok(json_out, profiles=rows)
@@ -488,7 +692,8 @@ def profiles(json_out: bool = JsonOpt) -> None:
         for row in rows:
             typer.echo(
                 f"{row['name']:<24} driver={row['driver']:<8} harness={row['harness']:<6}"
-                f" class={row['class']:<8} resource={row['resource_status']}"
+                f" class={row['class']:<8} layer={row['layer']:<8}"
+                f" resource={row['resource_status']}"
             )
 
 

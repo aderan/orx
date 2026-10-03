@@ -145,3 +145,4 @@ def test_status_in_a_separate_process_sees_same_state(project, goal, tmp_path):
     assert payload["run"]["status"] == "running"
     statuses = {t["id"]: t["status"] for t in payload["tasks"]}
     assert statuses == {"T001": "running", "T002": "pending", "T003": "pending"}
+

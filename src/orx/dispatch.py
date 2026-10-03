@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from orx import adapters, machine, plan as plan_mod, routing, runtime, verify
 from orx.adapters.base import scan_marker
+from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
 from orx.records import (
     ACTIVE_EXECUTION_STATUSES,
     AssignmentStatus,
+    ConfigError,
     ConflictError,
     GoalStatus,
     NotFoundError,
@@ -92,6 +94,12 @@ class Project:
     config: Config
     profiles: dict[str, Profile]
     store: Store
+    # M1 layered configuration: where every effective value and profile
+    # came from, plus the user-layer paths in play.
+    origins: dict[str, str] = field(default_factory=dict)
+    profile_origins: dict[str, str] = field(default_factory=dict)
+    user_config: Path | None = None
+    user_profiles: Path | None = None
 
     @property
     def config_path(self) -> Path:
@@ -107,6 +115,13 @@ class Project:
 
     def close(self) -> None:
         self.store.close()
+
+
+def load_profiles_only(config_path: Path, profiles_path: Path) -> dict:
+    """Project-layer profiles alone (init fallback when the user layer is
+    broken). Raises the project-layer error if that is the problem."""
+    from orx.config import load_profiles
+    return load_profiles(profiles_path)
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -142,8 +157,15 @@ def init_project(root: Path) -> dict:
 
     store = Store.open(orx_dir / "state.db")
     try:
-        config, profiles = load_project_config(config_path, profiles_path)
-        store.seed_resources(list(profiles))
+        # M1: seeding covers the effective profile set (user layer merged),
+        # so profiles referenced only from the user layer also get rows. A
+        # broken user layer must not break init: degrade to the project
+        # layer (doctor reports the layered failure).
+        try:
+            names = list(config_mod.load_effective(config_path, profiles_path).profiles)
+        except ConfigError:
+            names = list(load_profiles_only(config_path, profiles_path))
+        store.seed_resources(names)
         created.append(".orx/state.db")
     finally:
         store.close()
@@ -158,9 +180,18 @@ def open_project() -> Project:
             "(run `orx init` first, or set ORX_PROJECT)"
         )
     orx_dir = root / ".orx"
-    config, profiles = load_project_config(orx_dir / "config.toml", orx_dir / "profiles.toml")
+    effective = config_mod.load_effective(orx_dir / "config.toml", orx_dir / "profiles.toml")
     store = Store.open(orx_dir / "state.db")
-    return Project(root=root, config=config, profiles=profiles, store=store)
+    return Project(
+        root=root,
+        config=effective.config,
+        profiles=effective.profiles,
+        store=store,
+        origins=dict(effective.origins),
+        profile_origins=dict(effective.profile_origins),
+        user_config=effective.user_config,
+        user_profiles=effective.user_profiles,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +744,10 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         root=project.root,
         scratch=scratch,
         profile=profile,
-        prompt=worker_prompt(goal, task),
+        prompt=worker_prompt(
+            goal, task,
+            prior_failure=_prior_failure_context(store, revision.id, task.task_id),
+        ),
         timeout=project.config.command_timeout_sec,
     )
     run_result = runtime.run_launch(launch)
@@ -757,7 +791,22 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     }
 
 
-def worker_prompt(goal: Goal, task: TaskRow) -> str:
+def _prior_failure_context(store: Store, revision_id: int, task_id: str) -> str:
+    """The most recent recorded failure for a task, for retry prompts. The
+    task row itself clears failure_reason on retry, so history is the
+    source. Empty string for a first attempt."""
+    events = store.task_events(revision_id, task_id)
+    for event in reversed(events):
+        if event.to_status == "failed" and (event.reason or ""):
+            return (
+                f"\nA previous attempt at this task FAILED with:\n"
+                f"  {event.reason}\n"
+                f"Fix that specific problem; do not redo the task blindly.\n"
+            )
+    return ""
+
+
+def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "") -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
@@ -770,7 +819,7 @@ Task {task.task_id}: {task.objective}
 Scope (write only inside these project-relative paths): {allowed}
 Acceptance (your work is verified against these, verbatim):
 {acceptance}
-
+{prior_failure}
 How your work will be checked:
 {verification}
 
@@ -792,13 +841,16 @@ Check to verify (exact instruction): {item.spec}
 Required capabilities: {capabilities}
 
 Look at the project workspace at the current working directory. Then print
-EXACTLY one final line:
+EXACTLY two final lines, nothing after them:
 
+ORX_REASON=<one short line: what you checked, and for a fail what is missing>
 ORX_VERDICT=pass
 or
 ORX_VERDICT=fail
 
-Nothing else counts as a verdict. Exit 0 after printing it.
+A fail WITHOUT a reason line is an invalid verdict: the Controller cannot
+act on an unexplained failure. Nothing else counts as a verdict. Exit 0
+after printing both lines.
 """
 
 
@@ -1079,30 +1131,32 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
     # line inside the raw stdout never appears as a standalone line. The raw
     # stream remains the fallback (shell workers print markers directly).
-    verdict_text = scan_marker(adapter.extract_text(launch, run_result), "ORX_VERDICT") \
-        or scan_marker(run_result.stdout, "ORX_VERDICT") \
-        or scan_marker(run_result.stderr, "ORX_VERDICT")
+    message = adapter.extract_text(launch, run_result)
+    streams = message + "\n" + run_result.stdout + "\n" + run_result.stderr
+    verdict_text = scan_marker(streams, "ORX_VERDICT")
+    reason_text = scan_marker(streams, "ORX_REASON")
     if run_result.ok and verdict_text in ("pass", "fail"):
         passed = verdict_text == "pass"
     else:
         passed = False
         verdict_text = "no ORX_VERDICT line" if run_result.ok else _failure_excerpt(run_result)
+    detail = verdict_text if not reason_text else f"{verdict_text}: {reason_text}"
     store.attempt_update(
         attempt.id, ended_at=db_now(),
         result="pass" if passed else "fail",
-        failure_reason=None if passed else f"agent verifier: {verdict_text}",
+        failure_reason=None if passed else f"agent verifier: {detail}",
     )
     store.verification_add(
         revision.id, task.task_id, "agent", item.raw, passed=passed,
         attempt_id=attempt.id, output_path=log,
         required_capabilities=list(item.capabilities),
     )
-    verify.apply_verdict(store, revision.id, task, failure_hint=item.raw if not passed else None)
+    verify.apply_verdict(store, revision.id, task, failure_hint=detail if not passed else None)
     return {
         "task": task.task_id,
         "entry": item.raw,
         "verdict": "pass" if passed else "fail",
-        "detail": verdict_text,
+        "detail": detail,
         "log": log,
     }
 

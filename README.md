@@ -56,6 +56,25 @@ Every command takes `--json` for a machine envelope:
 - `.orx/runs/<run>/` — assignment prompts, exec logs, verification logs
 - `ORX_PROJECT` env var or parent search finds the project root
 
+User-layer files live next to each other: `ORX_CONFIG_DIR` if set, otherwise
+`$XDG_CONFIG_HOME/orx`, otherwise `~/.config/orx` (`config.toml` and
+`profiles.toml`). Data (probe cache and similar) lives in `ORX_DATA_DIR`,
+`$XDG_DATA_HOME/orx`, or `~/.local/share/orx`.
+
+```sh
+orx config path [--json]
+orx config list [--json]          # effective value + winning layer
+orx config get <key> [--json]     # same value and origin as list
+orx config set <key> <value> [--user] [--json]
+```
+
+`config set` writes `.orx/config.toml` unless `--user` is given. Values are
+parsed and checked before the file changes; a rejected write leaves it
+untouched. `schema_version` is not writable. A missing user config is created
+with `schema_version = 1` and only the key being set. Effective precedence,
+high to low, is environment (`ORX_RUNTIME_MAX_PARALLEL`,
+`ORX_RUNTIME_COMMAND_TIMEOUT_SEC`), project, user, then built-in defaults.
+
 ## Key invariants
 
 - `task complete` means execution finished, not that the task passed. Only
@@ -84,3 +103,29 @@ orx update --check  # install source + upgrade path (uv tool installs only)
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
+
+## M1 layered configuration
+
+User layer (preferred home for profile definitions):
+
+    ~/.config/orx/config.toml      user config (optional)
+    ~/.config/orx/profiles.toml    user profiles
+    ~/.local/share/orx/            user data dir (probes, snapshots)
+
+`XDG_CONFIG_HOME` / `XDG_DATA_HOME` are respected; `ORX_CONFIG_DIR` /
+`ORX_DATA_DIR` override absolutely. Project `.orx/` keeps `config.toml`
+(routing) and optionally `profiles.toml` (same-name project profiles
+completely replace user ones).
+
+Precedence, high to low: CLI arguments (`--depth`, `--profile`) >
+environment (`ORX_RUNTIME_MAX_PARALLEL`, `ORX_RUNTIME_COMMAND_TIMEOUT_SEC`;
+plus `ORX_PROJECT` for discovery) > project `.orx/` > user layer >
+built-in defaults. Inspect with `orx config path | list | get <key>`, write
+with `orx config set <key> <value> [--user]` (project layer by default;
+`schema_version` is never writable). Reading never creates files.
+
+Adopting the user layer from a project-first setup:
+`orx.config.migrate_profiles_to_user()` implements the collision-safe,
+idempotent host procedure (same-name definitions must match; unrelated
+user entries preserved; resource rows survive because profile identity is
+the name).
