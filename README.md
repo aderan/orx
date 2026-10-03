@@ -26,6 +26,7 @@ uv run orx verify               # deterministic checks + agent verifier dispatch
 uv run orx verify submit T001 --result pass
 uv run orx status
 uv run orx timeline --run R001 --limit 20
+uv run orx usage --json        # per-profile tasks, runtime, tokens + accuracy
 ```
 
 Every command takes `--json` for a machine envelope:
@@ -122,6 +123,24 @@ goal and run creation, planning assignments, routing decisions, attempts
 strictly time-ordered. Each one is `{ts, actor, event, detail}`. Human lines
 are `HH:MM:SS  actor  event  detail`. `--limit` keeps the newest N, still
 oldest-first. An unknown run or task exits 1; a bad `--limit` exits 2.
+
+## Usage
+
+```sh
+orx usage [--profile NAME] [--json]
+```
+
+Per-profile aggregates from attempts and `usage_observations` in
+`.orx/state.db`. `tasks` is the number of distinct task ids. `runtime_sec`
+sums each attempt's `started_at`..`ended_at` span. Token fields
+(`input_tokens`, `output_tokens`, `cached_input_tokens`) sum observations.
+A null field means that number was not observed, not that it was zero.
+An attempt with no observation leaves the sums of the rows that exist and
+sets `accuracy` to `unknown`. `accuracy` is `exact`, `estimated`, or
+`unknown`. Unknown is a successful row: shell runs and streams without
+usage still show tasks and runtime.
+Human columns are `PROFILE`, `TASKS`, `RUNTIME`, `INPUT`, `OUTPUT`,
+`CACHED`, `ACCURACY`. An unknown `--profile` exits 1; a bad flag exits 2.
 
 ## Key invariants
 

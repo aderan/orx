@@ -31,6 +31,7 @@ SCHEMA_TABLES = {
     "verifications",
     "routing_decisions",
     "resource_status",
+    "usage_observations",
 }
 
 

@@ -171,6 +171,25 @@ class CursorAdapter:
                 return planned
         return EffortOutcome(requested=planned.requested, actual=EFFORT_PROVIDER_DEFAULT, source=None)
 
+    def usage_observation(self, launch: Launch, run_result) -> dict | None:
+        """The --print JSON envelope's usage block (camelCase keys,
+        verified in a real run 2026-10-03)."""
+        text = run_result.stdout.strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if not isinstance(usage, dict):
+            return None
+        return {
+            "input_tokens": usage.get("inputTokens"),
+            "output_tokens": usage.get("outputTokens"),
+            "cached_input_tokens": usage.get("cacheReadTokens"),
+            "source": "native_cli",
+            "accuracy": "exact",
+        }
+
     def extract_text(self, launch: Launch, run_result) -> str:
         text = run_result.stdout.strip()
         try:

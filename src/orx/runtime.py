@@ -149,6 +149,12 @@ def run_argv(argv: list[str], cwd: Path, timeout: int, stdin_text: str | None = 
         )
 
 
+# CLI agent streams exceed the 256 KiB default on real planner runs and the
+# truncation cut the FINAL events (codex turn.completed usage) first. Usage
+# capture (M1 P5) needs the stream end; 2 MiB covers observed transcripts.
+LAUNCH_STREAM_LIMIT = 2 * 1024 * 1024
+
+
 def run_launch(launch) -> CommandResult:
     """Execute an adapters.Launch record. The only path real agents take."""
     return run_argv(
@@ -156,4 +162,5 @@ def run_launch(launch) -> CommandResult:
         cwd=launch.cwd,
         timeout=launch.timeout,
         stdin_text=launch.stdin_text,
+        stream_limit=LAUNCH_STREAM_LIMIT,
     )

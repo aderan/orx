@@ -216,3 +216,23 @@ probe only).
 - Paid-call overrun → per-phase caps; host absorbs tasks on request.
 - Schema v2 migration risk → existing backup-replace-restore framework;
   migration has its own tests.
+
+## M1 amendments (parallel orchestration, 2026-10-03)
+
+Applied mid-milestone after P4 landed (P1–P4 complete on the main dogfood
+chain; schema v2 already in main, so the original "front-load v2" idea is
+moot). Protocol, user-approved:
+
+- **P5 (usage)** stays on the main ORX dogfood chain (planner/worker/verify
+  through `orx`), landing schema v3 (`usage_observations`).
+- **P6 (inbox)** runs as a **host-fanout worktree**: a branch off main,
+  disjoint scope, built in parallel; inside ORX its tasks route `host-work`
+  (host claims them, completes with merge evidence). P6 owns schema v4
+  (`external_events`, `inbox_items`) — renumbered from 3 at merge, after
+  P5's v3 lands. Migrations stay single-writer per number.
+- Conflict surfaces: `cli.py` sub-app registrations are append-only;
+  `state.py` MIGRATIONS dict is the only ordered merge point.
+- P7 stays last: full regression + acceptance transcript on main.
+- Recorded as M2 candidates: "scope-disjoint CLI parallelism + worktree
+  driver" (parallel admission via disjoint `scope.allowed`), and
+  `replan --context-file` (finding #5).

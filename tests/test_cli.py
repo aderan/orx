@@ -787,6 +787,161 @@ def test_agent_status_rows_health_and_marks_override(cli_project):
     assert (cli_project / ".orx" / "profiles.toml").read_bytes() == before
 
 
+def _seed_attempt(store, profile, task_id, started_at, ended_at):
+    attempt = store.attempt_create(
+        None, "worker", profile, "cli", "codex", "m", "standard",
+        task_id=task_id, started=False,
+    )
+    store.attempt_update(attempt.id, started_at=started_at, ended_at=ended_at)
+    return attempt
+
+
+def test_usage_help_names_contract():
+    result = invoke("usage", "--help")
+    assert result.exit_code == 0
+    for word in ("--profile", "--json", "tasks", "runtime", "accuracy",
+                 "unknown", "input_tokens", "runtime_sec"):
+        assert word in result.stdout
+
+
+def test_usage_outside_project(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORX_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    result = invoke("usage", "--json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False and "error" in body
+
+
+def test_usage_bad_flag_exits_2(cli_project):
+    result = invoke("usage", "--limit", "1")
+    assert result.exit_code == 2
+
+
+def test_usage_empty_and_unknown_profile(cli_project):
+    result = invoke("usage", "--json")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["profiles"] == []
+
+    idle = invoke("usage", "--json", "--profile", "host-planner")
+    assert idle.exit_code == 0, idle.stdout
+    row = payload(idle)["profiles"][0]
+    assert row == {
+        "profile": "host-planner",
+        "tasks": 0,
+        "runtime_sec": 0.0,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cached_input_tokens": None,
+        "accuracy": "unknown",
+    }
+
+    missing = invoke("usage", "--json", "--profile", "no-such-profile")
+    assert missing.exit_code == 1
+    err = payload(missing)
+    assert err["ok"] is False
+    assert "unknown profile" in err["error"]
+
+
+def test_usage_aggregates_tokens_runtime_and_accuracy(cli_project):
+    project = dispatch.open_project()
+    try:
+        store = project.store
+        first = _seed_attempt(
+            store, "host-worker", "T001",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:01:00+00:00",
+        )
+        second = _seed_attempt(
+            store, "host-worker", "T001",
+            "2026-10-03T00:01:00+00:00", "2026-10-03T00:01:30+00:00",
+        )
+        store.usage_add(
+            first.id, "host-worker", "R001", "T001", 100, 10, 40, "native_cli", "exact",
+        )
+        store.usage_add(
+            second.id, "host-worker", "R001", "T001", 50, 5, 20, "native_cli", "exact",
+        )
+        _seed_attempt(
+            store, "host-verifier", "T002",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:10+00:00",
+        )
+        estimated = _seed_attempt(
+            store, "host-frontier", "T003",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:05+00:00",
+        )
+        store.usage_add(
+            estimated.id, "host-frontier", "R001", "T003", 7, 1, 0, "output_estimate", "estimated",
+        )
+        covered = _seed_attempt(
+            store, "cli-fake", "T004",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:04+00:00",
+        )
+        _seed_attempt(
+            store, "cli-fake", "T005",
+            "2026-10-03T00:00:00+00:00", "2026-10-03T00:00:06+00:00",
+        )
+        store.usage_add(
+            covered.id, "cli-fake", "R001", "T004", 9, 2, 1, "native_cli", "exact",
+        )
+    finally:
+        project.close()
+
+    result = invoke("usage", "--json")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    rows = {row["profile"]: row for row in body["profiles"]}
+    assert set(rows) == {"host-worker", "host-verifier", "host-frontier", "cli-fake"}
+
+    worker = rows["host-worker"]
+    assert worker["tasks"] == 1
+    assert worker["runtime_sec"] == 90.0
+    assert worker["input_tokens"] == 150
+    assert worker["output_tokens"] == 15
+    assert worker["cached_input_tokens"] == 60
+    assert worker["accuracy"] == "exact"
+
+    verifier = rows["host-verifier"]
+    assert verifier["tasks"] == 1
+    assert verifier["runtime_sec"] == 10.0
+    assert verifier["input_tokens"] is None
+    assert verifier["output_tokens"] is None
+    assert verifier["cached_input_tokens"] is None
+    assert verifier["accuracy"] == "unknown"
+
+    frontier = rows["host-frontier"]
+    assert frontier["tasks"] == 1
+    assert frontier["runtime_sec"] == 5.0
+    assert frontier["input_tokens"] == 7
+    assert frontier["accuracy"] == "estimated"
+
+    # One attempt has no observation: tokens stay the observed sum, accuracy unknown.
+    shell = rows["cli-fake"]
+    assert shell["tasks"] == 2
+    assert shell["runtime_sec"] == 10.0
+    assert shell["input_tokens"] == 9
+    assert shell["output_tokens"] == 2
+    assert shell["cached_input_tokens"] == 1
+    assert shell["accuracy"] == "unknown"
+
+    filtered = payload(invoke("usage", "--json", "--profile", "host-worker"))
+    assert [row["profile"] for row in filtered["profiles"]] == ["host-worker"]
+    assert filtered["profiles"][0]["accuracy"] == "exact"
+
+    human = invoke("usage")
+    assert human.exit_code == 0
+    lines = human.stdout.splitlines()
+    header = lines[0]
+    assert header.index("PROFILE") < header.index("TASKS") < header.index("RUNTIME")
+    assert "ACCURACY" in header
+    text = human.stdout
+    assert "host-worker" in text and "exact" in text
+    assert "host-verifier" in text and "unknown" in text
+    assert "0:01:30" in text
+
+
 def test_config_list_json_error_on_bad_env(cli_project, monkeypatch):
     before = (cli_project / ".orx" / "config.toml").read_bytes()
     monkeypatch.setenv("ORX_RUNTIME_MAX_PARALLEL", "nope")

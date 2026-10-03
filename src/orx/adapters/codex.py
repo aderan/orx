@@ -185,6 +185,31 @@ class CodexAdapter:
             return planned
         return EffortOutcome(requested=planned.requested, actual=EFFORT_PROVIDER_DEFAULT, source=None)
 
+    def usage_observation(self, launch: Launch, run_result) -> dict | None:
+        """turn.completed.usage from the JSONL stream (native, exact). None
+        when the stream carries no usage (truncation, older CLI)."""
+        best: dict | None = None
+        for line in run_result.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{") or "turn.completed" not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                best = usage  # keep the LAST turn.completed
+        if not best:
+            return None
+        return {
+            "input_tokens": best.get("input_tokens"),
+            "output_tokens": best.get("output_tokens"),
+            "cached_input_tokens": best.get("cached_input_tokens"),
+            "source": "native_cli",
+            "accuracy": "exact",
+        }
+
     def extract_text(self, launch: Launch, run_result) -> str:
         if launch.last_message_path and launch.last_message_path.exists():
             return launch.last_message_path.read_text()

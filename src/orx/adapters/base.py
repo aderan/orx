@@ -54,7 +54,9 @@ class Launch:
 
 
 class Adapter(Protocol):
-    """Every harness adapter implements this surface."""
+    """Every harness adapter implements this surface. M1 P5 adds an optional
+    usage_observation(launch, run_result) -> dict | None; None means the
+    harness reports nothing (unknown is a legal, stored outcome)."""
 
     harness: str
 

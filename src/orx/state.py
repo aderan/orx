@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 2
+CODE_SCHEMA_VERSION = 3
 
 
 def now() -> str:
@@ -214,6 +214,24 @@ DROP TABLE resource_status;
 ALTER TABLE resource_status_v2 RENAME TO resource_status;
 """
 
+# v3: usage observations attach to attempts (M1 P5). Unknown is a legal,
+# stored outcome — tokens are an observation, never a fabricated total.
+SCHEMA_V3_USAGE = """
+CREATE TABLE IF NOT EXISTS usage_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  profile TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  task_id TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  source TEXT NOT NULL CHECK (source IN ('native_cli', 'output_estimate')),
+  accuracy TEXT NOT NULL CHECK (accuracy IN ('exact', 'estimated', 'unknown')),
+  created_at TEXT NOT NULL
+);
+"""
+
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_V1)
@@ -233,10 +251,20 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V3_USAGE)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
     2: _migrate_v2,
+    3: _migrate_v3,
 }
 
 
@@ -1235,6 +1263,28 @@ class Store:
     def resource_rows(self) -> list[ResourceRow]:
         rows = self.conn.execute("SELECT * FROM resource_status ORDER BY profile").fetchall()
         return [_resource(r) for r in rows]
+
+    # -- usage observations (M1 P5) --------------------------------------
+
+    def usage_add(self, attempt_id: int, profile: str, run_id: str, task_id: str | None,
+                  input_tokens: int | None, output_tokens: int | None,
+                  cached_input_tokens: int | None, source: str, accuracy: str) -> None:
+        with self.tx():
+            self.conn.execute(
+                "INSERT INTO usage_observations(attempt_id, profile, run_id, task_id,"
+                " input_tokens, output_tokens, cached_input_tokens, source, accuracy, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+                 cached_input_tokens, source, accuracy, now()),
+            )
+
+    def usage_rows(self, profile: str | None = None) -> list[sqlite3.Row]:
+        if profile is None:
+            return self.conn.execute(
+                "SELECT * FROM usage_observations ORDER BY id").fetchall()
+        return self.conn.execute(
+            "SELECT * FROM usage_observations WHERE profile = ? ORDER BY id",
+            (profile,)).fetchall()
 
     def seed_resources(self, profile_names: list[str]) -> None:
         """orx init: every profile starts `unknown` so it stays routable."""

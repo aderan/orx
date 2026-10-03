@@ -113,7 +113,7 @@ def test_restart_recovery_mid_run(project, goal, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert {t["id"]: t["status"] for t in dispatch.task_list(reopened)} == before
-        assert reopened.store.schema_version() == 2
+        assert reopened.store.schema_version() == 3
         result = dispatch.task_complete(reopened, "T001", str(write_evidence(tmp_path)))
         assert result["status"] == "passed"
         dispatch.run_slice(reopened)

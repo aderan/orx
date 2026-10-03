@@ -921,3 +921,51 @@ def test_classify_failure_evidence_and_default():
     # Unknown -> safe default
     assert classify_failure(R("zsh: killed")) == "process_failure"
     assert classify_failure(R("")) == "process_failure"
+
+
+def test_usage_observation_parsers():
+    """Fixture-backed: codex turn.completed.usage (flat) and the cursor
+    envelope's camelCase usage both parse to exact native_cli rows; streams
+    without usage report None (unknown stays legal at the aggregate)."""
+    from orx.adapters.codex import CodexAdapter
+    from orx.adapters.cursor import CursorAdapter
+
+    class L:
+        last_message_path = None
+
+    class R:
+        exit_code = 0
+        stderr = ""
+        stdout = (
+            '{"type":"thread.started","thread_id":"0"}\n'
+            '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"hi"}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":73844,'
+            '"cached_input_tokens":63232,"cache_write_input_tokens":0,'
+            '"output_tokens":308,"reasoning_output_tokens":0}}\n'
+        )
+
+    codex = CodexAdapter().usage_observation(L(), R())
+    assert codex == {"input_tokens": 73844, "output_tokens": 308,
+                     "cached_input_tokens": 63232,
+                     "source": "native_cli", "accuracy": "exact"}
+
+    class REnv:
+        exit_code = 0
+        stderr = ""
+        stdout = ('{"type":"result","subtype":"success","is_error":false,'
+                  '"result":"done","usage":{"inputTokens":41225,'
+                  '"outputTokens":8349,"cacheReadTokens":356906,'
+                  '"cacheWriteTokens":0}}')
+
+    cursor = CursorAdapter().usage_observation(L(), REnv())
+    assert cursor == {"input_tokens": 41225, "output_tokens": 8349,
+                      "cached_input_tokens": 356906,
+                      "source": "native_cli", "accuracy": "exact"}
+
+    class RNone:
+        exit_code = 0
+        stderr = ""
+        stdout = "plain text, no envelope"
+
+    assert CursorAdapter().usage_observation(L(), RNone()) is None
+    assert CodexAdapter().usage_observation(L(), RNone()) is None

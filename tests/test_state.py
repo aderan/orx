@@ -17,7 +17,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 2
+        assert store.schema_version() == 3
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -178,7 +178,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 2
+        assert reopened.schema_version() == 3
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0

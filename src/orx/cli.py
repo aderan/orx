@@ -951,6 +951,28 @@ def update(
             typer.echo(result["output"])
 
 
+def _format_runtime(seconds: float) -> str:
+    total = int(round(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
+def _token_cell(value) -> str:
+    return "-" if value is None else str(value)
+
+
+def _render_usage_row(row: dict) -> str:
+    return (
+        f"{row['profile']:<24} {row['tasks']:>5}  "
+        f"{_format_runtime(row['runtime_sec']):>10}  "
+        f"{_token_cell(row['input_tokens']):>10}  "
+        f"{_token_cell(row['output_tokens']):>10}  "
+        f"{_token_cell(row['cached_input_tokens']):>10}  "
+        f"{row['accuracy']}"
+    )
+
+
 def _timeline_clock(ts: str) -> str:
     try:
         parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -991,6 +1013,53 @@ def timeline(
                 f"{_timeline_clock(entry['ts'])}  {entry['actor']}  "
                 f"{entry['event']}  {entry['detail']}"
             )
+
+
+@app.command()
+@handle_errors
+def usage(
+    profile: Optional[str] = typer.Option(
+        None, "--profile", help="Only the aggregate for this profile."
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Show per-profile usage: tasks, runtime, and token sums.
+
+    Tasks are distinct task ids on attempts. Runtime is the sum of each
+    attempt's started_at..ended_at span (incomplete attempts add no time).
+    Token columns sum usage_observations. A column is `-` / null when no
+    observation recorded that field, or when any observation omitted it.
+    Missing tokens are not stored as zero. An attempt with no observation
+    does not erase sums from the rows that exist.
+
+    Accuracy is `exact`, `estimated`, or `unknown`. Unknown is a successful
+    result: an attempt with no observation (shell, or a stream that carried
+    no usage) makes the profile `unknown` while tasks, runtime, and any
+    observed token sums still report. Exact wins only when every attempt
+    has an observation and every observation is exact.
+
+    Human columns are PROFILE, TASKS, RUNTIME, INPUT, OUTPUT, CACHED,
+    ACCURACY. RUNTIME is `H:MM:SS`.
+
+    --json field profiles is a list of objects: profile, tasks, runtime_sec,
+    input_tokens, output_tokens, cached_input_tokens, accuracy. The envelope
+    is {"ok": true, "profiles": [...]}. An unknown --profile exits 1. A
+    missing project exits 1. Exit 0 on success, 1 on a domain error, 2 on
+    usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.usage(project, profile=profile)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(
+            f"{'PROFILE':<24} {'TASKS':>5}  {'RUNTIME':>10}  "
+            f"{'INPUT':>10}  {'OUTPUT':>10}  {'CACHED':>10}  ACCURACY"
+        )
+        for row in result["profiles"]:
+            typer.echo(_render_usage_row(row))
 
 
 if __name__ == "__main__":

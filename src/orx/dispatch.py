@@ -458,6 +458,8 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     # trail on success too, not only on failure.
     log = _record_execution_log(project, run.id, f"plan-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
+    _record_usage(store, adapter, launch, run_result, attempt, profile.name,
+                  run_id=run.id, task_id=None)
     health.record_attempt_outcome(
         store, profile.name, ok=run_result.ok,
         error_kind=None if run_result.ok else classify_failure(run_result))
@@ -494,6 +496,27 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         "routing": _routing_payload(result),
         **submitted,
     }
+
+
+def _record_usage(store, adapter, launch, run_result, attempt, profile_name,
+                  run_id: str, task_id: str | None) -> None:
+    """Attach the adapter's usage observation to the attempt (M1 P5).
+    Harneses that report nothing simply write no row."""
+    getter = getattr(adapter, "usage_observation", None)
+    if getter is None:
+        return
+    obs = getter(launch, run_result)
+    if not obs:
+        return
+    store.usage_add(
+        attempt_id=attempt.id, profile=profile_name, run_id=run_id,
+        task_id=task_id,
+        input_tokens=obs.get("input_tokens"),
+        output_tokens=obs.get("output_tokens"),
+        cached_input_tokens=obs.get("cached_input_tokens"),
+        source=obs.get("source", "native_cli"),
+        accuracy=obs.get("accuracy", "unknown"),
+    )
 
 
 def _failure_excerpt(run_result) -> str:
@@ -758,6 +781,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
+    _record_usage(store, adapter, launch, run_result, attempt, profile.name,
+                  run_id=run.id, task_id=task.task_id)
     health.record_attempt_outcome(
         store, profile.name, ok=run_result.ok,
         error_kind=None if run_result.ok else classify_failure(run_result))
@@ -1135,6 +1160,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     )
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
+    _record_usage(store, adapter, launch, run_result, attempt, profile.name,
+                  run_id=run.id, task_id=task.task_id)
     health.record_attempt_outcome(
         store, profile.name, ok=run_result.ok,
         error_kind=None if run_result.ok else classify_failure(run_result))
@@ -1695,3 +1722,95 @@ def timeline(
         for entry in selected
     ]
     return {"entries": entries, "count": len(entries)}
+
+
+# ---------------------------------------------------------------------------
+# Usage (read model over attempts + usage_observations)
+
+
+_ACCURACY_RANK = {"exact": 0, "estimated": 1, "unknown": 2}
+
+
+def _attempt_runtime_sec(attempt) -> float:
+    """Seconds between started_at and ended_at. Incomplete attempts add nothing."""
+    if not attempt.started_at or not attempt.ended_at:
+        return 0.0
+    try:
+        delta = (_parse_ts(attempt.ended_at) - _parse_ts(attempt.started_at)).total_seconds()
+    except ValueError:
+        return 0.0
+    return delta if delta > 0 else 0.0
+
+
+def _token_sum(rows: list, key: str) -> int | None:
+    """Sum one token column. None when there is no complete observation of it.
+
+    A missing value is not zero: publishing a partial sum would invent a total.
+    """
+    if not rows:
+        return None
+    values = [row[key] for row in rows]
+    if any(value is None for value in values):
+        return None
+    return sum(int(value) for value in values)
+
+
+def _accuracy_label(attempts: list, rows: list) -> str:
+    """Worst stored label. A gap (an attempt with no observation) is unknown.
+
+    Unknown is a legal result: shell runs and truncated streams record no tokens.
+    """
+    if not rows:
+        return "unknown"
+    covered = {row["attempt_id"] for row in rows}
+    if any(attempt.id not in covered for attempt in attempts):
+        return "unknown"
+    labels = [row["accuracy"] for row in rows]
+    return max(labels, key=lambda label: _ACCURACY_RANK.get(label, 2))
+
+
+def _usage_entry(name: str, attempts: list, rows: list) -> dict:
+    runtime = sum(_attempt_runtime_sec(attempt) for attempt in attempts)
+    tasks = {attempt.task_id for attempt in attempts if attempt.task_id}
+    return {
+        "profile": name,
+        "tasks": len(tasks),
+        "runtime_sec": round(runtime, 6),
+        "input_tokens": _token_sum(rows, "input_tokens"),
+        "output_tokens": _token_sum(rows, "output_tokens"),
+        "cached_input_tokens": _token_sum(rows, "cached_input_tokens"),
+        "accuracy": _accuracy_label(attempts, rows),
+    }
+
+
+def usage(project: Project, profile: str | None = None) -> dict:
+    """Per-profile aggregates. Task counts and runtime come from attempts.
+
+    Token sums come from usage_observations. Accuracy is exact, estimated, or
+    unknown; unknown is success, not an error. A missing observation does not
+    zero-fill tokens.
+    """
+    store = project.store
+    attempts = store.attempts_all()
+    rows = store.usage_rows(None)
+    by_profile_attempts: dict[str, list] = {}
+    for attempt in attempts:
+        by_profile_attempts.setdefault(attempt.profile, []).append(attempt)
+    by_profile_rows: dict[str, list] = {}
+    for row in rows:
+        by_profile_rows.setdefault(row["profile"], []).append(row)
+
+    active = set(by_profile_attempts) | set(by_profile_rows)
+    if profile is not None:
+        if profile not in project.profiles and profile not in active:
+            raise NotFoundError(f"unknown profile {profile}")
+        names = [profile]
+    else:
+        names = [name for name in project.profiles if name in active]
+        names.extend(sorted(active.difference(project.profiles)))
+
+    profiles = [
+        _usage_entry(name, by_profile_attempts.get(name, []), by_profile_rows.get(name, []))
+        for name in names
+    ]
+    return {"profiles": profiles}
