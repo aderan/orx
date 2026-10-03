@@ -355,11 +355,105 @@ PLAN_IR_SCHEMA: dict = {
 }
 
 
-def planner_prompt(goal, depth: PlanDepth) -> str:
+def render_replan_facts(snapshot: dict) -> str:
+    """Render the deterministic ORX-state snapshot as the planner's facts
+    block. Facts the state does not carry are labeled unknown/none-recorded —
+    the planner must never guess them from exploration."""
+    active = snapshot.get("active_revision")
+    if active:
+        head = (
+            f"Active plan revision: {active['revision']} ({active['depth']},"
+            f" planner {active['planner_profile']})."
+        )
+    else:
+        head = "Active plan revision: none."
+    history = "; ".join(
+        f"rev {rev['revision']} {rev['status']}" for rev in snapshot["revisions"]
+    ) or "(no revisions recorded)"
+    lines = [
+        "Execution facts — deterministic snapshot of ORX state (authoritative"
+        f" history; generated {snapshot['generated_at']}; do NOT re-derive by"
+        " exploring the repo):",
+        f"Run {snapshot['run_id']}, Goal {snapshot['goal_id']}. {head}",
+        f"Revision history: {history}.",
+        "Task history across revisions:",
+    ]
+    tasks = snapshot["tasks"]
+    if not tasks:
+        lines.append("  (no tasks recorded — nothing has been planned or run yet)")
+    for task in tasks:
+        lines.append(
+            f"  - [rev {task['revision']}] {task['task_id']}: {task['objective']}"
+            f" — {task['status'].upper()}"
+        )
+        if task["dependencies"]:
+            lines.append(
+                f"      depends on: {', '.join(task['dependencies'])}"
+            )
+        if task["status"] == "failed":
+            lines.append(
+                "      failure: "
+                + (task["failure_reason"] or "(unknown — no failure reason recorded)")
+            )
+        elif task["failure_reason"]:
+            lines.append(f"      last recorded issue: {task['failure_reason']}")
+        verifications = task["verifications"]
+        if verifications:
+            rendered = []
+            for row in verifications:
+                exit_note = (
+                    "denied" if row["exit_code"] is None else f"exit {row['exit_code']}"
+                )
+                log = f" [log: {row['output_path']}]" if row["output_path"] else ""
+                rendered.append(
+                    f"{row['command']!r} ({row['kind']}, {exit_note},"
+                    f" {'passed' if row['passed'] else 'FAILED'}){log}"
+                )
+            lines.append("      verified: " + "; ".join(rendered))
+        else:
+            lines.append("      verified: (no verification results recorded)")
+        evidence = task["evidence"]
+        if evidence:
+            lines.append(
+                "      evidence: "
+                + "; ".join(f"[{kind}] {path}" for kind, path in evidence)
+            )
+        else:
+            lines.append("      evidence: (none recorded)")
+    return "\n".join(lines)
+
+
+def planner_prompt(goal, depth: PlanDepth, replan_facts: str = "", intent: str = "") -> str:
     acceptance_lines = "\n".join(f"  - {item!r}" for item in goal.acceptance) or "  (none)"
     constraints_lines = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
+    replan_header = (
+        "\nThis is a REPLAN: an earlier plan revision exists. The Execution Facts\n"
+        "below are ORX's recorded history of this Run.\n"
+        if replan_facts
+        else ""
+    )
+    facts_block = f"\n{replan_facts}\n" if replan_facts else ""
+    intent_block = (
+        "\nController's intent for THIS replan round (supplied via"
+        " `replan --context-file`; it supplements the Goal — it can never"
+        f" rewrite or replace it):\n{intent}\n"
+        if intent
+        else ""
+    )
+    replan_rules = (
+        "\n- the Execution Facts above are authoritative history. Treat every task"
+        "\n  marked PASSED as done work; do not re-plan or redo it unless this"
+        "\n  round's intent explicitly changes it."
+        "\n- ORX never auto-passes tasks: every task in the plan you emit starts"
+        "\n  pending or runnable. A Goal acceptance criterion already satisfied by"
+        "\n  passed work must still appear VERBATIM in some task's acceptance —"
+        "\n  give that task a cheap verification that the fact still holds, not a"
+        "\n  redo of the work."
+        if replan_facts
+        else ""
+    )
     return f"""You are the ORX planner for Goal {goal.id} at depth '{depth.value}'.
-
+{replan_header}
 Objective:
 {goal.objective}
 
@@ -371,7 +465,7 @@ least one task; a paraphrase will be rejected):
 {acceptance_lines}
 
 {('Context: ' + goal.context) if goal.context else ''}
-
+{intent_block}{facts_block}
 Explore the repository, then produce ONLY a JSON document matching this Plan IR
 schema (unknown extra fields are ignored):
 
@@ -391,5 +485,5 @@ Rules:
 - preread lists the project-relative files a worker must read before starting
   (code and tests; first entry may be a per-round plan document). Keep it
   small — it bounds the worker's exploration surface.
-- do not modify the Goal text.
+- do not modify the Goal text.{replan_rules}
 """

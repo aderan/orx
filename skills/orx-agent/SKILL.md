@@ -11,8 +11,18 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 
 - Explore the repository first; fill `exploration` (summary,
   relevant_components, unknowns, assumptions, risks) and `approach`.
+- If the prompt contains an "Execution facts" snapshot, this is a REPLAN:
+  those facts are ORX's recorded history, not suggestions. Treat every task
+  marked PASSED as done work — do not re-plan or redo it unless the round's
+  intent explicitly changes it. Facts labeled unknown/none-recorded are
+  unknown; do not invent them.
+- The "Controller's intent" block (when present) describes THIS round only;
+  it supplements the Goal and never replaces it.
 - Copy each Goal acceptance criterion **verbatim** into some task's
-  `acceptance` list. Paraphrases are rejected.
+  `acceptance` list. Paraphrases are rejected. A criterion already satisfied
+  by passed work still needs a task — give it a cheap verification that the
+  fact still holds, not a redo of the work. Nothing in your plan is
+  auto-passed; new tasks always start from scratch.
 - Task ids are `T` + digits, unique; dependencies reference existing ids only.
 - `scope.allowed` lists project-relative paths only (never absolute, no `..`).
 - `verification` entries are: a shell command (runs from the project root),

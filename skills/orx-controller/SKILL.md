@@ -29,12 +29,29 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
 8. Retry (`orx task retry <id>`) for test failures, process crashes, or
    incomplete implementations. Retry keeps the same plan.
 9. Replan (`orx replan`) only when an assumption or the dependency graph is
-   wrong. Replan is rejected while tasks are running or verifying.
+   wrong. Replan is rejected while tasks are running or verifying. When you
+   replan mid-Goal, write a context file first and pass
+   `orx replan --context-file <file>`: the file carries this round's reason,
+   the intent (what should change, what must not), and supporting material.
+   ORX adds the Goal verbatim plus a deterministic execution-fact snapshot
+   (revisions, task statuses, passed work, failure reasons, evidence and
+   verification references) to the same prompt — the planner sees all three,
+   and the Goal is never rewritten. Re-running `orx replan` refreshes a
+   still-waiting planning assignment with the latest facts and intent.
 10. When any task is in `verifying`, run `orx verify`. Agent checks come back
     to you as assignments; submit each verdict with
     `orx verify submit <task> --result pass|fail [--entry '<exact entry>'] --evidence <file>`.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
     Not when output "looks finished".
+
+## Resuming (new session, no chat history)
+
+`orx status --json` is the state; `orx run` re-surfaces every parked
+host/external assignment with its prompt file — the prompts are
+self-contained (Goal constraints, Goal context, scope, acceptance,
+verification, prior failure feedback), so pass them through unchanged and
+never reconstruct them from memory. Planning assignments live under
+`.orx/runs/<run>/assignments/`.
 
 ## Evidence file
 

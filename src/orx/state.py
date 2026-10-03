@@ -936,6 +936,16 @@ class Store:
                     (status.value, assignment_id),
                 )
 
+    def assignment_update_prompt(self, assignment_id: str, prompt: str) -> None:
+        """Refresh a still-waiting assignment's prompt (a replan re-routed with
+        newer facts/intent). The row and the on-disk file stay in sync because
+        the caller rewrites the file in the same flow."""
+        with self.tx():
+            self.conn.execute(
+                "UPDATE planning_assignments SET prompt = ? WHERE id = ?",
+                (prompt, assignment_id),
+            )
+
     # -- plan revisions ---------------------------------------------------------
 
     def revision_create(self, run_id: str, depth: str, planner_profile: str, ir: dict) -> Revision:

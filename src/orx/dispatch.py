@@ -318,15 +318,108 @@ def _resolve_depth(project: Project, goal: Goal, explicit: str | None) -> PlanDe
     return PlanDepth(project.config.plan_depth_default)
 
 
+REPLAN_CONTEXT_MAX_BYTES = 64 * 1024
+
+
+def load_replan_context(path_str: str) -> str:
+    """The Controller's intent file for this replan round: why replanning,
+    what this round should change, any supporting material. Validated before
+    anything else happens — a bad file must fail before any model is called.
+    The text supplements the Goal; no code path may write it into the Goal."""
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise ORXError(f"cannot read replan context file {path_str}: {exc}") from None
+    if not text.strip():
+        raise ORXError(
+            f"replan context file {path_str} is empty; provide this round's reason,"
+            " intent, and supporting material (or omit --context-file)"
+        )
+    if len(text.encode("utf-8")) > REPLAN_CONTEXT_MAX_BYTES:
+        raise ORXError(
+            f"replan context file {path_str} exceeds {REPLAN_CONTEXT_MAX_BYTES} bytes;"
+            " keep the intent file focused"
+        )
+    return text
+
+
+def replan_snapshot(store: Store, goal: Goal, run: Run) -> dict:
+    """Deterministic fact snapshot for a replan: every revision of this run,
+    every task with its recorded status, failure reason, evidence, and
+    verification results. Derived purely from ORX state — never from a model
+    or the ambient workspace."""
+    revisions = sorted(
+        (r for r in store.revisions_all() if r.run_id == run.id),
+        key=lambda r: r.revision,
+    )
+    tasks_out: list[dict] = []
+    for rev in revisions:
+        for task in store.tasks_all(rev.id):
+            tasks_out.append(
+                {
+                    "revision": rev.revision,
+                    "task_id": task.task_id,
+                    "objective": task.objective,
+                    "status": task.status,
+                    "dependencies": list(store.deps_for(rev.id, task.task_id)),
+                    "failure_reason": task.failure_reason,
+                    "evidence": [
+                        {"kind": kind, "path": path}
+                        for kind, path in store.evidence_for_task(rev.id, task.task_id)
+                    ],
+                    "verifications": [
+                        {
+                            "kind": v.kind,
+                            "command": v.command,
+                            "passed": v.passed,
+                            "exit_code": v.exit_code,
+                            "output_path": v.output_path,
+                        }
+                        for v in store.verifications_for(rev.id, task.task_id)
+                    ],
+                }
+            )
+    active = next((r for r in revisions if r.status == "active"), None)
+    return {
+        "run_id": run.id,
+        "goal_id": goal.id,
+        "generated_at": db_now(),
+        "active_revision": (
+            {
+                "revision": active.revision,
+                "depth": active.depth,
+                "planner_profile": active.planner_profile,
+            }
+            if active
+            else None
+        ),
+        "revisions": [{"revision": r.revision, "status": r.status} for r in revisions],
+        "tasks": tasks_out,
+    }
+
+
 def plan_route(
-    project: Project, depth_flag: str | None = None, profile_flag: str | None = None
+    project: Project, depth_flag: str | None = None, profile_flag: str | None = None,
+    context_file: str | None = None,
 ) -> dict:
     """Route the planner. Host driver -> waiting assignment. CLI execution is
     not implemented in the M0 core kernel, so a CLI-driver result is returned
-    as `mode: incomplete` rather than faked."""
+    as `mode: incomplete` rather than faked. When a plan revision is already
+    active this is a replan: the prompt carries a deterministic fact snapshot
+    plus (when supplied) the Controller's --context-file intent."""
     store = project.store
     goal, run = _active_context(project)
+    # A bad context file fails before routing, attempts, or any model call.
+    intent = load_replan_context(context_file) if context_file else ""
     _check_replan_allowed(store, run)
+
+    revision = _active_revision(project, run)
+    facts_md = ""
+    if revision is not None:
+        facts_md = plan_mod.render_replan_facts(replan_snapshot(store, goal, run))
 
     depth = _resolve_depth(project, goal, depth_flag)
     request = routing.RouteRequest(
@@ -342,8 +435,9 @@ def plan_route(
 
     profile = result.profile
     assert profile is not None
+    prompt = plan_mod.planner_prompt(goal, depth, replan_facts=facts_md, intent=intent)
+    replan = revision is not None
     if profile.driver.value == "host":
-        revision = _active_revision(project, run)
         attempt = store.attempt_create(
             revision_row_id=revision.id if revision else None,
             role=Role.PLANNER.value,
@@ -357,26 +451,35 @@ def plan_route(
             isolation="prompt_only",
         )
         routing.persist_decision(store, request, result, attempt_id=attempt.id)
-
         assignment = store.assignment_waiting(run.id)
         if assignment is None:
             if run.status == RunStatus.DONE.value:
                 store.run_set_status(run.id, RunStatus.PLANNING)
                 store.goal_set_status(goal.id, GoalStatus.ACTIVE)
-            prompt = plan_mod.planner_prompt(goal, depth)
             assignment = store.assignment_create(
                 run.id, profile.name, depth.value, prompt
             )
+            _write_assignment_file(project, run, assignment)
+        elif assignment.prompt != prompt:
+            # A waiting assignment predates this call: facts and/or intent have
+            # moved on. Refresh prompt row + file so what the planner receives
+            # is what ORX recorded, never a stale composition.
+            store.assignment_update_prompt(assignment.id, prompt)
+            assignment = store.assignment_get(assignment.id)
             _write_assignment_file(project, run, assignment)
         return {
             "mode": "host_required",
             "depth": depth.value,
             "assignment": _assignment_payload(project, assignment),
             "routing": _routing_payload(result),
+            "replan": replan,
+            "context_file": context_file,
         }
 
     if profile.driver.value == "cli":
-        return _run_cli_planner(project, goal, run, depth, profile, request, result)
+        return _run_cli_planner(project, goal, run, depth, profile, request, result,
+                                prompt=prompt, replan=replan,
+                                context_file=context_file)
 
     # driver external: ORX does not launch external planners; the human runs
     # the prompt wherever they want and submits the result by hand.
@@ -392,6 +495,8 @@ def plan_route(
             "yourself, then `orx plan submit --file plan.json`."
         ),
         "routing": _routing_payload(result),
+        "replan": replan,
+        "context_file": context_file,
     }
 
 
@@ -416,9 +521,11 @@ def _record_execution_log(project: Project, run_id: str, label: str,
 
 def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
                      profile, request: routing.RouteRequest,
-                     result: routing.RouteResult) -> dict:
+                     result: routing.RouteResult, *, prompt: str,
+                     replan: bool = False, context_file: str | None = None) -> dict:
     """Launch a CLI planner through its adapter, parse the Plan IR it printed,
-    and submit it. Completion is real — never faked."""
+    and submit it. Completion is real — never faked. The exact prompt handed
+    to the planner is archived under the launch dir for later audit."""
     store = project.store
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
@@ -437,7 +544,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         root=project.root,
         scratch=scratch,
         profile=profile,
-        prompt=plan_mod.planner_prompt(goal, depth),
+        prompt=prompt,
         timeout=project.config.command_timeout_sec,
         schema_path=schema_path,
     )
@@ -454,6 +561,10 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         isolation=launch.sandbox,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
+    # Archive the exact planner input (goal + facts + intent + schema rules):
+    # the file a later audit compares against what the model actually saw.
+    prompt_path = scratch / f"prompt-{attempt.id}.md"
+    prompt_path.write_text(prompt)
 
     run_result = runtime.run_launch(launch)
     # Always persist the raw transcript: paid planner calls need an audit
@@ -496,6 +607,9 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         "depth": depth.value,
         "profile": profile.name,
         "routing": _routing_payload(result),
+        "replan": replan,
+        "context_file": context_file,
+        "prompt_file": str(prompt_path.relative_to(project.root)),
         **submitted,
     }
 
@@ -662,6 +776,7 @@ def run_slice(project: Project) -> dict:
 
     started = 0
     cap = project.config.effective_parallelism
+    parked_this_slice: set[str] = set()
     for task in store.tasks_all(revision.id):
         current = store.task_get(revision.id, task.task_id)
         if TaskStatus(current.status) is not TaskStatus.RUNNABLE:
@@ -676,10 +791,12 @@ def run_slice(project: Project) -> dict:
         profile = result.profile
         assert profile is not None
         if profile.driver.value == "host":
+            parked_this_slice.add(task.task_id)
             out["host_required"].append(
                 _park_task(project, goal, run, revision.id, current, result, request, profile, "host")
             )
         elif profile.driver.value == "external":
+            parked_this_slice.add(task.task_id)
             out["waiting_external"].append(
                 _park_task(project, goal, run, revision.id, current, result, request, profile, "external")
             )
@@ -695,6 +812,37 @@ def run_slice(project: Project) -> dict:
                 out["failed"].append(outcome)
             else:
                 out["started"].append(outcome)
+
+    # Re-surface parked assignments: a resumed Controller (or a brand-new host
+    # session) recovers the exact prompt file from state alone — no chat
+    # context, no re-routing, no state change.
+    for task in store.tasks_all(revision.id):
+        if task.task_id in parked_this_slice:
+            continue  # already reported as a fresh park above
+        status = TaskStatus(task.status)
+        if status not in (TaskStatus.WAITING_HOST, TaskStatus.WAITING_EXTERNAL):
+            continue
+        attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+        prompt_file = (
+            project.root / ".orx" / "runs" / run.id / "assignments" / f"{task.task_id}.md"
+        )
+        entry = {
+            "task": task.task_id,
+            "status": task.status,
+            "profile": attempt.profile if attempt else None,
+            "prompt_file": (
+                str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None
+            ),
+            "preread": list(task.preread),
+            "resurfaced": True,
+        }
+        if status is TaskStatus.WAITING_HOST:
+            entry["claim"] = f"orx task claim {task.task_id}"
+            entry["isolation"] = "prompt_only"
+            out["host_required"].append(entry)
+        else:
+            entry["finish_with"] = f"orx task complete {task.task_id} --evidence <file>"
+            out["waiting_external"].append(entry)
 
     refresh(store, goal, run)
     return out
@@ -872,6 +1020,13 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "") -> str:
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
+    context_block = (
+        "Goal context (background; binding only where it repeats a constraint):\n"
+        + goal.context
+        + "\n\n"
+        if goal.context
+        else ""
+    )
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
     return f"""You are an ORX worker for Goal {goal.id}: {goal.objective}
 
@@ -882,7 +1037,7 @@ Task {task.task_id}: {task.objective}
 Goal constraints (binding for this work):
 {constraints}
 
-Scope (write only inside these project-relative paths): {allowed}
+{context_block}Scope (write only inside these project-relative paths): {allowed}
 Read these files first — before any exploration, and only these plus the
 files you yourself create or modify (project-relative):
 {preread}

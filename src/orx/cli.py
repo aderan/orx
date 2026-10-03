@@ -558,20 +558,41 @@ def plan(
 def replan(
     depth: Optional[str] = typer.Option(None, "--depth"),
     profile: Optional[str] = typer.Option(None, "--profile"),
+    context_file: Optional[Path] = typer.Option(
+        None,
+        "--context-file",
+        help=(
+            "This round's intent file: why replanning, what should change, "
+            "supporting material. Passed to the planner verbatim alongside the "
+            "Goal and the execution-fact snapshot; never rewrites the Goal."
+        ),
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Plan again: a new revision replaces the active one (rules apply)."""
-    _run_plan(depth, profile, json_out)
+    _run_plan(depth, profile, json_out, context_file)
 
 
-def _run_plan(depth: Optional[str], profile: Optional[str], json_out: bool) -> None:
+def _run_plan(
+    depth: Optional[str],
+    profile: Optional[str],
+    json_out: bool,
+    context_file: Optional[Path] = None,
+) -> None:
     project = dispatch.open_project()
-    result = dispatch.plan_route(project, depth, profile)
+    result = dispatch.plan_route(
+        project, depth, profile,
+        str(context_file) if context_file else None,
+    )
     _ok(json_out, **result)
     if not json_out:
         if result["mode"] == "host_required":
             a = result["assignment"]
             typer.echo(f"host assignment {a['id']} (planner profile {a['profile']}, depth {a['depth']})")
+            if result.get("replan"):
+                typer.echo("  replan: execution-fact snapshot attached to the prompt")
+            if result.get("context_file"):
+                typer.echo(f"  context file: {result['context_file']} (verbatim in the prompt)")
             typer.echo(f"  prompt file: {a['prompt_file'] or '(not written)'}")
             typer.echo(f"  submit with: {a['submit']}")
         elif result["mode"] == "completed":
@@ -579,6 +600,8 @@ def _run_plan(depth: Optional[str], profile: Optional[str], json_out: bool) -> N
                 f"plan completed by '{result['profile']}' (depth {result['depth']}):"
                 f" revision {result['revision']} active with {result['tasks']} task(s)"
             )
+            if result.get("prompt_file"):
+                typer.echo(f"  planner input archived: {result['prompt_file']}")
         else:
             typer.echo(
                 f"incomplete: {result['reason']} (selected profile {result['selected_profile']})"
@@ -635,9 +658,17 @@ def run(json_out: bool = JsonOpt) -> None:
         for item in result["failed"]:
             typer.echo(f"failed: {item['task']} via {item['profile']}: {item.get('reason')}")
         for item in result["host_required"]:
-            typer.echo(f"host required: {item['task']} via {item['profile']} ({item['claim']})")
+            via = f" via {item['profile']}" if item.get("profile") else ""
+            note = " (resurfaced waiting assignment)" if item.get("resurfaced") else ""
+            typer.echo(f"host required: {item['task']}{via} ({item['claim']}){note}")
+            if item.get("prompt_file"):
+                typer.echo(f"  prompt file: {item['prompt_file']}")
         for item in result["waiting_external"]:
-            typer.echo(f"waiting external: {item['task']} via {item['profile']}")
+            via = f" via {item['profile']}" if item.get("profile") else ""
+            note = " (resurfaced waiting assignment)" if item.get("resurfaced") else ""
+            typer.echo(f"waiting external: {item['task']}{via}{note}")
+            if item.get("prompt_file"):
+                typer.echo(f"  prompt file: {item['prompt_file']}")
         for item in result["deferred"]:
             typer.echo(f"deferred: {item['task']} ({item['reason']}; run `orx run` again)")
         for item in result["routing_errors"]:
