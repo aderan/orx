@@ -138,12 +138,29 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ErrorKind(str, Enum):
+    """Adapter failure taxonomy (M1 P4). Classification drives health
+    transitions; it never guesses a retry in-process (M2)."""
+
+    AUTH_REQUIRED = "auth_required"
+    RATE_LIMITED = "rate_limited"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    TEMPORARY_FAILURE = "temporary_failure"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    CONTEXT_EXCEEDED = "context_exceeded"
+    INVALID_REQUEST = "invalid_request"
+    PROCESS_FAILURE = "process_failure"
+    CANCELLED = "cancelled"
+
+
 class ResourceStatus(str, Enum):
     ABUNDANT = "abundant"
     AVAILABLE = "available"
     CONSTRAINED = "constrained"
     EXHAUSTED = "exhausted"
     UNAVAILABLE = "unavailable"
+    COOLDOWN = "cooldown"
+    AUTH_REQUIRED = "auth_required"
     UNKNOWN = "unknown"
 
 
@@ -167,7 +184,7 @@ ACTIVE_EXECUTION_STATUSES: frozenset[TaskStatus] = frozenset(
 
 # Resource statuses that never take part in routing.
 NON_ROUTABLE_RESOURCE_STATUSES: frozenset[ResourceStatus] = frozenset(
-    {ResourceStatus.UNAVAILABLE, ResourceStatus.EXHAUSTED}
+    {ResourceStatus.UNAVAILABLE, ResourceStatus.EXHAUSTED, ResourceStatus.AUTH_REQUIRED}
 )
 # Preferred resource statuses, in configured list order.
 PREFERRED_RESOURCE_STATUSES: frozenset[ResourceStatus] = frozenset(

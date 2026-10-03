@@ -522,7 +522,7 @@ def _install_logged_fake(directory: Path, name: str, script: str, log: Path) -> 
 def test_agent_help_lists_subcommands():
     listed = invoke("agent", "--help")
     assert listed.exit_code == 0
-    for word in ("list", "info", "probe", "host-only", "completion"):
+    for word in ("list", "info", "probe", "status", "host-only", "completion"):
         assert word in listed.stdout
     probed = invoke("agent", "probe", "--help")
     assert probed.exit_code == 0
@@ -682,6 +682,109 @@ def test_agent_probe_rejects_unprobeable_and_unknown():
     human = invoke("agent", "probe", "shell")
     assert human.exit_code == 1
     assert "error:" in human.stderr or "error:" in human.stdout
+
+
+def test_agent_status_help_names_columns():
+    result = invoke("agent", "status", "--help")
+    assert result.exit_code == 0
+    for word in ("PROFILE", "STATE", "SINCE", "REASON", "--json", "cooldown",
+                 "quota", "override", "resource_status"):
+        assert word in result.stdout
+
+
+def test_agent_status_outside_project(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORX_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    result = invoke("agent", "status", "--json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False and "error" in body
+
+
+def test_agent_status_rows_health_and_marks_override(cli_project):
+    before = (cli_project / ".orx" / "profiles.toml").read_bytes()
+    project = dispatch.open_project()
+    try:
+        project.store.resource_learn(
+            "host-worker",
+            status="cooldown",
+            last_error_kind="rate_limited",
+            note="slow down",
+            cooldown_until="2099-01-01T00:00:00+00:00",
+        )
+        project.store.resource_learn(
+            "cli-fake",
+            status="exhausted",
+            last_error_kind="quota_exhausted",
+            quota_reset_at="2099-06-01T00:00:00+00:00",
+        )
+        worker_since = project.store.resource_row("host-worker").updated_at
+        quota_since = project.store.resource_row("cli-fake").updated_at
+    finally:
+        project.close()
+
+    held = invoke("resource", "set", "--json", "host-planner", "unavailable", "--note", "held")
+    assert held.exit_code == 0, held.stdout
+
+    result = invoke("agent", "status", "--json")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    rows = {row["profile"]: row for row in body["profiles"]}
+    configured = {
+        "host-planner", "host-worker", "host-frontier", "host-external",
+        "host-verifier", "host-vision", "cli-fake",
+    }
+    assert configured <= set(rows)
+    assert "orx-host" in rows  # seeded at init, no longer in profiles.toml
+
+    worker = rows["host-worker"]
+    assert worker["state"] == "cooldown"
+    assert worker["since"] == worker_since == worker["updated_at"]
+    assert worker["last_error_kind"] == "rate_limited"
+    assert worker["note"] == "slow down"
+    assert worker["cooldown_until"] == "2099-01-01T00:00:00+00:00"
+    assert worker["override"] is False
+    assert worker["reason"] == (
+        "rate_limited; slow down; retry 2099-01-01T00:00:00+00:00"
+    )
+
+    quota = rows["cli-fake"]
+    assert quota["state"] == "exhausted"
+    assert quota["since"] == quota_since
+    assert quota["quota_reset_at"] == "2099-06-01T00:00:00+00:00"
+    assert quota["reason"] == "quota_exhausted; reset 2099-06-01T00:00:00+00:00"
+
+    planner = rows["host-planner"]
+    assert planner["state"] == "unavailable"
+    assert planner["override"] is True
+    assert planner["since"]
+    assert "held" in planner["reason"] and planner["reason"].endswith("override")
+
+    untouched = rows["host-frontier"]
+    assert untouched["state"] == "unknown"
+    assert untouched["since"] is None
+    assert untouched["reason"] == ""
+    assert untouched["override"] is False
+
+    human = invoke("agent", "status")
+    assert human.exit_code == 0
+    lines = human.stdout.splitlines()
+    header = lines[0]
+    assert header.index("PROFILE") < header.index("STATE") < header.index("SINCE") < header.index("REASON")
+    by_profile = {line.split()[0]: line for line in lines[1:]}
+    assert set(configured) <= set(by_profile)
+    assert worker_since in by_profile["host-worker"]
+    assert "cooldown" in by_profile["host-worker"]
+    assert "retry 2099-01-01T00:00:00+00:00" in by_profile["host-worker"]
+    assert "rate_limited" in by_profile["host-worker"]
+    assert "slow down" in by_profile["host-worker"]
+    assert quota_since in by_profile["cli-fake"]
+    assert "reset 2099-06-01T00:00:00+00:00" in by_profile["cli-fake"]
+    assert planner["since"] in by_profile["host-planner"]
+    assert "override" in by_profile["host-planner"]
+    assert "held" in by_profile["host-planner"]
+    assert (cli_project / ".orx" / "profiles.toml").read_bytes() == before
 
 
 def test_config_list_json_error_on_bad_env(cli_project, monkeypatch):

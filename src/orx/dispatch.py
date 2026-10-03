@@ -13,7 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from orx import adapters, machine, plan as plan_mod, probes, routing, runtime, verify
-from orx.adapters.base import scan_marker
+from orx.adapters.base import classify_failure, scan_marker
+from orx import health
 from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
 from orx.records import (
@@ -457,6 +458,9 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     # trail on success too, not only on failure.
     log = _record_execution_log(project, run.id, f"plan-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
+    health.record_attempt_outcome(
+        store, profile.name, ok=run_result.ok,
+        error_kind=None if run_result.ok else classify_failure(run_result))
     store.attempt_update(
         attempt.id,
         ended_at=db_now(),
@@ -754,6 +758,9 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
+    health.record_attempt_outcome(
+        store, profile.name, ok=run_result.ok,
+        error_kind=None if run_result.ok else classify_failure(run_result))
     store.evidence_add(attempt.id, "execution", log)
     store.attempt_update(
         attempt.id, ended_at=db_now(),
@@ -1128,6 +1135,9 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     )
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
+    health.record_attempt_outcome(
+        store, profile.name, ok=run_result.ok,
+        error_kind=None if run_result.ok else classify_failure(run_result))
     # Scan the agent's extracted message FIRST: CLI agents wrap their output
     # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
     # line inside the raw stdout never appears as a standalone line. The raw
@@ -1254,6 +1264,16 @@ def verify_submit(
 
 # ---------------------------------------------------------------------------
 # Resources / status
+
+
+def resource_clear(project: Project, profile_name: str) -> dict:
+    """Re-enable health auto-learning for a profile (drops the override)."""
+    if profile_name not in project.profiles:
+        raise NotFoundError(
+            f"profile {profile_name!r} is not defined"
+        )
+    project.store.resource_clear(profile_name)
+    return {"profile": profile_name, "override": False}
 
 
 def resource_set(project: Project, profile_name: str, status_value: str, note: str = "") -> dict:
@@ -1385,6 +1405,54 @@ def agent_info(harness: str) -> dict:
         "snapshot": probes.load_snapshot(harness),
         "launch": dict(_LAUNCH_CONTRACTS[harness]),
     }
+
+
+def _health_reason(row) -> str:
+    """REASON column: last_error_kind and note, plus retry/reset/override."""
+    if row is None:
+        return ""
+    parts: list[str] = []
+    if row.last_error_kind:
+        parts.append(row.last_error_kind)
+    if row.note:
+        parts.append(row.note)
+    if row.status == "cooldown" and row.cooldown_until:
+        parts.append(f"retry {row.cooldown_until}")
+    if row.quota_reset_at:
+        parts.append(f"reset {row.quota_reset_at}")
+    if row.override:
+        parts.append("override")
+    return "; ".join(parts)
+
+
+def _health_entry(name: str, row) -> dict:
+    updated_at = row.updated_at if row else None
+    return {
+        "profile": name,
+        "state": row.status if row else "unknown",
+        "since": updated_at,
+        "updated_at": updated_at,
+        "reason": _health_reason(row),
+        "last_error_kind": row.last_error_kind if row else None,
+        "note": row.note if row else "",
+        "cooldown_until": row.cooldown_until if row else None,
+        "quota_reset_at": row.quota_reset_at if row else None,
+        "override": bool(row.override) if row else False,
+    }
+
+
+def agent_status(project: Project) -> dict:
+    """Per-profile health view sourced from resource_status.
+
+    Every configured profile is included (a missing row is `unknown`).
+    Rows left behind for profiles no longer defined are appended after.
+    """
+    rows = {r.profile: r for r in project.store.resource_rows()}
+    profiles = [_health_entry(name, rows.get(name)) for name in project.profiles]
+    for name, row in rows.items():
+        if name not in project.profiles:
+            profiles.append(_health_entry(name, row))
+    return {"profiles": profiles}
 
 
 def agent_probe(harness: str) -> dict:

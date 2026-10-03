@@ -44,11 +44,13 @@ config_app = typer.Typer(
 
 agent_app = typer.Typer(
     help=(
-        "Discover agent harnesses without launching a completion. "
-        "list shows adapter harnesses (codex, cursor, shell) and marks zcode "
-        "host-only. info reads the latest persisted capability snapshot and "
-        "the launch contract. probe runs the shared local probes and writes "
-        "the snapshot. Exit 0 on success, 1 on a domain error, 2 on usage errors."
+        "Discover agent harnesses without launching a completion, and show "
+        "per-profile health. list shows adapter harnesses (codex, cursor, "
+        "shell) and marks zcode host-only. info reads the latest persisted "
+        "capability snapshot and the launch contract. probe runs the shared "
+        "local probes and writes the snapshot. status shows PROFILE, STATE, "
+        "SINCE, and REASON from resource_status. Exit 0 on success, 1 on a "
+        "domain error, 2 on usage errors."
     ),
     no_args_is_help=True,
 )
@@ -439,6 +441,43 @@ def agent_probe(
         typer.echo(f"  version: {snap.get('version')}")
         typer.echo(f"  auth: {snap.get('auth')}")
         typer.echo(f"  wrote {data['path']}")
+
+
+def _render_health_row(row: dict) -> str:
+    since = row["since"] or ""
+    return f"{row['profile']:<24} {row['state']:<14} {since:<32} {row['reason']}"
+
+
+@agent_app.command("status")
+@handle_errors
+def agent_status(json_out: bool = JsonOpt) -> None:
+    """Show per-profile health from resource_status.
+
+    One row for every configured profile, then any resource_status row whose
+    profile is no longer defined. Human columns are PROFILE, STATE, SINCE,
+    and REASON. SINCE is that row's updated_at. REASON joins last_error_kind
+    and note. A cooldown state includes `retry <cooldown_until>`.
+    `reset <quota_reset_at>` appears when a quota reset time is known. A
+    manual override from `orx resource set` is marked `override`;
+    `orx resource clear` drops that mark. Reads SQLite only. Never launches
+    a completion and never rewrites TOML.
+
+    --json field profiles is a list of objects: profile, state, since (the
+    same timestamp as updated_at), updated_at, reason, last_error_kind, note,
+    cooldown_until, quota_reset_at, override. The envelope is
+    {"ok": true, "profiles": [...]}. A missing project exits 1. Exit 0 on
+    success, 1 on a domain error, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        data = dispatch.agent_status(project)
+    finally:
+        project.close()
+    _ok(json_out, **data)
+    if not json_out:
+        typer.echo(f"{'PROFILE':<24} {'STATE':<14} {'SINCE':<32} REASON")
+        for row in data["profiles"]:
+            typer.echo(_render_health_row(row))
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +878,20 @@ def resource_set(
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"{result['profile']}: {result['status']}")
+
+
+@resource_app.command("clear")
+@handle_errors
+def resource_clear(
+    profile: str = typer.Argument(...),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Drop a manual override; health auto-learning resumes for the profile."""
+    project = dispatch.open_project()
+    result = dispatch.resource_clear(project, profile)
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(f"{result['profile']}: auto-learning re-enabled")
 
 
 # ---------------------------------------------------------------------------

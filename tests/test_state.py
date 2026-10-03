@@ -17,7 +17,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 1
+        assert store.schema_version() == 2
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -145,3 +145,48 @@ def test_attempt_effort_observability_roundtrip(project, goal):
     assert stored.requested_effort == "deep"
     assert stored.actual_effort == "high"
     assert stored.effort_source == "requested_validated"
+
+
+def test_v1_to_v2_migration_preserves_resource_rows(tmp_path):
+    """A v1 database upgrades in place (backup-replace-restore) and keeps
+    every resource row; new health columns default; the new CHECK admits
+    cooldown/auth_required."""
+    import sqlite3
+    from orx import state as state_mod
+    from orx.records import ResourceStatus
+    from orx.state import Store
+
+    db = tmp_path / "v1.db"
+    store = Store.open(db)  # code is v2; build a v1 db by hand
+    store.close()
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+DROP TABLE resource_status;
+CREATE TABLE resource_status (
+  profile TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('abundant','available','constrained',
+                                         'exhausted','unavailable','unknown')),
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+UPDATE meta SET value = '1' WHERE key = 'schema_version';
+INSERT INTO resource_status(profile, status, note, updated_at)
+  VALUES ('legacy', 'exhausted', 'weekly quota', '2026-01-01T00:00:00+00:00');
+""")
+    conn.commit()
+    conn.close()
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 2
+        row = reopened.resource_row("legacy")
+        assert (row.status, row.note) == ("exhausted", "weekly quota")
+        assert row.override == 0 and row.failure_streak == 0
+        # new states are writable under the recreated CHECK
+        reopened.resource_learn("legacy", status="cooldown", cooldown_until="2099-01-01T00:00:00+00:00")
+        assert reopened.resource_row("legacy").status == "cooldown"
+        reopened.resource_learn("legacy", status="auth_required")
+        assert reopened.resource_row("legacy").status == "auth_required"
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v1.db.migrate-*")), "stale migration backups"

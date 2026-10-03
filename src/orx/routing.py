@@ -107,10 +107,17 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
         resource = store.resource_get(name)  # missing row -> unknown, still routable
         reject: str | None = None
         if resource in NON_ROUTABLE_RESOURCE_STATUSES:
-            reject = resource.value  # 'unavailable' | 'exhausted'
-        elif class_filter_active and profile.model_class is not records.ModelClass.FRONTIER:
+            reject = resource.value  # 'unavailable' | 'exhausted' | 'auth_required'
+        elif resource is ResourceStatus.COOLDOWN:
+            # Time-bounded gate: reject only while the retry time is in the
+            # future; an expired cooldown routes again and re-learns from the
+            # next outcome.
+            from orx.health import cooldown_active
+            if cooldown_active(store.resource_row(name)):
+                reject = f"cooldown (retry {store.resource_row(name).cooldown_until})"
+        if reject is None and class_filter_active and profile.model_class is not records.ModelClass.FRONTIER:
             reject = "class_below_frontier"
-        else:
+        elif reject is None:
             missing = sorted(set(req.required_capabilities) - set(profile.capabilities))
             if missing:
                 reject = "missing_capability:" + ",".join(missing)

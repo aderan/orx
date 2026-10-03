@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 1
+CODE_SCHEMA_VERSION = 2
 
 
 def now() -> str:
@@ -172,10 +172,46 @@ CREATE TABLE routing_decisions (
 CREATE TABLE resource_status (
   profile TEXT PRIMARY KEY,
   status TEXT NOT NULL CHECK (status IN ('abundant','available','constrained',
-                                         'exhausted','unavailable','unknown')),
+                                         'exhausted','unavailable','unknown',
+                                         'cooldown','auth_required')),
   note TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  last_success_at TEXT,
+  last_failure_at TEXT,
+  failure_streak INTEGER NOT NULL DEFAULT 0,
+  last_error_kind TEXT,
+  cooldown_until TEXT,
+  quota_reset_at TEXT,
+  last_probe_at TEXT,
+  override INTEGER NOT NULL DEFAULT 0
 );
+"""
+
+
+# v2: recreate resource_status (the v1 CHECK cannot admit cooldown /
+# auth_required via ALTER TABLE), carrying old rows forward into the new
+# health columns.
+SCHEMA_V2_RESOURCE = """
+CREATE TABLE resource_status_v2 (
+  profile TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('abundant','available','constrained',
+                                         'exhausted','unavailable','unknown',
+                                         'cooldown','auth_required')),
+  note TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  last_success_at TEXT,
+  last_failure_at TEXT,
+  failure_streak INTEGER NOT NULL DEFAULT 0,
+  last_error_kind TEXT,
+  cooldown_until TEXT,
+  quota_reset_at TEXT,
+  last_probe_at TEXT,
+  override INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO resource_status_v2 (profile, status, note, updated_at)
+  SELECT profile, status, note, updated_at FROM resource_status;
+DROP TABLE resource_status;
+ALTER TABLE resource_status_v2 RENAME TO resource_status;
 """
 
 
@@ -188,8 +224,20 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V2_RESOURCE)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
-MIGRATIONS: dict[int, callable] = {1: _migrate_v1}
+MIGRATIONS: dict[int, callable] = {
+    1: _migrate_v1,
+    2: _migrate_v2,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +373,14 @@ class ResourceRow:
     status: str
     note: str
     updated_at: str
+    last_success_at: str | None = None
+    last_failure_at: str | None = None
+    failure_streak: int = 0
+    last_error_kind: str | None = None
+    cooldown_until: str | None = None
+    quota_reset_at: str | None = None
+    last_probe_at: str | None = None
+    override: int = 0
 
 
 def _j(value: str | None, default):
@@ -466,11 +522,25 @@ def _decision(r: sqlite3.Row) -> RoutingDecision:
 
 
 def _resource(r: sqlite3.Row) -> ResourceRow:
+    def opt(key):
+        try:
+            return r[key]
+        except (IndexError, KeyError):
+            return None
+
     return ResourceRow(
         profile=r["profile"],
         status=r["status"],
         note=r["note"],
         updated_at=r["updated_at"],
+        last_success_at=opt("last_success_at"),
+        last_failure_at=opt("last_failure_at"),
+        failure_streak=r["failure_streak"] if "failure_streak" in r.keys() else 0,
+        last_error_kind=opt("last_error_kind"),
+        cooldown_until=opt("cooldown_until"),
+        quota_reset_at=opt("quota_reset_at"),
+        last_probe_at=opt("last_probe_at"),
+        override=r["override"] if "override" in r.keys() else 0,
     )
 
 
@@ -561,6 +631,9 @@ class Store:
                 conn.close()
                 tmp.unlink(missing_ok=True)
                 raise
+            # Fold the WAL back into the temp file so os.replace carries a
+            # complete database and no tmp -wal/-shm sidecars survive.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             os.replace(tmp, path)
             # Remove stale WAL/SHM sidecars from the pre-migration database.
@@ -568,6 +641,9 @@ class Store:
                 Path(str(path) + suffix).unlink(missing_ok=True)
         finally:
             tmp.unlink(missing_ok=True)
+            # The migrated temp's own sidecars never outlive the swap.
+            for suffix in ("-wal", "-shm"):
+                Path(str(tmp) + suffix).unlink(missing_ok=True)
         return cls.open(path)
 
     @staticmethod
@@ -1107,14 +1183,54 @@ class Store:
             return records.ResourceStatus.UNKNOWN
         return records.ResourceStatus(r["status"])
 
-    def resource_set(self, profile: str, status: records.ResourceStatus, note: str = "") -> None:
+    def resource_set(self, profile: str, status: records.ResourceStatus, note: str = "",
+                      override: bool = True) -> None:
+        """Manual status change: marks the row override=1 so health
+        auto-learning never clobbers an explicit operator decision."""
         with self.tx():
             self.conn.execute(
-                "INSERT INTO resource_status(profile, status, note, updated_at) VALUES(?,?,?,?)"
+                "INSERT INTO resource_status(profile, status, note, updated_at, override)"
+                " VALUES(?,?,?,?,1)"
                 " ON CONFLICT(profile) DO UPDATE SET status = excluded.status,"
-                " note = excluded.note, updated_at = excluded.updated_at",
+                " note = excluded.note, updated_at = excluded.updated_at, override = 1",
                 (profile, status.value, note, now()),
             )
+
+    def resource_clear(self, profile: str) -> None:
+        """Re-enable health auto-learning for a profile (override -> 0)."""
+        with self.tx():
+            self.conn.execute(
+                "UPDATE resource_status SET override = 0, updated_at = ? WHERE profile = ?",
+                (now(), profile),
+            )
+
+    def resource_learn(self, profile: str, **fields) -> None:
+        """Auto-learning write. Never touches rows with override = 1; a
+        profile without a row is inserted (learning must not silently drop
+        just because init never seeded it)."""
+        with self.tx():
+            row = self.conn.execute(
+                "SELECT override FROM resource_status WHERE profile = ?", (profile,)
+            ).fetchone()
+            if row is not None and row["override"]:
+                return
+            if row is None:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO resource_status(profile, status, note, updated_at)"
+                    " VALUES(?, 'unknown', '', ?)",
+                    (profile, now()),
+                )
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            self.conn.execute(
+                f"UPDATE resource_status SET {sets}, updated_at = ? WHERE profile = ?",
+                (*fields.values(), now(), profile),
+            )
+
+    def resource_row(self, profile: str) -> ResourceRow | None:
+        r = self.conn.execute(
+            "SELECT * FROM resource_status WHERE profile = ?", (profile,)
+        ).fetchone()
+        return _resource(r) if r else None
 
     def resource_rows(self) -> list[ResourceRow]:
         rows = self.conn.execute("SELECT * FROM resource_status ORDER BY profile").fetchall()

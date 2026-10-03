@@ -900,3 +900,24 @@ capabilities = ["coding"]
         assert dispatch.status_data(project)["run"]["status"] == "done"
     finally:
         project.close()
+
+
+def test_classify_failure_evidence_and_default():
+    from orx.adapters.base import classify_failure
+
+    class R:
+        def __init__(self, err=""):
+            self.stderr, self.stdout = err, ""
+
+    # Real-run evidence (post-M0 transcripts)
+    assert classify_failure(R("Cannot use this model: gpt-5.3-codex[effort=high]. Available models: ...")) == "model_unavailable"
+    assert classify_failure(R('{"type":"error","message":"...invalid_json_schema...additionalProperties..."}')) == "invalid_request"
+    assert classify_failure(R("Connection lost, reconnecting to https://... (attempt 1)... Retry attempt 1...")) == "temporary_failure"
+    assert classify_failure(R("Error: Not logged in. Run `codex login`.")) == "auth_required"
+    # Standard vocabulary
+    assert classify_failure(R("429 Too Many Requests")) == "rate_limited"
+    assert classify_failure(R("This model has hit its weekly quota")) == "quota_exhausted"
+    assert classify_failure(R("context length exceeded")) == "context_exceeded"
+    # Unknown -> safe default
+    assert classify_failure(R("zsh: killed")) == "process_failure"
+    assert classify_failure(R("")) == "process_failure"

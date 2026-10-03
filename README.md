@@ -93,6 +93,23 @@ launches a completion. Only `codex` and `cursor` are probeable; `shell` and
 host-only `zcode` exit 1. Unknown harness names exit 1; a missing argument
 exits 2. `--json` uses the same envelope as the rest of the CLI.
 
+## Agent health
+
+```sh
+orx agent status [--json]
+```
+
+Per-profile health from `resource_status` in `.orx/state.db` (never TOML).
+One row for every configured profile, then any status row whose profile is
+no longer defined. A profile with no row is `unknown`. Human columns are
+`PROFILE`, `STATE`, `SINCE`, `REASON`. `SINCE` is `updated_at`. `REASON`
+joins `last_error_kind` and `note`. A `cooldown` row includes
+`retry <cooldown_until>`. `reset <quota_reset_at>` appears when a quota
+reset time is known. A manual `orx resource set` override is marked
+`override`; `orx resource clear` drops that mark. `--json` is the usual
+`{"ok": true, ...}` envelope; `profiles` carries the same fields. A missing
+project exits 1.
+
 ## Timeline
 
 ```sh
