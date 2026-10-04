@@ -18,8 +18,8 @@
 | 子代理不能再派发（Agent 工具） | ✅ 实测 | 探针子代理无 Agent 工具；但见下方 CreateWorkflow 绕行 |
 | 结果回传父会话 | ✅ 实测 | 探针结果完整返回（含实际命令输出） |
 | 工作目录 | ✅ 实测（共享） | 子代理 cwd = 父会话项目根；独立上下文 ≠ 独立文件系统 |
-| 自定义 agent 灰度覆盖本账号 | ⏳ 待新会话 | `~/.zcode/agents/` 定义已安装，需新会话加载验证 |
-| orx-worker / orx-verifier 端到端最小任务 | ⏳ 待新会话 | 见下方协议 |
+| 自定义 agent 灰度覆盖本账号 | ✅ 实测（新会话） | 2026-10-04 13:19 新会话：Agent 工具子代理列表出现 `orx-worker` / `orx-verifier`，可派发 |
+| orx-worker / orx-verifier 端到端最小任务 | ✅ 实测（新会话） | 见下方 e2e 执行记录；两角色契约完整回传，db 模型归属命中 |
 
 ## 证据明细
 
@@ -71,7 +71,7 @@ tools: [Read, Bash]
 
 设计边界如实记录：verifier 的 Bash **未被硬限制为只读**（分析文档 §6 的告诫仍成立）；已通过排除 Write/Edit 获得部分硬保证，Bash 写入仍靠契约约束，证据文件由 Controller 落盘。verifier 关闭 AGENTS.md 注入以保持独立判断。
 
-## 新会话验证协议（阶段 A 收尾）
+## 新会话验证协议（阶段 A 收尾）— ✅ 已执行通过（2026-10-04 13:19–13:21）
 
 1. 新开 ZCode 会话（同一台机、任意工作目录），确认可用子代理列表出现 `orx-worker` / `orx-verifier`。若未出现：自定义 agent 灰度未覆盖本账号，或定义被诊断忽略（检查 name/description）。
 2. 给 `orx-verifier` 一个最小判定任务（例：验证指定文件 shasum 是否等于给定值），验收：两行契约完整回传。
@@ -87,6 +87,22 @@ sqlite3 -readonly ~/.zcode/cli/db/db.sqlite \
    FROM model_usage mu JOIN session s ON s.id=mu.session_id \
    WHERE s.task_type='subagent_child' ORDER BY mu.started_at DESC LIMIT 5"
 ```
+
+## e2e 执行记录（阶段 A 关闭）
+
+新会话（13:19）按上述五步协议执行，全部通过：
+
+1. **加载确认**：新会话可用子代理列表出现 `orx-worker` / `orx-verifier` —— 灰度覆盖本账号，`~/.zcode/agents/` 定义生效。
+2. **orx-verifier 最小判定**（shasum 核对 `pyproject.toml`）：回传完整两行契约
+   `ORX_REASON=…shasum -a 256…matches exactly` / `ORX_VERDICT=pass`。agentId `agent_f2a98534…`。
+3. **orx-worker 最小任务**（读 `pyproject.toml` + `src/orx/__init__.py`，报包名/版本/单源接线）：事实正确（orx-agent 0.2.1，hatch dynamic），evidence JSON 按契约形状落盘（summary/commands/artifacts），无越界。agentId `agent_65bdcbfa…`。
+4. **db 复核**（复核命令原样执行）：两子会话均 `task_type='subagent_child'`，`model_usage` 逐请求 completed：
+   - `zcode-orx-worker | GLM-5.3`（3 requests）
+   - `zcode-orx-verifier | GLM-5.3-Flash`（2 requests）
+   子会话 id `sess_subagent_agent_<agentId>` 与 Agent 工具返回的 agentId 一一对应，与阶段 A 旧结论一致。
+5. **新事实（阶段 B 直接输入）**：自定义角色在 `model_usage.agent` 的命名与内置同为 **`zcode-<name>`**（无 plugin 前缀）。阶段 B 按 `zcode-orx-worker` / `zcode-orx-verifier` 查询实际模型归属即可，无需新命名方案。
+
+e2e 产物为临时探针（`tmp-e2e/`），核验后已删除，不留运行残留。
 
 ## 对阶段 B 的输入更新（相对分析文档）
 
