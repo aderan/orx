@@ -1,16 +1,26 @@
 ---
 name: orx-pbv
-description: Multi-round Plan-Build-Validate development loop on ORX — one Goal, a sliced master plan (Plan IR), one round per slice (self-contained round plan, build, dual-gate verify, close with report). Use when 用户给出要多轮推进的开发 goal/大任务，或提到 PBV 循环、Plan-Build-Validate、多轮切片开发，或要替换项目级 pbv-loop skill；不用于单轮问答、单次小改动或无需切片验证的任务。
+description: 可选的多轮 Plan-Build-Validate 开发流程配方（切片、自包含轮计划、双门禁、有界修复、本地提交、轮报告）。仅在用户明确调用时使用——点名 PBV 循环、Plan-Build-Validate，或明确要求按轮切片推进并逐轮提交验收；普通开发 goal 一律直接走 orx-controller（通用执行入口），不因任务大、轮次多或"要多轮开发"自动启用；不用于单轮问答、单次小改动或无需切片验证的任务。
 ---
 
-# orx-pbv：多轮 PBV 开发循环
+# orx-pbv：多轮 PBV 开发循环（显式调用的可选配方）
 
 ## 1. 定位
 
-你是宿主 Controller，ORX 拥有全部执行状态（Goal/Plan/Task/Attempt/Evidence/
-Verification）。本 skill 定义多轮 Plan-Build-Validate 开发循环；通用宿主循环
-（status→dispatch→claim→complete→verify→done）遵循 orx-controller skill，
-子代理纪律遵循 orx-agent skill。不新增状态存储，绝不直接写 `.orx/state.db`。
+通用执行入口是 orx-controller skill：目标接纳（直接目标 / 外部咨询移交的
+分类）、规划、指派交付、验证、重试、重规划、恢复与升级的协议全部集中在
+那里，本 skill 引用、不另写一套。本 skill 只保留 PBV 特有的流程配方：
+
+- 切片护栏（小切片、线性依赖链、逐片独立可提交）；
+- 自包含轮计划（reports/pbv/round-N-plan.md，辅助实施文件）；
+- 双门禁策略（每片 ≥1 条项目最强命令门禁 + ≥1 条 agent 独立审查）；
+- 有界修复预算（初始构建 + ≤2 次修复）；
+- Close（本地提交、规划文档状态、轮报告）与轮编号纪律。
+
+ORX 拥有全部执行状态（Goal/Plan/Task/Attempt/Evidence/Verification），
+不新增状态存储，绝不直接写 `.orx/state.db`。执行选择（profile、subagent、
+模型、梯子）遵循配置与指派契约（见 orx-controller 与
+docs/routing-strategy.md），本 skill 不规定供应商或模型。
 
 本 skill 与具体仓库无关：文中路径（reports/pbv/、docs/DEVELOPMENT_PLAN.md）
 与门禁命令（`make verify`）是示例（StockMate 为样例仓库），每个仓库按 Round 0
@@ -22,8 +32,8 @@ Verification）。本 skill 定义多轮 Plan-Build-Validate 开发循环；通�
 
 1. 目标项目已 `orx init` 且 `orx doctor` 通过（缺可选 CLI 是 warning；认证
    失败让用户先处理，不拿正式调用试错）。
-2. profiles.toml 按角色配好：规划 = codex 只读 CLI profile；构建 = host 或
-   CLI worker profile；审查 = `[verify]` profile。
+2. 规划、构建、审查三类角色在配置中有可用 profile（`[plan.*]` / `[worker]`
+   / `[verify]`）；缺了先补配置，不绕过路由。
 3. 确认项目最强验收门禁命令：查 Makefile/scripts/CI，不要凭习惯写。
 4. 确认项目任务规划文档（如 docs/DEVELOPMENT_PLAN.md）：主计划必须引用其
    条目；没有就问用户以什么为准。
@@ -33,8 +43,11 @@ Verification）。本 skill 定义多轮 Plan-Build-Validate 开发循环；通�
 
 ## 3. Goal 建立
 
-goal 来自用户消息，不明确就问，不替用户猜。约束与验收在 `orx goal new`
-一次性注入——内核会把它们组装进所有 planner/worker/verifier prompt：
+goal 来自用户消息，不明确就问，不替用户猜。用户移交外部咨询/评审总结时，
+按 orx-controller 的接纳分类处理：只有用户确认的建议才进 `--constraint` /
+`--acceptance`；待验证假设进计划任务或验证条目，不自动当约束。约束与验收在
+`orx goal new` 一次性注入——内核会把它们组装进所有 planner/worker/verifier
+prompt：
 
 ```bash
 orx goal new --objective "<目标>" \
@@ -56,8 +69,9 @@ host 驱动返回 waiting planning assignment（prompt+schema）：把 prompt �
 提交前后 Controller 按 references/plan-review.md 审核清单过一遍（小切片
 护栏、preread、双门禁、线性依赖链、验收原文逐字）。不通过：把审核意见作为
 反馈重跑规划（最多 2 次）；任务图本身错了 `orx replan`；仍不行自己改写
-Plan IR 并提交、在轮报告注明"Controller 改写"。`orx replan` 只用于改图，
-绝不用于修复回环。单切片小 goal：主计划即轮计划来源，跳过逐轮 planner 细化。
+Plan IR 并经 `orx plan submit` 提交、在轮报告注明"Controller 改写"。
+`orx replan` 只用于改图，绝不用于修复回环。单切片小 goal：主计划即轮计划
+来源，跳过逐轮 planner 细化。
 
 ## 5. 每轮协议（对每个切片 task 循环）
 
@@ -69,24 +83,30 @@ Plan IR 并提交、在轮报告注明"Controller 改写"。`orx replan` 只用�
    授权自动推进则照办并记录（轮报告注明）。
 3. **Plan**：按 references/round-plan.md 产出自包含轮计划
    `reports/pbv/round-N-plan.md`（planner 只读细化或 Controller 机械抽取）。
-   轮计划路径 = 该 task preread 首项，Build 前必须落盘。
-4. **Build**：`orx run` 停泊 host 任务（返回 payload：prompt/prompt_file/
-   preread/isolation）→ `orx task claim T00X` → 子代理原样执行 prompt →
-   `orx task complete T00X --evidence evidence.json`（evidence 格式见
-   orx-controller）；失败则 `orx task fail T00X --reason "<原因>"`。prompt
-   由内核组装（Goal 目标+Goal 约束+task 目标+scope.allowed+验收+preread
-   "先读且只先读这些"+验证清单+重试时前次失败），主计划全文永不进入构建
-   上下文。
-5. **Validate**：`orx verify` 执行命令门禁并派发 agent 审查；host 驱动时
-   把返回的 verifier prompt 原样交给子代理运行，裁决经
-   `orx verify submit T00X --result pass|fail --entry '<exact entry>' [--evidence <file>]`
-   交回；fail 时必须带 `--reason "<问题清单>"`——问题经内核进入 failure
-   状态并自动出现在下一次 worker/verifier prompt。
+   轮计划是辅助实施文件：生效任务的范围、验收与验证以 Plan IR 为准，
+   与 Plan IR 冲突时以 Plan IR 为准，不在轮计划里私自扩范围（认为需要
+   变化走 `orx replan`）。轮计划路径 = 该 task preread 首项，Build 前
+   必须落盘。
+4. **Build**：按 orx-controller 的任务契约执行：`orx run` 停泊 host 任务
+   → `orx task claim T00X`（记下返回的 attempt id）→ 子代理原样执行
+   prompt → `orx task complete T00X --evidence evidence.json --attempt <id>`
+   （evidence 格式与 stale 拒绝规则见 orx-controller）；失败则
+   `orx task fail T00X --reason "<具体原因>"`（原因进入下一次 prompt）。
+   prompt 由内核组装（Goal 目标+Goal 约束+task 目标+scope.allowed+验收+
+   preread"先读且只先读这些"+验证清单+重试时前次失败），主计划全文永不
+   进入构建上下文。
+5. **Validate**：按 orx-controller 的验证契约执行：`orx verify` 运行命令
+   门禁并派发 agent 审查；host 驱动时把 verifier prompt 原样交给子代理
+   运行，裁决经 `orx verify submit T00X --result pass|fail --entry '<exact
+   entry>' --attempt <派发返回的 id>` 交回；fail 时必须带
+   `--reason "<问题清单>"`——问题经内核进入 failure 状态并自动出现在下一
+   次 worker/verifier prompt。
 6. **Gate**：双门禁全过（每条命令门禁 exit 0 且每条 agent 审查 pass）→
    task PASSED；任一失败进修复回环（见 6）。
 7. **Close**：本地提交（不 push）→ 更新项目规划文档状态 → 按
-   references/round-report.md 写 `reports/pbv/round-N.md`。Close 完成才
-   开工下一片。
+   references/round-report.md 写 `reports/pbv/round-N.md`。Close 是宿主
+   流程纪律：内核在 task passed 时即解锁依赖、不感知 Close，"Close 完成
+   才开工下一片"由本 skill（Controller）保证。
 8. **Next**：回到 1；仅当 `orx status --json` 显示
    `"run": {"status": "done"}` 才是 run done，之后收尾（最终提交、handoff/
    总结、按 references/migration.md 停用旧入口）。
@@ -99,12 +119,14 @@ Plan IR 并提交、在轮报告注明"Controller 改写"。`orx replan` 只用�
   计划）→ 重新 Build/Validate。命令门禁非 0 由内核直接判 task FAILED，
   无需 Controller 交裁决。下一次 worker/verifier prompt 自动携带前次
   问题（含 --reason 的问题清单），不要复述。
-- 预算耗尽即停：task 保持 failed，写轮报告，向用户报告；不 replan 不换图。
+- 预算耗尽即停：task 保持 failed，写轮报告，向用户报告；不用 replan 换图
+  变相续预算。
 - 连续阻塞（auth/quota/环境）：停止循环，保留可恢复状态（恢复方法见
   references/migration.md）。
-- 范围外失败（问题不在本片 diff，如既有提交遗留违规）：git blame 归属；确属
-  范围外做最小修复、单独提交；Controller 直跑门禁命令复核并如实记进轮报告；
-  不重跑全量 agent 审查。
+- 范围外问题（问题不在本片 diff，如既有提交遗留违规）：不在本轮顺手修，
+  不绕过本片原定验收。属于同一 Goal 的必要工作 → `orx replan` 明确增补
+  任务（带范围与验收）；超出 Goal 或授权 → 停下交用户决定。轮报告如实
+  记录发现与去向。
 
 ## 7. 硬规则
 

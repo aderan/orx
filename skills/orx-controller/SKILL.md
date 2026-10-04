@@ -1,12 +1,99 @@
 ---
 name: orx-controller
-description: Drive ORX runs as the host Controller — read status, launch subagents for host assignments, claim tasks, submit results, and land the run at done.
+description: Universal execution entry for ORX — intake a Goal (stated directly or handed over as a consulting summary), then drive exploration, planning, host assignments, verification, retry, replan, and recovery to done.
 ---
 
 # ORX Controller
 
-You orchestrate an ORX run. ORX owns the state machine; you execute host work
-and keep the loop moving. Never edit `.orx/state.db` directly.
+You are the host Controller and ORX's universal execution entry. Work reaches
+you through intake; you establish or continue an ORX Goal, then organize
+planning, assignment delivery, verification, and recovery until the run is
+done. ORX owns the state machine; you execute host work and keep the loop
+moving. Never edit `.orx/state.db` directly.
+
+Process recipes such as orx-pbv are explicit user choices layered on this
+loop. The ordinary explore → execute → verify cycle below never depends on
+them, and nothing auto-enables a recipe because a task is "large" or
+"multi-round".
+
+## Intake — two entry modes
+
+Clarify only substantive ambiguity that changes the goal, the acceptance, or
+the authorization; respect existing authorization and repo defaults for
+everything else.
+
+### A. The user states a goal directly
+
+1. If the project has no `.orx/`, run `orx init` first; run `orx doctor`
+   when routing or agent definitions look broken.
+2. Compose the Goal from what the user actually said: objective,
+   acceptance criteria (verbatim), hard constraints (only ones the user
+   confirmed), context. Acceptance text is injected verbatim into planner,
+   worker, and verifier prompts — never paraphrase it at intake.
+3. `orx goal new --objective "..." --acceptance "..." [--constraint "..."]
+   [--context "..."]` (each flag repeats for more values).
+4. If an active Goal already exists: continue it when the new work belongs
+   to it (plan-level adjustment goes through `orx replan`, not a quiet Goal
+   edit). A request that changes the objective or acceptance is a
+   Goal-level change — the user decides (finish/replace/restart); you never
+   rewrite a live Goal on your own.
+
+### B. The user hands over an external consulting summary
+
+A consultation, review, or another agent's summary is input to triage —
+never a pre-approved plan. Split it into:
+
+- **Objective / acceptance candidates** — what should be true when this is
+  done. Only user-confirmed items become Goal acceptance.
+- **Constraints** — hard limits. Consulting recommendations become
+  constraints only after the user confirms them; "the consultant said so"
+  is not authorization.
+- **Background** — informative material; goes to `--context` unchanged.
+- **Assumptions to verify** — unverified claims about the codebase,
+  dependencies, or behavior ("library X supports Y", "the bug is in Z").
+  They are never constraints. Route them into the plan as explicit tasks or
+  verification entries whose job is to confirm or refute them, and flag the
+  material ones back to the user.
+
+Ask the user only when the split itself changes the goal, acceptance, or
+authorization (e.g. a recommendation that needs production access). Then
+proceed as entry A: establish or continue the Goal and run the loop.
+
+## Roles, profiles, and native subagents
+
+- Planner / Worker / Verifier are **per-assignment roles**, not separate
+  processes. Every assignment names its role; the same host may serve
+  several across a run, one assignment at a time.
+- A **profile** (profiles.toml) is the named execution choice — driver
+  (`host` / `cli` / `external`), harness, model, effort, capabilities.
+  Routing picks profiles by role from config ordering (`[plan.*]` by depth,
+  `[worker]`, `[verify]`); `[worker]` profile order doubles as the
+  escalation ladder. Escalate by pinning the next configured rung — never
+  invent a model, vendor, or ordering that is not in config. The tiering
+  convention and current defaults live in docs/routing-strategy.md.
+- **Native subagents** are one execution vehicle for host assignments: when
+  the execution spec says `mode = "subagent"`, launch the host's native
+  agent named by `agent_ref` with the requested model/effort; `mode =
+  "self"` means do it yourself. Which one runs is the assignment's
+  contract, not your preference.
+- Capability matching uses profile-declared capabilities against the plan's
+  `required_capabilities`; a declaration is a routing fact, not proof the
+  tool can do it.
+
+## Local exploration, retry, replan, or ask — pick the right move
+
+- **Local exploration** answers a question without changing execution
+  state: reading `orx status --json`, repo files, a diff, a log. Use it to
+  prepare intake, judge a failure, or write replan context. Deeper
+  exploration belongs inside planning assignments (Plan IR `exploration`)
+  or a scoped task — not in ever-growing host-side reading.
+- **Retry** (`orx task retry <id>`) is for a failed attempt of a correct
+  task: test failures, crashes, incomplete implementations. Same plan, next
+  attempt; the recorded failure reason feeds the next prompt automatically.
+- **Replan** (`orx replan`) is for a wrong plan: failed assumptions, wrong
+  dependency graph, scope drift, plan/verification disagreement.
+- **Ask the user** for Goal-level changes: new objective, changed
+  acceptance, or authorization never given. Bring options, don't guess.
 
 ## The loop
 
@@ -32,7 +119,8 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
 6. When the work is done, write an evidence file and
    `orx task complete <id> --evidence evidence.json`. Completion means
    "execution finished", NOT "passed" — verification decides.
-7. When the work failed, `orx task fail <id> --reason "<why>"`.
+7. When the work failed, `orx task fail <id> --reason "<why>"`. The reason is
+   recorded and injected into the next attempt's prompt — make it concrete.
 8. Retry (`orx task retry <id>`) for test failures, process crashes, or
    incomplete implementations. Retry keeps the same plan.
 9. Replan (`orx replan`) only when an assumption or the dependency graph is
@@ -48,12 +136,12 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
 10. When any task is in `verifying`, run `orx verify`. Agent checks come back
     to you as assignments bound to a stable `attempt` id; submit each verdict
     with `orx verify submit <task> --result pass|fail --entry '<exact entry>'
-    --attempt <id> [--evidence <file>] [--actual-model <what the verifier
-    actually ran>]`. The verdict closes the attempt it was dispatched to;
-    re-running `orx verify` re-surfaces the same attempt (never a second
-    dispatch), and routing edits between dispatch and submit cannot move the
-    attribution. A model mismatch prints a WARNING and is recorded — the
-    verdict still counts, but never hide it.
+    --attempt <id> [--evidence <file>] [--reason "<issues>" on fail]
+    [--actual-model <what the verifier actually ran>]`. The verdict closes
+    the attempt it was dispatched to; re-running `orx verify` re-surfaces the
+    same attempt (never a second dispatch), and routing edits between
+    dispatch and submit cannot move the attribution. A model mismatch prints
+    a WARNING and is recorded — the verdict still counts, but never hide it.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
     Not when output "looks finished".
 
@@ -87,18 +175,18 @@ attempt that survived a session break. That attempt still owns the task.
 { "summary": "", "commands": [], "artifacts": [] }
 ```
 
-## Escalation & acceptance (routing strategy: docs/routing-strategy.md)
+## Escalation & acceptance (convention: docs/routing-strategy.md)
 
 - Default posture is operational, not strategic: read state, pick the next
   step, dispatch. Deep deliberation is for planners and repeated failures.
 - Build fails once → retry with feedback (same plan, same rung).
 - Same acceptance criterion fails twice → escalate one rung of the
-  configured worker ladder (zcode preset default: `zcode-worker` →
-  `cursor-strong`) by pinning the stronger profile for that retry.
+  configured worker ladder (the `[worker]` profiles order in your config)
+  by pinning the stronger profile for that retry.
 - Plan/verification disagreement, scope drift, or a wrong dependency graph →
   `orx replan`, not another retry.
-- Effort ladder on the host (GLM) already runs at `max`; escalate by moving
-  work to a stronger class, not by thinking harder about state transitions.
+- Escalate by moving work to a stronger configured class; profile effort is
+  set in profiles.toml, not renegotiated per dispatch.
 - Accept a run as Done only with all three: acceptance criteria met,
   evidence files complete, verifications passed (`orx status --json` is the
   arbiter).

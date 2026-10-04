@@ -22,7 +22,9 @@
 
 ## 中断恢复（新会话）
 
-不依赖聊天记忆，三步定位：
+通用接管与恢复协议（`orx run` 重新停泊、recovery 条目、no-second-writer、
+late result 绑原 attempt、stale 拒绝）全部遵循 orx-controller skill；本节
+只补 PBV 特有的三步定位：
 
 1. `orx status --json`：run/goal/task 状态是唯一事实源。
 2. 读最近一份 `reports/pbv/round-N.md`：上一轮走到哪步（Build / Validate /
@@ -30,8 +32,10 @@
 3. `git log` 对照：确认 Close 是否完成（提交是否存在、规划文档是否更新）。
 
 然后续跑：Close 未完 → 补 Close（提交、文档状态、轮报告）；Close 已完 →
-下一轮 Select。修复预算按轮报告的 attempt 数续算，不重新起算；task 处于
-failed 时先 `orx task retry` 再重建。
+下一轮 Select。修复预算按 ORX 执行记录恢复（该 task 的 attempt 计数，以
+`orx status --json` / `orx timeline` 为准），不重新起算；轮报告只是辅助
+留痕，与运行事实不一致时以运行事实为准。task 处于 failed 时先
+`orx task retry` 再重建。
 
 ## 旧机制 → 新承载对照（摘要）
 

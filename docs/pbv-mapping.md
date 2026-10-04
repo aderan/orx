@@ -5,6 +5,14 @@
 替换对象：`/Users/flb/Sources/Products/StockMate/.zcode/skills/pbv-loop`（项目级 skill，含 references/ 4 个模板与 `scripts/codex_plan.sh`）。
 替换产物：ORX 仓库维护的 `skills/orx-pbv`（可选安装）+ ORX 内核补齐的通用指派/验证契约。
 
+> **2026-10-04 修订**（skills 职责重划；本节优先于正文中与之冲突的行）：
+> 1. orx-controller skill 是通用执行入口，支持两种接纳：用户直接给出目标；用户移交外部咨询总结，由 Controller 区分目标/约束/验收/背景/待验证假设后建立或接续 Goal。咨询建议与待验证假设不自动成为已确认约束或验收。
+> 2. orx-pbv 仅在用户显式调用时启用，不因"大任务/多轮开发"自动触发（§1 分层归属据此细化：通用调度/验证/恢复协议集中在 orx-controller，pbv 引用、不另写）。
+> 3. §3"范围外失败"行的 skill 层最小修复例外**删除**：范围外问题不在本轮修、不绕过本片原定验收；同一 Goal 的必要工作走 `orx replan` 明确增补任务（带范围与验收），超出 Goal 或授权交用户决定。
+> 4. 修复预算按 ORX 执行记录恢复（该 task 的 attempt 计数，`orx status --json`/`orx timeline` 为准）；轮报告是辅助留痕，不替代运行事实（§3"中途重读状态"行据此细化）。
+> 5. 轮计划（round-N-plan.md）定位为辅助实施产物，不得改变已生效任务的范围、验收与验证要求；与 Plan IR 冲突时以 Plan IR 为准，需要变化走 `orx replan`（§2"round-N-plan.md"行据此细化）。
+> 6. 指派身份绑定、失败原因回传、结果提交与恢复的命令示例统一为现行契约（`--attempt`/`--reason` 等），以 orx-controller skill 的示例为准。
+
 ## 1. 分层归属
 
 | 层 | 承担 | 不承担 |

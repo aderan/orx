@@ -177,6 +177,13 @@ orx skill update
 orx update --check  # install source + upgrade path (uv tool installs only)
 ```
 
+The default set installs `orx-controller` (the universal execution entry:
+goal intake — stated directly or handed over as a consulting summary —
+planning, assignment delivery, verification, retry/replan, recovery) and
+`orx-agent` (single-assignment discipline for plan/task/verify work).
+`orx-pbv` is an optional, explicitly-invoked multi-round development recipe
+on top of the controller protocol: `orx skill install orx-pbv`.
+
 ## Docs
 
 - [职责与边界](docs/responsibilities.md) — responsibility baseline, scope

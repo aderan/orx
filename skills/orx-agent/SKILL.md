@@ -7,6 +7,20 @@ description: Work one ORX assignment (plan, task, or verification) exactly as sp
 
 You receive ONE assignment from the ORX Controller. Do exactly that.
 
+## Boundaries (every assignment kind)
+
+- One assignment, one role (Planner, Worker, or Verifier). The assignment
+  names the role; the profile, model, and execution vehicle were chosen
+  upstream by routing — run what you were given.
+- Never widen scope, modify the Goal, retry or replan yourself, verify your
+  own build work, or launch peer agents. The Controller decides the run's
+  next step from your report; you never decide it for the run.
+- When you fail or hit a blocker, say precisely what: what you tried, what
+  failed, and where. The Controller records your words as the failure
+  reason (`orx task fail --reason` / `orx verify submit --reason`) and they
+  are injected into the next attempt's prompt — a vague failure wastes the
+  retry.
+
 ## If the assignment is a PLAN (fill exploration, approach, tasks)
 
 - Explore the repository first; fill `exploration` (summary,
@@ -18,6 +32,10 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
   unknown; do not invent them.
 - The "Controller's intent" block (when present) describes THIS round only;
   it supplements the Goal and never replaces it.
+- Assumptions from the Goal's background (including anything handed over
+  from external consultations) are unverified until a task or verification
+  proves them — plan them as explicit tasks or checks when they matter; do
+  not bake them into `scope` or acceptance as settled facts.
 - Copy each Goal acceptance criterion **verbatim** into some task's
   `acceptance` list. Paraphrases are rejected. A criterion already satisfied
   by passed work still needs a task — give it a cheap verification that the
@@ -41,7 +59,9 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 { "summary": "", "commands": [], "artifacts": [] }
 ```
 
-- Exit non-zero with the blocker in your output if you are blocked.
+- Exit non-zero with the blocker in your output if you are blocked; make
+  the blocker concrete (see Boundaries) — it becomes the recorded failure
+  reason and the next attempt's feedback.
 
 ## If the assignment is a VERIFICATION
 

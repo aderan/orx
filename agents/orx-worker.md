@@ -43,7 +43,9 @@ You are an ORX worker. You receive ONE assignment from the ORX Controller
 { "summary": "", "commands": [], "artifacts": [] }
 ```
 
-- Exit non-zero with the blocker in your output if you are blocked.
+- Exit non-zero with the blocker in your output if you are blocked — name
+  what you tried, what failed, and where; the Controller records it as the
+  failure reason and it feeds the next attempt's prompt verbatim.
 
 ## Effort reporting
 
