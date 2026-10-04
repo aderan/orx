@@ -136,26 +136,40 @@ def find_project_root(start: Path | None = None) -> Path | None:
     return None
 
 
+def _user_preset_installed() -> bool:
+    """See config.user_preset_installed — single source for this rule."""
+    return config_mod.user_preset_installed()
+
+
 def init_project(root: Path) -> dict:
-    """Create .orx/ if missing; refuse to clobber a non-empty config."""
+    """Create .orx/ if missing; refuse to clobber a non-empty config.
+
+    With an installed user preset (both user-layer files present), the
+    project inherits routing and profiles from it: no project config.toml or
+    profiles.toml is written, so the preset stays effective and future preset
+    updates are not shadowed per-project."""
     root = root.resolve()
     orx_dir = root / ".orx"
     orx_dir.mkdir(parents=True, exist_ok=True)
     (orx_dir / "runs").mkdir(exist_ok=True)
 
     created: list[str] = []
+    inherited: list[str] = []
     config_path = orx_dir / "config.toml"
     profiles_path = orx_dir / "profiles.toml"
     if config_path.exists() and config_path.stat().st_size > 0:
         raise ORXError(f"refusing to overwrite non-empty {config_path}")
     if profiles_path.exists() and profiles_path.stat().st_size > 0:
         raise ORXError(f"refusing to overwrite non-empty {profiles_path}")
-    if not config_path.exists() or config_path.stat().st_size == 0:
-        config_path.write_text(DEFAULT_CONFIG_TOML)
-        created.append(".orx/config.toml")
-    if not profiles_path.exists() or profiles_path.stat().st_size == 0:
-        profiles_path.write_text(DEFAULT_PROFILES_TOML)
-        created.append(".orx/profiles.toml")
+    if _user_preset_installed():
+        inherited = [".orx/config.toml", ".orx/profiles.toml"]
+    else:
+        if not config_path.exists() or config_path.stat().st_size == 0:
+            config_path.write_text(DEFAULT_CONFIG_TOML)
+            created.append(".orx/config.toml")
+        if not profiles_path.exists() or profiles_path.stat().st_size == 0:
+            profiles_path.write_text(DEFAULT_PROFILES_TOML)
+            created.append(".orx/profiles.toml")
 
     store = Store.open(orx_dir / "state.db")
     try:
@@ -171,7 +185,7 @@ def init_project(root: Path) -> dict:
         created.append(".orx/state.db")
     finally:
         store.close()
-    return {"root": str(root), "created": created}
+    return {"root": str(root), "created": created, "inherited": inherited}
 
 
 def open_project() -> Project:
@@ -892,6 +906,7 @@ def run_slice(project: Project) -> dict:
         "started": [],
         "host_required": [],
         "waiting_external": [],
+        "recovery": [],
         "failed": [],
         "deferred": [],
         "routing_errors": [],
@@ -973,6 +988,41 @@ def run_slice(project: Project) -> dict:
         else:
             entry["finish_with"] = f"orx task complete {task.task_id} --evidence <file>"
             out["waiting_external"].append(entry)
+
+    # Recovery surface (phase C): a RUNNING host task survived a session
+    # break. ORX never starts a second writer for it — the attempt still
+    # owns the task. This entry re-surfaces its identity and the exact
+    # contract: check the original subagent first, bind late results with
+    # --attempt, and only an explicit fail + retry routes a fresh attempt.
+    for task in store.tasks_all(revision.id):
+        if TaskStatus(task.status) is not TaskStatus.RUNNING:
+            continue
+        attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+        if attempt is None or attempt.driver != "host":
+            continue  # CLI work finishes inside run_slice; only host work outlives it
+        prompt_file = (
+            project.root / ".orx" / "runs" / run.id / "assignments" / f"{task.task_id}.md"
+        )
+        out["recovery"].append({
+            "task": task.task_id,
+            "status": task.status,
+            "attempt": attempt.id,
+            "session_ref": attempt.session_ref,
+            "prompt_file": (
+                str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None
+            ),
+            "execution": _execution_spec(
+                project, project.profiles.get(attempt.profile), attempt
+            ),
+            "contract": (
+                "no second writer: this attempt still owns the task. First check"
+                " the original subagent (handle = session_ref) for a late result"
+                f" and submit it with `orx task complete {task.task_id}"
+                f" --attempt {attempt.id} --evidence <file>`; only if it is"
+                f" confirmed dead: `orx task fail {task.task_id} --reason <why>`"
+                f" then `orx task retry {task.task_id}` routes a fresh attempt"
+            ),
+        })
 
     refresh(store, goal, run)
     return out

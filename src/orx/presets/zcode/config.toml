@@ -1,0 +1,31 @@
+schema_version = 1
+
+# ZCode preset routing (user layer). Deep planning runs on GLM-5.3, which is
+# strong class — the downgrade is allowed EXPLICITLY here instead of faking
+# a frontier label (docs/zcode-subagent-analysis.md §4).
+
+[controller]
+profile = "zcode-controller"
+
+[plan]
+depth = "auto"
+allow_class_downgrade = true
+
+[plan.light]
+profiles = ["zcode-controller"]
+
+[plan.standard]
+profiles = ["zcode-controller"]
+
+[plan.deep]
+profiles = ["zcode-controller"]
+
+[worker]
+profiles = ["zcode-worker"]
+
+[verify]
+profiles = ["zcode-verifier-flash", "zcode-verifier-strong"]
+
+[runtime]
+max_parallel = 1
+command_timeout_sec = 1800

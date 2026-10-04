@@ -147,6 +147,20 @@ Schema v8（`verify_entry`/`actual_model`/`model_source`，纯增量）与读契
 [observability-contract.md](observability-contract.md) 第二修正案。controller skill
 已同步新契约（execution spec、--attempt、--actual-model）。
 
+### 阶段 C 执行记录（2026-10-04，已交付）
+
+行为测试 tests/test_phase_c.py（18 项）先行，验收逐条对上：
+
+| 交付项 | 实现 | 验收证据 |
+| --- | --- | --- |
+| ZCode preset | 打包 `src/orx/presets/zcode/`（4 profile：controller self / worker→orx-worker / verifier-flash→orx-verifier / verifier-strong→orx-verifier-strong；deep 规划显式 `allow_class_downgrade=true`，不伪标 frontier）；`orx preset install zcode` 只写用户层：profile 同名不同内容整体拒绝（零部分写入）、config 只补缺键（用户已设键保留并报告）、agent 定义仅缺失时安装（现存定义永远保留，漂移交给 doctor） | 空/已配置/冲突/幂等四组测试 + CLI 冒烟 |
+| init 尊重 preset | 用户层两文件齐全且**自洽**（无项目层也能通过引用校验）才算已装 preset；此时 init 不写项目默认（created 只含 state.db，报告 `inherited`），preset 对新项目直接生效；部分/不自洽用户层保持旧行为 | init 继承测试 + 遗留分层测试全绿（规则收紧修复了破坏面） |
+| 已有项目 override 保留 | preset 安装不读不写任何项目目录；项目层照常全胜 | 装 preset 后项目路由断言 |
+| 角色定义↔profile 一致性 | doctor 新增 `agent_def:<ref>` 检查：定义缺失 WARN；定义 model 与 profile 请求 model（按 `/` 后缀归一）不一致 FAIL（两套事实漂移即错误）；thoughtLevel 随 detail 报告。`ORX_ZCODE_AGENTS_DIR` 可重定向 | 三态测试（一致/漂移/缺失） |
+| 恢复不制造第二写作者 | `orx run` 新增 `recovery` 面：RUNNING 的 host 任务带 attempt id、session_ref（子代理句柄）、prompt 文件与完整 execution spec 重现，并附契约——先查原子代理拿晚到结果（`task complete --attempt`），确认死亡才 `task fail`+`retry` 路由新 attempt；ORX 侧硬保证不变：park 仅发生在 RUNNABLE，retry 仅发生在 FAILED | running 任务不被重派（attempt 数不变）、晚到提交绑定原 attempt、显式 fail+retry 才出第二个 attempt |
+
+新增 `agents/orx-verifier-strong.md`（GLM-5.3 / [Read,Bash]，与 orx-verifier 同契约的强档），随 preset 安装。本机已复制到 `~/.zcode/agents/`（新会话生效）。**未自动安装 preset 到本机用户层**——是否把默认路由切到全 ZCode 是用户决定：`orx preset install zcode` 一条命令，已有项目不受影响。插件分发与并行写入（worktree）保持为后续独立阶段。
+
 阶段 B 使用本项目现有 pytest 和 fake executor，先写行为测试，再实现；不需要用付费模型跑单元测试。真机测试只负责验证 ZCode 能力和实际模型选择。MCP 是可选接入表面，不是当前方案的前置条件：ZCode 已能通过终端调用 ORX CLI；MCP 本身也不会替 ORX 获得启动 ZCode 子代理的能力。
 
 ## 8. 对前一段分析的修正
@@ -161,4 +175,4 @@ Schema v8（`verify_entry`/`actual_model`/`model_source`，纯增量）与读契
 
 执行 `uv run --offline pytest -q tests/test_assignments.py tests/test_verify.py tests/test_config.py tests/test_routing.py`：78 passed in 5.07s。这些测试验证已有 ORX 行为，不等于 ZCode 原生集成已经通过实测。本文提出的新增契约尚未实现。
 
-阶段 A（原生能力实测）已于同日执行，"尚未实测"清单中可会话内验证的项均已闭环，结果见 [zcode-subagent-verification.md](zcode-subagent-verification.md)。阶段 B 已于同日按 §7 验收交付（见上方执行记录）。下一步是阶段 C：用户默认 ZCode preset、`orx init` 覆盖用户层配置的修正、断线恢复与角色定义一致性检查。
+阶段 A（原生能力实测）已于同日执行，"尚未实测"清单中可会话内验证的项均已闭环，结果见 [zcode-subagent-verification.md](zcode-subagent-verification.md)。阶段 B 已于同日按 §7 验收交付（见上方执行记录）。阶段 C 亦于同日交付（preset/init/一致性/恢复，见上方执行记录）；三阶段全部关闭，剩余后续项：本机 preset 安装（用户决定）、插件分发、并行写入（worktree）。

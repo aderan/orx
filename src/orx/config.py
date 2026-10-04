@@ -124,6 +124,28 @@ def user_profiles_path() -> Path:
     return user_config_dir() / "profiles.toml"
 
 
+def user_preset_installed() -> bool:
+    """True when the user layer is a self-contained installed preset: BOTH
+    config.toml and profiles.toml present, and the combination validates
+    standalone (every routing reference resolves with no project layer).
+    `orx init` inherits from such a layer instead of writing project
+    defaults that would shadow it (complete same-name replacement, section
+    override). A partial or self-inconsistent user layer is not a preset."""
+    config = user_config_path()
+    profiles = user_profiles_path()
+    if not (
+        config.exists() and config.stat().st_size > 0
+        and profiles.exists() and profiles.stat().st_size > 0
+    ):
+        return False
+    probe = config.parent / ".orx-nonexistent-probe.toml"
+    try:
+        load_effective(probe, probe)
+    except ConfigError:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class Profile:
     name: str

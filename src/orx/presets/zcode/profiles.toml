@@ -1,0 +1,43 @@
+schema_version = 1
+
+# ZCode preset profiles (phase C). The host session is the Controller;
+# worker and verifiers are its native subagents (agents/ definitions).
+# Install: `orx preset install zcode` (user layer only).
+
+[profiles.zcode-controller]
+driver = "host"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+class = "strong"
+effort = "high"
+capabilities = ["coding", "vision"]
+
+[profiles.zcode-worker]
+driver = "host"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+class = "strong"
+effort = "max"
+host_mode = "subagent"
+agent_ref = "orx-worker"
+capabilities = ["coding"]
+
+[profiles.zcode-verifier-flash]
+driver = "host"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3-Flash"
+class = "economy"
+effort = "max"
+host_mode = "subagent"
+agent_ref = "orx-verifier"
+capabilities = ["coding", "vision"]
+
+[profiles.zcode-verifier-strong]
+driver = "host"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+class = "strong"
+effort = "max"
+host_mode = "subagent"
+agent_ref = "orx-verifier-strong"
+capabilities = ["coding", "vision"]

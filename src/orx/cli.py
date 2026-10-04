@@ -34,6 +34,15 @@ task_app = typer.Typer(help="Task commands.", no_args_is_help=True)
 verify_app = typer.Typer(help="Verification commands.", no_args_is_help=True)
 resource_app = typer.Typer(help="Resource runtime status.", no_args_is_help=True)
 skill_app = typer.Typer(help="User-level skills.", no_args_is_help=True)
+preset_app = typer.Typer(
+    help=(
+        "Install packaged presets into the USER layer only. A preset never "
+        "reads or writes any project; project layers keep winning. Profile "
+        "conflicts refuse the whole install (no partial writes); existing "
+        "user config keys and live agent definitions are preserved."
+    ),
+    no_args_is_help=True,
+)
 inbox_app = typer.Typer(help="Inbox commands.", no_args_is_help=True)
 auth_app = typer.Typer(help="Authentication status (display only).", no_args_is_help=True)
 config_app = typer.Typer(
@@ -65,6 +74,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(verify_app, name="verify")
 app.add_typer(resource_app, name="resource")
 app.add_typer(skill_app, name="skill")
+app.add_typer(preset_app, name="preset")
 app.add_typer(config_app, name="config")
 app.add_typer(agent_app, name="agent")
 app.add_typer(inbox_app, name="inbox")
@@ -697,10 +707,18 @@ def run(json_out: bool = JsonOpt) -> None:
             typer.echo(f"deferred: {item['task']} ({item['reason']}; run `orx run` again)")
         for item in result["routing_errors"]:
             typer.echo(f"routing error: {item['task']}: {item['error']}")
+        for item in result.get("recovery", []):
+            typer.echo(
+                f"recovery: {item['task']} is RUNNING under attempt {item['attempt']}"
+                + (f" (session {item['session_ref']})" if item.get("session_ref") else "")
+            )
+            typer.echo(f"  {item['contract']}")
+            if item.get("prompt_file"):
+                typer.echo(f"  prompt file: {item['prompt_file']}")
         if not any(
             result[k]
             for k in ("started", "failed", "host_required", "waiting_external",
-                      "deferred", "routing_errors")
+                      "deferred", "routing_errors", "recovery")
         ):
             typer.echo("nothing to dispatch")
 
@@ -1067,6 +1085,47 @@ def skill_update(json_out: bool = JsonOpt) -> None:
             typer.echo(f"  refreshed {name}")
         for target in result["symlinked_into"]:
             typer.echo(f"  symlinked into {target}")
+
+
+# ---------------------------------------------------------------------------
+# Presets
+
+
+@preset_app.command("list")
+@handle_errors
+def preset_list(json_out: bool = JsonOpt) -> None:
+    """List packaged presets."""
+    from orx import presets as presets_mod
+    rows = presets_mod.list_presets()
+    _ok(json_out, presets=rows)
+    if not json_out:
+        for row in rows:
+            typer.echo(f"{row['name']:<12} {row['profiles']} profile(s)")
+
+
+@preset_app.command("install")
+@handle_errors
+def preset_install(
+    name: str = typer.Argument(..., help="Preset name, e.g. zcode."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Install a preset into the USER layer (never touches any project)."""
+    from orx import presets as presets_mod
+    report = presets_mod.install_preset(name)
+    _ok(json_out, **report)
+    if not json_out:
+        typer.echo(f"preset {name} -> user layer")
+        typer.echo(f"  profiles added: {', '.join(report['profiles_added']) or '(none)'}")
+        typer.echo(f"  profiles preserved: {', '.join(report['profiles_preserved']) or '(none)'}")
+        typer.echo(
+            f"  config keys added: {len(report['config_added'])},"
+            f" preserved: {len(report['config_preserved'])}"
+        )
+        for agent in report["agents"]:
+            state = "installed" if agent["installed"] else (
+                "preserved existing" if agent["preserved_existing"] else "MISSING (install manually)"
+            )
+            typer.echo(f"  agent {agent['name']}: {state}")
 
 
 @app.command()

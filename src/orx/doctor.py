@@ -66,6 +66,9 @@ def run_doctor(root: Path | None) -> dict:
     checks.append(Check("orx_dir", OK if orx_dir.is_dir() else FAIL,
                         ".orx/ present" if orx_dir.is_dir() else ".orx/ missing"))
 
+    from orx.config import user_preset_installed
+    preset_installed = user_preset_installed()
+
     config = None
     profiles: dict = {}
     if config_path.exists():
@@ -77,6 +80,10 @@ def run_doctor(root: Path | None) -> dict:
             checks.append(Check("config", OK, "; ".join(warnings) or "valid"))
         except ConfigError as exc:
             checks.append(Check("config", FAIL, "; ".join(exc.messages)))
+    elif preset_installed:
+        # Init inheritance (phase C): an installed user preset owns routing;
+        # the project intentionally has no config.toml.
+        checks.append(Check("config", OK, "inherited from user preset (no project layer)"))
     else:
         checks.append(Check("config", FAIL, f"{config_path} missing"))
 
@@ -86,6 +93,8 @@ def run_doctor(root: Path | None) -> dict:
             checks.append(Check("profiles", OK, f"{len(profiles)} profile(s) defined"))
         except ConfigError as exc:
             checks.append(Check("profiles", FAIL, "; ".join(exc.messages)))
+    elif preset_installed:
+        checks.append(Check("profiles", OK, "inherited from user preset (no project layer)"))
     else:
         checks.append(Check("profiles", FAIL, f"{profiles_path} missing"))
 
@@ -133,6 +142,8 @@ def run_doctor(root: Path | None) -> dict:
                                          f" (user-layer profile)"))
     except ConfigError as exc:
         checks.append(Check("effective_config", FAIL, "; ".join(exc.messages)))
+    else:
+        checks.extend(_subagent_definition_checks(effective.profiles))
 
     if db_path.exists():
         try:
@@ -167,6 +178,62 @@ def _skill_checks() -> list[Check]:
         target = home / ".agents" / "skills" / skill
         checks.append(Check(f"skill:{skill}", OK,
                             "installed" if target.exists() else "not installed (`orx skill install`)"))
+    return checks
+
+
+def _definition_field(text: str, field: str) -> str | None:
+    """One frontmatter field from a ZCode agent definition file."""
+    import re
+    match = re.search(rf"^{field}:\s*[\"']?([^\"'\s]+)[\"']?\s*$", text, re.M)
+    return match.group(1) if match else None
+
+
+def _subagent_definition_checks(profiles: dict) -> list[Check]:
+    """Role definitions vs profiles consistency (phase C). A subagent profile
+    names a native agent (agent_ref); its definition file is what the host
+    actually loads. A model mismatch means attribution will drift on every
+    run — that is a failure, not a warning. A missing definition is a warning:
+    the host may simply not have it installed (or needs a new session)."""
+    from orx.presets import zcode_agents_dir
+
+    checks: list[Check] = []
+    directory = zcode_agents_dir()
+    for name in sorted(profiles):
+        profile = profiles[name]
+        if getattr(profile, "host_mode", "self") != "subagent" or not profile.agent_ref:
+            continue
+        ref = profile.agent_ref
+        definition = directory / f"{ref}.md"
+        if not definition.is_file():
+            checks.append(Check(
+                f"agent_def:{ref}", WARN,
+                f"definition not found at {definition} (install it, or restart the"
+                " host session to load new definitions)",
+            ))
+            continue
+        text = definition.read_text()
+        defined_model = _definition_field(text, "model")
+        thought = _definition_field(text, "thoughtLevel") or "-"
+        if defined_model is None:
+            checks.append(Check(
+                f"agent_def:{ref}", WARN,
+                f"{definition} has no parsable model field (thoughtLevel {thought})",
+            ))
+            continue
+        requested = profile.model.rsplit("/", 1)[-1]
+        actual = defined_model.rsplit("/", 1)[-1]
+        if actual != requested:
+            checks.append(Check(
+                f"agent_def:{ref}", FAIL,
+                f"profile {name} requests {profile.model} but the definition says"
+                f" {defined_model} — fix one side; two drifting facts attribute"
+                f" every run wrongly (thoughtLevel {thought})",
+            ))
+        else:
+            checks.append(Check(
+                f"agent_def:{ref}", OK,
+                f"model {actual} matches profile {name} (thoughtLevel {thought})",
+            ))
     return checks
 
 

@@ -66,6 +66,21 @@ verification, prior failure feedback), so pass them through unchanged and
 never reconstruct them from memory. Planning assignments live under
 `.orx/runs/<run>/assignments/`.
 
+### Running tasks after a disconnect (recovery — never a second writer)
+
+`orx run` also lists `recovery` entries: tasks still RUNNING under a host
+attempt that survived a session break. That attempt still owns the task.
+
+1. First check the ORIGINAL subagent (its handle is the entry's
+   `session_ref`) for a late result; submit it with
+   `orx task complete <id> --attempt <id> --evidence <file>`.
+2. Only if the original is confirmed dead: `orx task fail <id> --reason "<why>"`
+   then `orx task retry <id>` — the next `orx run` routes a fresh attempt.
+3. Never start a second subagent for the same task while its attempt is
+   open: shared working directory, concurrent writers corrupt the work.
+   ORX enforces this (late completions of the old attempt are rejected as
+   stale); do not try to work around it.
+
 ## Evidence file
 
 ```json
