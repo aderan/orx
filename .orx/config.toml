@@ -1,21 +1,24 @@
 schema_version = 1
 
-# Routing strategy (2026-10-03) — the executed form of docs/routing-strategy.md.
-# Tiers: frontier (codex/claude flagships) / strong (glm, grok, deepseek) /
+# Routing strategy — the executed form of docs/routing-strategy.md.
+# 2026-10-04: aligned with the zcode preset (orx preset install zcode +
+# `orx config set --user`): ZCode subagents are the primary worker/verifier,
+# Cursor is the fallback; planning stays on the frontier CLI pool.
+# Tiers: frontier (codex/claude flagships) / strong (glm, grok) /
 # economy (flash/compose). Effort: low|medium|high|xhigh|max.
 
-# Controller: strong + max (GLM host compensates class with max depth).
+# Controller: the ZCode host session itself (GLM-5.3 strong + high).
 [controller]
-profile = "orx-host"
+profile = "zcode-controller"
 
 [plan]
 depth = "auto"
 allow_class_downgrade = false
 
-# light = trivial single-task plans stay on strong+medium; standard/deep run
-# the frontier pool at high effort (deep keeps the frontier-only gate).
+# All depths run the frontier pool at high effort (deep keeps the
+# frontier-only gate).
 [plan.light]
-profiles = ["cursor-strong"]
+profiles = ["codex-frontier", "cursor-frontier"]
 
 [plan.standard]
 profiles = ["codex-frontier", "cursor-frontier"]
@@ -23,17 +26,15 @@ profiles = ["codex-frontier", "cursor-frontier"]
 [plan.deep]
 profiles = ["codex-frontier", "cursor-frontier"]
 
-# Escalation ladder in list order: strong+medium -> strong+high -> host(strong)
-# -> frontier+high. user directive 2026-10-03: cursor-agent does the build
-# execution; codex-frontier stays primary for planning and is the build
-# fallback of last resort.
+# Worker ladder: ZCode GLM-5.3 subagent first, Cursor grok-4.7 fallback.
+# A Cursor-first project flips the two entries.
 [worker]
-profiles = ["cursor-strong", "cursor-strong-high", "orx-host", "cursor-frontier", "codex-frontier"]
+profiles = ["zcode-worker", "cursor-strong"]
 
 # V0 deterministic checks run as shell commands (no LLM). Agent checks:
-# economy+medium first (structural), strong fallback (semantic).
+# ZCode Flash subagent first (economy), Cursor composer-2.5 fallback.
 [verify]
-profiles = ["orx-host", "cursor-economy", "cursor-strong"]
+profiles = ["zcode-verifier-flash", "cursor-economy"]
 
 [runtime]
 max_parallel = 1

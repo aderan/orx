@@ -63,7 +63,19 @@ is why planner runs are gated behind `replan` discipline, not made cheaper.
 
 ### Worker escalation ladder
 
-`[worker] profiles` order *is* the ladder:
+`[worker] profiles` order *is* the ladder.
+
+**2026-10-04 amendment (zcode preset).** The executed default is now
+ZCode-first: `orx preset install zcode` + user-layer `orx config set` made
+the defaults
+
+    controller = zcode-controller (the ZCode host session, GLM-5.3)
+    worker   = zcode-worker (GLM-5.3 subagent) → cursor-strong (grok-4.7)
+    verify   = zcode-verifier-flash (Flash subagent) → cursor-economy (composer-2.5)
+
+A project that should burn Cursor first flips the two entries in its own
+`.orx/config.toml`. The historical ladder below remains valid for projects
+that keep the pre-preset order:
 
     cursor-strong (strong+medium) → cursor-strong-high (strong+high)
     → orx-host (strong, host) → cursor-frontier / codex-frontier (frontier+high)

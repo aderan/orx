@@ -92,9 +92,9 @@ attempt that survived a session break. That attempt still owns the task.
 - Default posture is operational, not strategic: read state, pick the next
   step, dispatch. Deep deliberation is for planners and repeated failures.
 - Build fails once → retry with feedback (same plan, same rung).
-- Same acceptance criterion fails twice → escalate one rung of the worker
-  ladder (`cursor-strong` → `cursor-strong-high` → frontier profiles) by
-  pinning the stronger profile for that retry.
+- Same acceptance criterion fails twice → escalate one rung of the
+  configured worker ladder (zcode preset default: `zcode-worker` →
+  `cursor-strong`) by pinning the stronger profile for that retry.
 - Plan/verification disagreement, scope drift, or a wrong dependency graph →
   `orx replan`, not another retry.
 - Effort ladder on the host (GLM) already runs at `max`; escalate by moving
