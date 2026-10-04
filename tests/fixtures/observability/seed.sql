@@ -1,4 +1,4 @@
--- Schema v7 subset for the observability read contract.
+-- Schema v8 subset for the observability read contract.
 -- Column names and nullability match src/orx/state.py. This file is data
 -- only: applying it does not open Store and does not migrate anything.
 --
@@ -148,7 +148,7 @@ CREATE TABLE usage_observations (
   created_at TEXT NOT NULL
 );
 
-INSERT INTO meta(key, value) VALUES ('schema_version', '7');
+INSERT INTO meta(key, value) VALUES ('schema_version', '8');
 
 INSERT INTO goals(id, objective, status, created_at, updated_at)
 VALUES ('G001', 'fixture', 'done',

@@ -128,6 +128,25 @@ Flash 适合作为默认 agent verifier 的候选，是否足够应由真实漏�
 | B：ORX 执行契约 | host mode / selector、完整 payload、verifier 持久 assignment、按身份提交、实际设置来源、有效配置检查 | 重复派发不重复执行；派发后修改路由不改变结果归属；过期提交拒绝；模型不匹配可见；旧 host/CLI/external 行为仍有效 |
 | C：可靠性与交付 | 用户默认 preset、无覆盖安装/更新、断线处理、可选 Plugin 分发 | init 尊重用户 preset；已有项目 override 保留；角色定义与 profiles 可检查一致；恢复不制造第二写作者 |
 
+### 阶段 B 执行记录（2026-10-04，已交付）
+
+行为测试先行（tests/test_subagent_contract.py，23 项），实现落在四处，验收逐条对上：
+
+| 交付项 | 实现 | 验收证据 |
+| --- | --- | --- |
+| host mode / selector | profile 新增 `host_mode`（self \| subagent）与 `agent_ref`，仅 driver=host 合法，subagent 必须 agent_ref（config.py 加载期校验，doctor 继承） | 非法组合在加载期 ConfigError（4 组参数化测试） |
+| 完整 payload | 所有 host 指派（plan assignment、任务 park/重浮出、verify dispatch、task claim）携带 `execution` spec：mode/agent_ref/requested model/effort/harness/workdir/attempt | run/plan/claim 载荷断言 |
+| verifier 持久 assignment | `orx verify` dispatch 即开 attempt（未启动），绑 `attempts.verify_entry`（schema v8） | dispatch 后 attempt 行存在且未关闭 |
+| 按身份提交 | `task complete --attempt`、`verify submit --attempt` 校验角色/revision/entry/关闭态/最新性，过期即 ConflictError；无 `--attempt` 时优先绑 dispatch 时开启的 attempt，仅无 dispatch attempt 才回退 submit 时路由（旧流程） | 重复 submit、旧 attempt 晚到、跨 entry 冒用均被拒 |
+| 实际设置来源 | `--actual-model` 记入 `attempts.actual_model`（`model_source='reported'`，对应 ZCode 派发回执；db model_usage 为其权威源）；requested 与 reported 归一化对比，不匹配打 WARNING 并入结果 | 匹配无告警、不匹配两条路径断言 |
+| 重复派发去重 | verify dispatch 对已有 open attempt 的 entry 原样复用；任务 park/重浮出本就不重复开 attempt | 二次 dispatch 同 attempt id，verifier attempt 仅 1 行 |
+| 路由变更不改归属 | 提交绑定 dispatch 身份，不重新路由 | dispatch 后改 verify 顺序，submit 归属仍为原 profile |
+| 旧行为保持 | self 默认、无 host_mode 字段的旧 profile、CLI/external 路径、submit-after-complete 免 dispatch 流程全部原样 | 444 tests passed（421 旧 + 23 新） |
+
+Schema v8（`verify_entry`/`actual_model`/`model_source`，纯增量）与读契约修订见
+[observability-contract.md](observability-contract.md) 第二修正案。controller skill
+已同步新契约（execution spec、--attempt、--actual-model）。
+
 阶段 B 使用本项目现有 pytest 和 fake executor，先写行为测试，再实现；不需要用付费模型跑单元测试。真机测试只负责验证 ZCode 能力和实际模型选择。MCP 是可选接入表面，不是当前方案的前置条件：ZCode 已能通过终端调用 ORX CLI；MCP 本身也不会替 ORX 获得启动 ZCode 子代理的能力。
 
 ## 8. 对前一段分析的修正
@@ -142,4 +161,4 @@ Flash 适合作为默认 agent verifier 的候选，是否足够应由真实漏�
 
 执行 `uv run --offline pytest -q tests/test_assignments.py tests/test_verify.py tests/test_config.py tests/test_routing.py`：78 passed in 5.07s。这些测试验证已有 ORX 行为，不等于 ZCode 原生集成已经通过实测。本文提出的新增契约尚未实现。
 
-阶段 A（原生能力实测）已于同日执行，"尚未实测"清单中可会话内验证的项均已闭环，结果见 [zcode-subagent-verification.md](zcode-subagent-verification.md)。
+阶段 A（原生能力实测）已于同日执行，"尚未实测"清单中可会话内验证的项均已闭环，结果见 [zcode-subagent-verification.md](zcode-subagent-verification.md)。阶段 B 已于同日按 §7 验收交付（见上方执行记录）。下一步是阶段 C：用户默认 ZCode preset、`orx init` 覆盖用户层配置的修正、断线恢复与角色定义一致性检查。

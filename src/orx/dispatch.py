@@ -510,7 +510,7 @@ def plan_route(
         return {
             "mode": "host_required",
             "depth": depth.value,
-            "assignment": _assignment_payload(project, assignment),
+            "assignment": _assignment_payload(project, assignment, attempt),
             "routing": _routing_payload(result),
             "replan": replan,
             "context_file": context_file,
@@ -714,10 +714,11 @@ def _failure_excerpt(run_result) -> str:
     return f"exit {run_result.exit_code}: {tail[:300]}"
 
 
-def _assignment_payload(project: Project, assignment: Assignment) -> dict:
+def _assignment_payload(project: Project, assignment: Assignment,
+                        attempt=None) -> dict:
     run_id = assignment.run_id
     prompt_file = project.root / ".orx" / "runs" / run_id / "assignments" / f"{assignment.id}.md"
-    return {
+    payload = {
         "id": assignment.id,
         "run": run_id,
         "role": "planner",
@@ -727,6 +728,47 @@ def _assignment_payload(project: Project, assignment: Assignment) -> dict:
         "prompt_file": str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None,
         "schema": plan_mod.PLAN_IR_SCHEMA,
         "submit": "orx plan submit --file plan.json",
+    }
+    if attempt is not None:
+        payload["execution"] = _execution_spec(
+            project, project.profiles.get(assignment.profile), attempt
+        )
+    return payload
+
+
+def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
+    """The complete host launch specification for one assignment (phase B
+    execution contract): what the Controller must start, with which REQUESTED
+    model/effort (profile facts — observed reality is recorded separately as
+    actual_model with its source), in which working directory, and the stable
+    attempt identity every later submission must quote."""
+    if profile is None:
+        return {
+            "mode": "self",
+            "agent_ref": None,
+            "model": attempt.model,
+            "effort": attempt.requested_effort,
+            "harness": attempt.harness,
+            "workdir": str(project.root),
+            "attempt": attempt.id,
+            "submit": "controller",
+        }
+    driver = profile.driver.value
+    if driver == "host":
+        mode = profile.host_mode
+    else:
+        # cli/external are not host execution modes; the spec still carries
+        # the requested facts and the stable attempt identity.
+        mode = driver
+    return {
+        "mode": mode,
+        "agent_ref": profile.agent_ref if mode == "subagent" else None,
+        "model": profile.model,
+        "effort": profile.effort.value,
+        "harness": profile.harness.value,
+        "workdir": str(project.root),
+        "attempt": attempt.id,
+        "submit": "controller",
     }
 
 
@@ -918,6 +960,10 @@ def run_slice(project: Project) -> dict:
                 str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None
             ),
             "preread": list(task.preread),
+            "execution": (
+                _execution_spec(project, project.profiles.get(attempt.profile), attempt)
+                if attempt else None
+            ),
             "resurfaced": True,
         }
         if status is TaskStatus.WAITING_HOST:
@@ -984,6 +1030,7 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         "prompt": prompt,
         "prompt_file": _write_task_assignment_file(project, run.id, task.task_id, prompt),
         "preread": list(task.preread),
+        "execution": _execution_spec(project, profile, attempt),
     }
     if kind == "host":
         entry["claim"] = f"orx task claim {task.task_id}"
@@ -1276,12 +1323,24 @@ def task_claim(project: Project, task_id: str, session: str | None = None) -> di
         "attempt": attempt.id if attempt else None,
         "driver": "host",
         "session_ref": attempt.session_ref if attempt else None,
+        "execution": (
+            _execution_spec(project, project.profiles.get(attempt.profile), attempt)
+            if attempt else None
+        ),
     }
 
 
-def task_complete(project: Project, task_id: str, evidence: str) -> dict:
+def task_complete(
+    project: Project, task_id: str, evidence: str,
+    attempt_id: int | None = None, actual_model: str | None = None,
+) -> dict:
     """Record evidence and enter verification. Completion is NOT success:
-    the task passes only when every verification entry passes."""
+    the task passes only when every verification entry passes.
+
+    Phase B: a completion may quote the attempt id it answers (`task claim`
+    returned it). A quoted attempt that is closed, foreign, or no longer the
+    task's latest attempt is a stale submission and is rejected — a late
+    worker must not close the attempt a retry already replaced."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -1296,21 +1355,46 @@ def task_complete(project: Project, task_id: str, evidence: str) -> dict:
     if not evidence_path.exists():
         raise NotFoundError(f"evidence file not found: {evidence}")
 
-    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
-    if attempt is None:
-        attempt = store.attempt_create(
-            revision_row_id=revision.id,
-            role=Role.WORKER.value,
-            profile="unrouted-host",
-            driver="host",
-            harness="zcode",
-            model_id="unknown",
-            requested_effort="medium",
-            task_id=task.task_id,
-            isolation="prompt_only",
-            session_ref=_host_session_ref(),
-            run_id=run.id,
-        )
+    if attempt_id is not None:
+        attempt = store.attempt_get(attempt_id)
+        if attempt.role != Role.WORKER.value:
+            raise ConflictError(
+                f"attempt {attempt_id} is a {attempt.role} attempt, not a worker attempt"
+            )
+        if attempt.revision_id != revision.id or attempt.task_id != task.task_id:
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} belongs to a different"
+                " revision/task than the active one"
+            )
+        if attempt.ended_at is not None:
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} is already closed"
+                f" (result {attempt.result!r})"
+            )
+        latest = store.attempt_latest_for_task(revision.id, task.task_id)
+        if latest is not None and latest.id != attempt_id:
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} is not the latest attempt"
+                f" for task {task_id} (a newer attempt exists); a late completion"
+                " must not close it"
+            )
+    else:
+        attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+        if attempt is None:
+            attempt = store.attempt_create(
+                revision_row_id=revision.id,
+                role=Role.WORKER.value,
+                profile="unrouted-host",
+                driver="host",
+                harness="zcode",
+                model_id="unknown",
+                requested_effort="medium",
+                task_id=task.task_id,
+                isolation="prompt_only",
+                session_ref=_host_session_ref(),
+                run_id=run.id,
+            )
+    mismatch = _record_reported_model(store, attempt.id, attempt.model, actual_model)
     store.evidence_add(attempt.id, "completion", str(evidence_path))
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
     machine.transition(
@@ -1330,13 +1414,16 @@ def task_complete(project: Project, task_id: str, evidence: str) -> dict:
     verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
     refresh(store, goal, run)
     counts = _verification_counts(store, revision)
-    return {
+    result = {
         "task": task.task_id,
         "status": store.task_get(revision.id, task.task_id).status,
         "verdict": verdict,
         "verification": counts,
         "attempt": attempt.id,
     }
+    if mismatch is not None:
+        result["model_mismatch"] = mismatch
+    return result
 
 
 def task_fail(project: Project, task_id: str, reason: str) -> dict:
@@ -1445,12 +1532,41 @@ def verify_dispatch(project: Project) -> dict:
                 "driver": profile.driver.value,
             }
             if profile.driver.value == "host":
+                # Phase B execution contract: the verifier identity is fixed
+                # HERE, at dispatch. A persistent attempt is opened (not yet
+                # started) and bound to this exact entry; the verdict must
+                # close it. Re-dispatch reuses the open attempt instead of
+                # opening a second execution (duplicate dispatch never
+                # executes twice), and routing edits between dispatch and
+                # submit cannot move the attribution.
+                attempt = store.attempt_open_verifier_for_entry(
+                    revision.id, task.task_id, item.raw
+                )
+                if attempt is None:
+                    attempt = store.attempt_create(
+                        revision_row_id=revision.id,
+                        role=Role.VERIFIER.value,
+                        profile=profile.name,
+                        driver=profile.driver.value,
+                        harness=profile.harness.value,
+                        model_id=profile.model,
+                        requested_effort=profile.effort.value,
+                        routing_reason=result.reason,
+                        fallback_used=result.fallback_used,
+                        task_id=task.task_id,
+                        started=False,
+                        isolation="prompt_only",
+                        run_id=run.id,
+                        verify_entry=item.raw,
+                    )
                 prompt = verifier_prompt(
                     goal, task, item,
                     gate_summary=_gate_summary(store, revision.id, task),
                     evidence_lines=_evidence_lines(store, revision.id, task.task_id),
                     prior_issues=_prior_issues(store, revision.id, task.task_id),
                 )
+                entry_out["attempt"] = attempt.id
+                entry_out["execution"] = _execution_spec(project, profile, attempt)
                 entry_out["prompt"] = prompt
                 entry_out["prompt_file"] = _write_task_assignment_file(
                     project, run.id, task.task_id, prompt, label=f"verify-{task.task_id}-{index:02d}"
@@ -1458,10 +1574,11 @@ def verify_dispatch(project: Project) -> dict:
                 entry_out["isolation"] = "prompt_only"
                 entry_out["submit_pass"] = (
                     f"orx verify submit {task.task_id} --result pass --entry {item.raw!r}"
+                    f" --attempt {attempt.id}"
                 )
                 entry_out["submit_fail"] = (
                     f"orx verify submit {task.task_id} --result fail --entry {item.raw!r}"
-                    " --reason \"<issues for the fix loop>\""
+                    f" --attempt {attempt.id} --reason \"<issues for the fix loop>\""
                 )
                 out["agent_required"].append(entry_out)
             else:
@@ -1562,13 +1679,44 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     }
 
 
+def _normalize_model(name: str) -> str:
+    """Compare models by their bare id: profiles carry provider-qualified ids
+    (`account:…/GLM-5.3`) while executor receipts report the short form
+    (`GLM-5.3`). Anything after the last `/` is the comparable name."""
+    return name.rsplit("/", 1)[-1].strip()
+
+
+def _record_reported_model(store: Store, attempt_id: int, requested: str,
+                           actual_model: str | None) -> dict | None:
+    """Store the executor-reported model (source: 'reported' — e.g. a ZCode
+    dispatch receipt; db model_usage is the authority behind it). Returns a
+    mismatch descriptor when the reported model is not the requested one —
+    the verdict still counts, but the mismatch is visible, never silent."""
+    if not actual_model or not actual_model.strip():
+        return None
+    actual_model = actual_model.strip()
+    store.attempt_update(
+        attempt_id, actual_model=actual_model, model_source="reported"
+    )
+    if _normalize_model(actual_model) != _normalize_model(requested):
+        return {"requested": requested, "reported": actual_model}
+    return None
+
+
 def verify_submit(
     project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None,
     reason: str | None = None, session: str | None = None,
+    attempt_id: int | None = None, actual_model: str | None = None,
 ) -> dict:
     """Record a host Agent verifier's verdict for one agent verification entry.
     `reason` carries the reviewer's issues on a fail; it becomes the recorded
-    failure state and lands in the next worker/verifier prompt (fix loop)."""
+    failure state and lands in the next worker/verifier prompt (fix loop).
+
+    Phase B: the verdict closes the attempt whose identity was fixed at
+    `verify` dispatch time. An explicit --attempt must be that open attempt;
+    without one, the open dispatch attempt for the entry is preferred. Only a
+    verdict with NO open dispatch attempt routes a verifier here (legacy
+    submit-after-complete flow). Late or duplicate submissions are rejected."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -1597,15 +1745,66 @@ def verify_submit(
             f"task {task_id} has no pending agent verification entries"
         )
 
-    request = routing.RouteRequest(
-        role=Role.VERIFIER, required_capabilities=chosen.capabilities
+    open_attempt = store.attempt_open_verifier_for_entry(
+        revision.id, task.task_id, chosen.raw
     )
-    route_result = routing.route(store, project.config, project.profiles, request)
-    attempt = None
-    if route_result.ok:
+
+    if attempt_id is not None:
+        # Submissions quote the dispatch identity; validate it fully before
+        # anything is written. A closed, foreign, or superseded attempt is a
+        # stale submission, not an error to paper over.
+        attempt = store.attempt_get(attempt_id)
+        if attempt.role != Role.VERIFIER.value:
+            raise ConflictError(
+                f"attempt {attempt_id} is a {attempt.role} attempt, not a verifier attempt"
+            )
+        if attempt.revision_id != revision.id or attempt.task_id != task.task_id:
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} belongs to a different"
+                " revision/task than the active one"
+            )
+        if attempt.verify_entry is not None and attempt.verify_entry != chosen.raw:
+            raise ConflictError(
+                f"attempt {attempt_id} was dispatched for a different verification"
+                f" entry ({attempt.verify_entry!r}), not {chosen.raw!r}"
+            )
+        if attempt.ended_at is not None:
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} is already closed"
+                f" (result {attempt.result!r})"
+            )
+        bound = attempt
+    elif open_attempt is not None:
+        bound = open_attempt
+    else:
+        bound = None
+
+    if bound is not None:
+        if session_ref is not None:
+            store.attempt_update(bound.id, session_ref=session_ref)
+        store.attempt_update(
+            bound.id,
+            started_at=bound.started_at or db_now(),
+            ended_at=db_now(),
+            result="pass" if passed else "fail",
+            failure_reason=None if passed else (
+                f"agent verifier rejected: {reason or chosen.spec}"
+            ),
+        )
+    else:
+        # Legacy path: no dispatch-time attempt exists (verdict submitted
+        # straight after task completion). Route a verifier now, as in M1.
+        request = routing.RouteRequest(
+            role=Role.VERIFIER, required_capabilities=chosen.capabilities
+        )
+        route_result = routing.route(store, project.config, project.profiles, request)
+        if not route_result.ok:
+            # A verifier must exist to accept a verdict on behalf of an agent.
+            routing.persist_decision(store, request, route_result)
+            raise RoutingError(route_result.error or "verifier routing failed")
         profile = route_result.profile
         assert profile is not None
-        attempt = store.attempt_create(
+        bound = store.attempt_create(
             revision_row_id=revision.id,
             role=Role.VERIFIER.value,
             profile=profile.name,
@@ -1621,20 +1820,19 @@ def verify_submit(
                 session_ref if profile.driver.value == "host" else None
             ),
             run_id=run.id,
+            verify_entry=chosen.raw if profile.driver.value == "host" else None,
         )
-        routing.persist_decision(store, request, route_result, attempt_id=attempt.id)
+        routing.persist_decision(store, request, route_result, attempt_id=bound.id)
         store.attempt_update(
-            attempt.id,
+            bound.id,
             ended_at=db_now(),
             result="pass" if passed else "fail",
             failure_reason=None if passed else (
                 f"agent verifier rejected: {reason or chosen.spec}"
             ),
         )
-    else:
-        # A verifier must exist to accept a verdict on behalf of an agent.
-        routing.persist_decision(store, request, route_result)
-        raise RoutingError(route_result.error or "verifier routing failed")
+
+    mismatch = _record_reported_model(store, bound.id, bound.model, actual_model)
 
     evidence_rel = None
     if evidence:
@@ -1644,11 +1842,11 @@ def verify_submit(
         if not evidence_path.exists():
             raise NotFoundError(f"evidence file not found: {evidence}")
         evidence_rel = str(evidence_path)
-        store.evidence_add(attempt.id, "verification", evidence_rel)
+        store.evidence_add(bound.id, "verification", evidence_rel)
 
     store.verification_add(
         revision.id, task.task_id, "agent", chosen.raw, passed=passed,
-        attempt_id=attempt.id, exit_code=None, output_path=evidence_rel,
+        attempt_id=bound.id, exit_code=None, output_path=evidence_rel,
         required_capabilities=list(chosen.capabilities),
     )
 
@@ -1657,13 +1855,17 @@ def verify_submit(
         failure_hint=reason or (chosen.raw if not passed else None),
     )
     refresh(store, goal, run)
-    return {
+    result = {
         "task": task.task_id,
         "entry": chosen.raw,
         "result": result_value,
         "status": store.task_get(revision.id, task.task_id).status,
         "verdict": verdict,
+        "attempt": bound.id,
     }
+    if mismatch is not None:
+        result["model_mismatch"] = mismatch
+    return result
 
 
 # ---------------------------------------------------------------------------

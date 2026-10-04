@@ -1,4 +1,4 @@
-# ORX observability read contract (schema v7)
+# ORX observability read contract (schema v8)
 
 Status: contract for external readers (2026-10-04). This document is the
 supported way to analyze `.orx/state.db` from outside this repository.
@@ -29,7 +29,7 @@ migration leaves the original file in place. Widening a CHECK constraint
 rebuilds that table inside the copy. That machinery belongs to ORX.
 Consumer examples never open Store and never trigger it.
 
-Additive stability at v7 means a later ORX patch may add a column or a
+Additive stability means a later ORX patch may add a column or a
 table without removing the columns this contract names. Readers list the
 columns they use. `SELECT *` is not part of the contract. A future schema
 version is a new contract; until this document is amended, the gate below
@@ -53,12 +53,21 @@ v7 also rebuilds `usage_observations` so `source` may be `native_cli`,
 `estimated`, or `unknown`. Existing observation rows are copied. Readers
 of a v5 or v6 file do not perform that rebuild; they refuse the file.
 
+The second amendment, dated 2026-10-04 (phase B subagent execution
+contract), makes **v8** the observability schema. v8 adds only nullable
+`attempts` columns — `verify_entry` (the exact verification entry a host
+verifier attempt was dispatched for), `actual_model` and `model_source`
+(the model the executor reported, e.g. from a ZCode dispatch receipt;
+`model_source` names where the value came from, `reported` today). Legacy
+rows stay NULL; no column is back-filled. No table this contract names
+loses a column, so every v7 query runs unchanged on a v8 file.
+
 ```sql
 -- query: schema_gate
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) = '7' THEN 'ok'
+  ) = '8' THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```

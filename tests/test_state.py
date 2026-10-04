@@ -15,11 +15,15 @@ from conftest import ir_for, task_spec, write_evidence
 
 
 def _strip_v7_columns(conn) -> None:
-    """Drop v7 columns so a reopen has to add them, as a real v4/v5/v6 file would."""
+    """Drop v7/v8 columns so a reopen has to add them, as a real v4/v5/v6
+    file would."""
     for table, column in (
         ("attempts", "session_ref"),
         ("attempts", "run_id"),
         ("attempts", "usage_missing_reason"),
+        ("attempts", "verify_entry"),
+        ("attempts", "actual_model"),
+        ("attempts", "model_source"),
         ("runs", "started_at"),
         ("runs", "completed_at"),
     ):
@@ -57,7 +61,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 7
+        assert store.schema_version() == 8
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -237,7 +241,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 7
+        assert reopened.schema_version() == 8
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -272,7 +276,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 7
+        assert reopened.schema_version() == 8
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -312,7 +316,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 7
+        assert reopened.schema_version() == 8
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -416,7 +420,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 7
+        assert reopened.schema_version() == 8
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -502,7 +506,7 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 7
+            assert reopened.schema_version() == 8
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()

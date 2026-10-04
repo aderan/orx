@@ -33,6 +33,7 @@ VALID_CLASSES = "frontier | strong | economy"
 VALID_EFFORTS = "low | medium | high | xhigh | max"
 VALID_TRANSPORTS = "stdin | argument | file"
 VALID_DEPTHS = "light | standard | deep"
+VALID_HOST_MODES = "self | subagent"
 
 LAYER_CLI = "cli"
 LAYER_ENV = "env"
@@ -136,6 +137,11 @@ class Profile:
     args: tuple[str, ...] = ()
     prompt_transport: str = "file"
     force: bool = False  # cursor harness only: allow --force/--yolo launch flags
+    # Host execution mode (driver = 'host' only): 'self' — the host session
+    # does the work itself; 'subagent' — the host Controller must launch the
+    # native agent named by agent_ref (e.g. a ZCode subagent definition).
+    host_mode: str = "self"
+    agent_ref: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +156,8 @@ class Profile:
             "args": list(self.args),
             "prompt_transport": self.prompt_transport,
             "force": self.force,
+            "host_mode": self.host_mode,
+            "agent_ref": self.agent_ref,
         }
 
 
@@ -385,6 +393,24 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
     if not isinstance(force, bool):
         errors.append(f"{p} force must be a boolean (cursor harness only)")
 
+    # Host subagent execution contract (phase B): host_mode/agent_ref are
+    # host-driver selectors. self = the host session does the work;
+    # subagent = the Controller launches the native agent named by agent_ref.
+    host_mode = raw.get("host_mode", "self")
+    if host_mode not in VALID_HOST_MODES.split(" | "):
+        errors.append(f"{p} host_mode {host_mode!r} invalid ({VALID_HOST_MODES})")
+        host_mode = "self"
+    agent_ref = raw.get("agent_ref")
+    if driver != "host" and ("host_mode" in raw or agent_ref is not None):
+        errors.append(
+            f"{p} host_mode requires driver = 'host'"
+            " (subagent selection is a host execution mode)"
+        )
+    if host_mode == "subagent" and not (isinstance(agent_ref, str) and agent_ref.strip()):
+        errors.append(f"{p} agent_ref is required when host_mode = 'subagent'")
+    if host_mode == "self" and agent_ref is not None:
+        errors.append(f"{p} agent_ref requires host_mode = 'subagent'")
+
     return errors
 
 
@@ -401,6 +427,8 @@ def _build_profile(name: str, raw: dict) -> Profile:
         args=tuple(raw.get("args", [])),
         prompt_transport=raw.get("prompt_transport", "file"),
         force=bool(raw.get("force", False)),
+        host_mode=raw.get("host_mode", "self"),
+        agent_ref=raw.get("agent_ref"),
     )
 
 
@@ -1114,6 +1142,10 @@ def migrate_profiles_to_user(project_profiles: Path,
                 lines.append(f'{key} = "{entry[key]}"\n')
         if entry.get("force"):
             lines.append("force = true\n")
+        if entry.get("host_mode"):
+            lines.append(f'host_mode = "{entry["host_mode"]}"\n')
+        if entry.get("agent_ref"):
+            lines.append(f'agent_ref = "{entry["agent_ref"]}"\n')
         if entry.get("args"):
             args = ", ".join(json.dumps(a) for a in entry["args"])
             lines.append(f"args = [{args}]\n")

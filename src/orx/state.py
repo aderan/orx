@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 7
+CODE_SCHEMA_VERSION = 8
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -142,7 +142,10 @@ CREATE TABLE attempts (
   isolation TEXT,
   session_ref TEXT,
   run_id TEXT,
-  usage_missing_reason TEXT
+  usage_missing_reason TEXT,
+  verify_entry TEXT,
+  actual_model TEXT,
+  model_source TEXT
 );
 
 CREATE TABLE evidence (
@@ -414,6 +417,25 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
     )
 
 
+# v8: host subagent execution contract (docs/zcode-subagent-analysis.md §5).
+# Additive only. verify_entry binds a host verifier attempt to the exact
+# verification entry it was dispatched for, so a verdict submitted later closes
+# the attempt whose identity was fixed at dispatch — routing edits in between
+# cannot move the attribution. actual_model / model_source record the model the
+# executor reported (ZCode dispatch receipt; db model_usage is the authority
+# behind it), separate from the profile's requested model. Legacy rows stay
+# NULL; neither column is ever back-filled by guesswork.
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "attempts", "verify_entry", "verify_entry TEXT")
+    _add_column(conn, "attempts", "actual_model", "actual_model TEXT")
+    _add_column(conn, "attempts", "model_source", "model_source TEXT")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -423,6 +445,7 @@ MIGRATIONS: dict[int, callable] = {
     5: _migrate_v5,
     6: _migrate_v6,
     7: _migrate_v7,
+    8: _migrate_v8,
 }
 
 
@@ -540,6 +563,15 @@ class Attempt:
     # Why this attempt has no usage observation. NULL means not assessed
     # (legacy rows, or a path that never looked). Not a fabricated token count.
     usage_missing_reason: str | None = None
+    # The exact verification entry raw text a host verifier attempt answers
+    # (verifier attempts only; NULL otherwise). Dispatch-time binding: the
+    # verdict must close the attempt it was dispatched to, not a re-route.
+    verify_entry: str | None = None
+    # Model the executor actually reported (e.g. from the ZCode dispatch
+    # receipt; db model_usage is the authority behind it). Never synthesized;
+    # model_source names where the value came from ('reported' today).
+    actual_model: str | None = None
+    model_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -698,6 +730,9 @@ def _attempt(r: sqlite3.Row) -> Attempt:
         session_ref=r["session_ref"],
         run_id=r["run_id"],
         usage_missing_reason=r["usage_missing_reason"],
+        verify_entry=r["verify_entry"],
+        actual_model=r["actual_model"],
+        model_source=r["model_source"],
     )
 
 
@@ -1306,6 +1341,7 @@ class Store:
         isolation: str | None = None,
         session_ref: str | None = None,
         run_id: str | None = None,
+        verify_entry: str | None = None,
     ) -> Attempt:
         with self.tx():
             resolved_run = run_id
@@ -1326,8 +1362,8 @@ class Store:
             cur = self.conn.execute(
                 "INSERT INTO attempts(revision_id, task_id, assignment_id, role, profile, driver,"
                 " harness, model, requested_effort, actual_effort, effort_source, fallback_used,"
-                " routing_reason, isolation, started_at, session_ref, run_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " routing_reason, isolation, started_at, session_ref, run_id, verify_entry)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_row_id,
                     task_id,
@@ -1346,6 +1382,7 @@ class Store:
                     now() if started else None,
                     session_ref,
                     resolved_run,
+                    verify_entry,
                 ),
             )
             aid = cur.lastrowid
@@ -1357,6 +1394,20 @@ class Store:
             "SELECT * FROM attempts WHERE assignment_id = ? AND role = 'planner'"
             " AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
             (assignment_id,),
+        ).fetchone()
+        return _attempt(r) if r else None
+
+    def attempt_open_verifier_for_entry(
+        self, revision_row_id: int, task_id: str, entry: str
+    ) -> Attempt | None:
+        """The host verifier attempt still open for one verification entry.
+        Dispatch creates it; a verdict submitted later must close THIS attempt
+        (identity fixed at dispatch), never a re-route."""
+        r = self.conn.execute(
+            "SELECT * FROM attempts WHERE revision_id = ? AND task_id = ?"
+            " AND role = 'verifier' AND verify_entry = ? AND ended_at IS NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (revision_row_id, task_id, entry),
         ).fetchone()
         return _attempt(r) if r else None
 
@@ -1397,6 +1448,8 @@ class Store:
         actual_effort: str | None = None,
         effort_source: str | None = None,
         session_ref: str | None = None,
+        actual_model: str | None = None,
+        model_source: str | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
@@ -1421,6 +1474,12 @@ class Store:
         if session_ref is not None:
             sets.append("session_ref = ?")
             args.append(session_ref)
+        if actual_model is not None:
+            sets.append("actual_model = ?")
+            args.append(actual_model)
+        if model_source is not None:
+            sets.append("model_source = ?")
+            args.append(model_source)
         if not sets:
             return
         args.append(attempt_id)

@@ -111,7 +111,7 @@ def _write_was_rejected(conn: sqlite3.Connection) -> bool:
     return False
 
 
-def test_schema_gate_refuses_anything_but_v7(tmp_path: Path):
+def test_schema_gate_refuses_anything_but_v8(tmp_path: Path):
     queries = load_queries()
     db = tmp_path / "state.db"
     build_db(db)
@@ -121,7 +121,7 @@ def test_schema_gate_refuses_anything_but_v7(tmp_path: Path):
     finally:
         conn.close()
 
-    for value in ("8", "6", "v7", None):
+    for value in ("7", "9", "v8", None):
         sample = tmp_path / f"state-{value}.db"
         build_db(sample)
         writer = sqlite3.connect(sample)

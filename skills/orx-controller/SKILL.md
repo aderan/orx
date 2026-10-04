@@ -13,7 +13,11 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
 1. Read `orx status --json` before acting. It is the only source of truth.
 2. Treat `mode = "host_required"` from `orx plan` (or an entry in
    `host_required` from `orx run`) as your cue to launch a subagent — it is
-   never a failure.
+   never a failure. The entry's `execution` spec is the full launch contract:
+   `mode` (`self` = do it yourself; `subagent` = launch the native agent named
+   by `agent_ref`, e.g. the ZCode subagent `orx-worker`/`orx-verifier`),
+   requested `model`/`effort` (profile facts — report what actually ran via
+   `--actual-model`, never assume), `workdir`, and the stable `attempt` id.
 3. Pass the assignment `prompt` and `schema` through to the subagent
    **unchanged**. Do not paraphrase the prompt or trim the schema.
 4. For a planning assignment: run the prompt in a subagent, have it produce
@@ -21,7 +25,10 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
    If validation returns `errors`, fix the plan per the errors and resubmit;
    the assignment stays `waiting_host`.
 5. For a host task: `orx task claim <id>` FIRST, then do the work, then submit
-   the result. Claiming after working invites a conflict exit.
+   the result. Claiming after working invites a conflict exit. Quote the
+   attempt you answered: `orx task complete <id> --evidence evidence.json
+   --attempt <id from claim>`. A submission for an attempt that is closed or
+   no longer the latest is rejected as stale — that is correct; do not fight it.
 6. When the work is done, write an evidence file and
    `orx task complete <id> --evidence evidence.json`. Completion means
    "execution finished", NOT "passed" — verification decides.
@@ -39,8 +46,14 @@ and keep the loop moving. Never edit `.orx/state.db` directly.
    and the Goal is never rewritten. Re-running `orx replan` refreshes a
    still-waiting planning assignment with the latest facts and intent.
 10. When any task is in `verifying`, run `orx verify`. Agent checks come back
-    to you as assignments; submit each verdict with
-    `orx verify submit <task> --result pass|fail [--entry '<exact entry>'] --evidence <file>`.
+    to you as assignments bound to a stable `attempt` id; submit each verdict
+    with `orx verify submit <task> --result pass|fail --entry '<exact entry>'
+    --attempt <id> [--evidence <file>] [--actual-model <what the verifier
+    actually ran>]`. The verdict closes the attempt it was dispatched to;
+    re-running `orx verify` re-surfaces the same attempt (never a second
+    dispatch), and routing edits between dispatch and submit cannot move the
+    attribution. A model mismatch prints a WARNING and is recorded — the
+    verdict still counts, but never hide it.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
     Not when output "looks finished".
 

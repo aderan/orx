@@ -798,11 +798,21 @@ def task_claim(
 def task_complete(
     task_id: str = typer.Argument(...),
     evidence: Path = typer.Option(..., "--evidence", help="Evidence file produced by the worker."),
+    attempt: Optional[int] = typer.Option(
+        None, "--attempt", help="Attempt id this completion answers (from `task claim` / the park payload)."
+    ),
+    actual_model: Optional[str] = typer.Option(
+        None, "--actual-model",
+        help="Model the executor actually ran (e.g. from the ZCode dispatch receipt), reported not guessed.",
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Execution finished. This is NOT success: verification decides passed/failed."""
     project = dispatch.open_project()
-    result = dispatch.task_complete(project, task_id, str(evidence))
+    result = dispatch.task_complete(
+        project, task_id, str(evidence),
+        attempt_id=attempt, actual_model=actual_model,
+    )
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"task {result['task']}: status {result['status']} (verdict {result['verdict']})")
@@ -810,6 +820,11 @@ def task_complete(
         typer.echo(
             f"  verification: {v['passed']} passed / {v['failed']} failed / {v['awaiting_agent']} awaiting agent"
         )
+        if result.get("model_mismatch"):
+            m = result["model_mismatch"]
+            typer.echo(
+                f"  WARNING model mismatch: requested {m['requested']}, reported {m['reported']}"
+            )
 
 
 @task_app.command("fail")
@@ -882,13 +897,20 @@ def verify_submit(
     evidence: Optional[Path] = typer.Option(None, "--evidence", help="Optional evidence file."),
     reason: Optional[str] = typer.Option(None, "--reason", help="On a fail: the reviewer's issues; recorded as the failure state and fed to the next attempt."),
     session: Optional[str] = SessionOpt,
+    attempt: Optional[int] = typer.Option(
+        None, "--attempt", help="Verifier attempt id this verdict closes (from `orx verify` dispatch)."
+    ),
+    actual_model: Optional[str] = typer.Option(
+        None, "--actual-model",
+        help="Model the verifier actually ran (e.g. from the ZCode dispatch receipt), reported not guessed.",
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Submit a host Agent verifier's verdict for one agent verification entry."""
     project = dispatch.open_project()
     data = dispatch.verify_submit(
         project, task_id, result, entry, str(evidence) if evidence else None, reason,
-        session=session,
+        session=session, attempt_id=attempt, actual_model=actual_model,
     )
     _ok(json_out, **data)
     if not json_out:
@@ -896,6 +918,11 @@ def verify_submit(
             f"task {data['task']}: agent verdict {data['result']} for {data['entry']!r};"
             f" status {data['status']}"
         )
+        if data.get("model_mismatch"):
+            m = data["model_mismatch"]
+            typer.echo(
+                f"  WARNING model mismatch: requested {m['requested']}, reported {m['reported']}"
+            )
 
 
 # ---------------------------------------------------------------------------
