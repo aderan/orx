@@ -5,6 +5,9 @@ slot containing ``{prompt}``, or ``{prompt_file}`` (prompt written to a file,
 path substituted). Exit code is the result. ``actual_effort`` stays
 ``provider_default`` unless the process prints a line
 ``ORX_ACTUAL_EFFORT=<value>`` (tests use this; real shells stay default).
+
+This adapter has no usage or session hook. A finished shell attempt records
+``adapter_unsupported`` rather than a guessed token total or session id.
 """
 
 from __future__ import annotations

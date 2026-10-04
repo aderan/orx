@@ -398,7 +398,7 @@ INSERT INTO goals(id, objective, constraints_json, acceptance_json, context, sta
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 6
+        assert reopened.schema_version() == 7
         row = reopened.resource_row("legacy2")
         assert (row.status, row.note) == ("cooldown", "cap reached")
         assert reopened.goal_get("G001").objective == "legacy goal"

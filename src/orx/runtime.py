@@ -67,10 +67,23 @@ class CommandResult:
     stderr: str
     duration_sec: float
     timed_out: bool
+    # Full redacted streams. stdout/stderr are the bounded log view. Parsers
+    # read the full text so a usage or session event past the log limit is
+    # not discarded. Empty means the caller did not keep a separate copy.
+    stdout_full: str = ""
+    stderr_full: str = ""
 
     @property
     def ok(self) -> bool:
         return self.exit_code == 0 and not self.timed_out
+
+
+def _bounded(stdout: str, stderr: str, limit: int) -> tuple[str, str, str, str]:
+    """Redact once. The log view is truncated; the full redacted text is what
+    adapters parse. Secrets never remain in either copy."""
+    out = redact(stdout)
+    err = redact(stderr)
+    return truncate(out, limit), truncate(err, limit), out, err
 
 
 def _decode(data) -> str:
@@ -93,22 +106,29 @@ def run_shell(command: str, cwd: Path, timeout: int, stream_limit: int | None = 
             timeout=timeout,
             text=True,
         )
+        stdout, stderr, stdout_full, stderr_full = _bounded(proc.stdout, proc.stderr, limit)
         return CommandResult(
             command=command,
             exit_code=proc.returncode,
-            stdout=truncate(redact(proc.stdout), limit),
-            stderr=truncate(redact(proc.stderr), limit),
+            stdout=stdout,
+            stderr=stderr,
             duration_sec=time.monotonic() - start,
             timed_out=False,
+            stdout_full=stdout_full,
+            stderr_full=stderr_full,
         )
     except subprocess.TimeoutExpired as exc:
+        stdout, stderr, stdout_full, stderr_full = _bounded(
+            _decode(exc.stdout), _decode(exc.stderr), limit)
         return CommandResult(
             command=command,
             exit_code=None,
-            stdout=truncate(redact(_decode(exc.stdout)), limit),
-            stderr=truncate(redact(_decode(exc.stderr)), limit),
+            stdout=stdout,
+            stderr=stderr,
             duration_sec=time.monotonic() - start,
             timed_out=True,
+            stdout_full=stdout_full,
+            stderr_full=stderr_full,
         )
 
 
@@ -130,28 +150,37 @@ def run_argv(argv: list[str], cwd: Path, timeout: int, stdin_text: str | None = 
             text=True,
             input=stdin_text,
         )
+        stdout, stderr, stdout_full, stderr_full = _bounded(proc.stdout, proc.stderr, limit)
         return CommandResult(
             command=" ".join(argv),
             exit_code=proc.returncode,
-            stdout=truncate(redact(proc.stdout), limit),
-            stderr=truncate(redact(proc.stderr), limit),
+            stdout=stdout,
+            stderr=stderr,
             duration_sec=time.monotonic() - start,
             timed_out=False,
+            stdout_full=stdout_full,
+            stderr_full=stderr_full,
         )
     except subprocess.TimeoutExpired as exc:
+        stdout, stderr, stdout_full, stderr_full = _bounded(
+            _decode(exc.stdout), _decode(exc.stderr), limit)
         return CommandResult(
             command=" ".join(argv),
             exit_code=None,
-            stdout=truncate(redact(_decode(exc.stdout)), limit),
-            stderr=truncate(redact(_decode(exc.stderr)), limit),
+            stdout=stdout,
+            stderr=stderr,
             duration_sec=time.monotonic() - start,
             timed_out=True,
+            stdout_full=stdout_full,
+            stderr_full=stderr_full,
         )
 
 
-# CLI agent streams exceed the 256 KiB default on real planner runs and the
-# truncation cut the FINAL events (codex turn.completed usage) first. Usage
-# capture (M1 P5) needs the stream end; 2 MiB covers observed transcripts.
+# CLI agent streams exceed the 256 KiB default on real planner runs and a
+# head truncation cut the FINAL events (codex turn.completed, cursor usage)
+# first. The execution log stays inside this bound. Adapters parse
+# CommandResult.stdout_full, which is the redacted stream before that cut,
+# so a usage or session event the harness actually emitted still survives.
 LAUNCH_STREAM_LIMIT = 2 * 1024 * 1024
 
 

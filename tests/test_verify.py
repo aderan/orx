@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orx import dispatch
-from orx.records import ConflictError, NotFoundError, RoutingError
+from orx.records import ConflictError, NotFoundError, ORXError, RoutingError
 
 from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, ir_for, make_project, task_spec, write_evidence
 
@@ -76,6 +76,23 @@ def test_agent_verdict_fail_via_submit(planned, tmp_path):
     _finish(planned, "T003", tmp_path)
     result = dispatch.verify_submit(planned, "T003", "fail", None, str(write_evidence(tmp_path)))
     assert result["status"] == "failed"
+
+
+def test_host_verifier_session_does_not_change_verdict(planned, tmp_path, monkeypatch):
+    """A host verifier records the caller's session. Pass/fail is unchanged."""
+    monkeypatch.setenv("ORX_SESSION_REF", "env-verifier")
+    _finish(planned, "T003", tmp_path)
+    with pytest.raises(ORXError, match="malformed"):
+        dispatch.verify_submit(planned, "T003", "pass", None, None, session="bad ref")
+    assert not any(a.role == "verifier" for a in planned.store.attempts_all())
+    result = dispatch.verify_submit(
+        planned, "T003", "pass", None, None, session="flag-verifier",
+    )
+    assert result["status"] == "passed"
+    assert result["verdict"] == "passed"
+    verifier = next(a for a in planned.store.attempts_all() if a.role == "verifier")
+    assert verifier.session_ref == "flag-verifier"
+    assert verifier.started_at is not None and verifier.ended_at is not None
 
 
 def test_verify_submit_requires_verifying(planned, tmp_path):

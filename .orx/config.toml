@@ -33,7 +33,7 @@ profiles = ["cursor-strong", "cursor-strong-high", "orx-host", "cursor-frontier"
 # V0 deterministic checks run as shell commands (no LLM). Agent checks:
 # economy+medium first (structural), strong fallback (semantic).
 [verify]
-profiles = ["cursor-economy", "cursor-strong", "orx-host"]
+profiles = ["orx-host", "cursor-economy", "cursor-strong"]
 
 [runtime]
 max_parallel = 1

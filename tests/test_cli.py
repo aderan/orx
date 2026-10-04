@@ -192,11 +192,16 @@ def test_cli_fake_lifecycle_goal_to_done(cli_project):
     body = payload(result)
     assert body["run"]["status"] == "done"
     assert body["goal"]["status"] == "done"
+    assert body["goal"]["objective"] == "ship it"
+    assert body["run"]["started_at"]
+    assert body["run"]["completed_at"]
 
     result = invoke("status")  # human layout
     assert result.exit_code == 0
     assert "DONE" in result.stdout
     assert "✓ T001" in result.stdout
+    assert "lifecycle:" in result.stdout
+    assert "started_at" in result.stdout and "completed_at" in result.stdout
 
 
 def test_task_fail_and_retry_via_cli(cli_project):
@@ -824,6 +829,10 @@ def test_usage_empty_and_unknown_profile(cli_project):
     body = payload(result)
     assert body["ok"] is True
     assert body["profiles"] == []
+    assert body["observations"] == []
+    assert body["coverage"] == []
+    assert body["sessions"] == []
+    assert body["runs"] == []
 
     idle = invoke("usage", "--json", "--profile", "host-planner")
     assert idle.exit_code == 0, idle.stdout
@@ -917,7 +926,9 @@ def test_usage_aggregates_tokens_runtime_and_accuracy(cli_project):
     assert frontier["input_tokens"] == 7
     assert frontier["accuracy"] == "estimated"
 
-    # One attempt has no observation: tokens stay the observed sum, accuracy unknown.
+    # One attempt has no observation: tokens stay the observed sum.
+    # The profile accuracy label still folds that gap in. Coverage states
+    # the measurement on its own: the stored row is exact.
     shell = rows["cli-fake"]
     assert shell["tasks"] == 2
     assert shell["runtime_sec"] == 10.0
@@ -925,6 +936,19 @@ def test_usage_aggregates_tokens_runtime_and_accuracy(cli_project):
     assert shell["output_tokens"] == 2
     assert shell["cached_input_tokens"] == 1
     assert shell["accuracy"] == "estimated"
+    shell_coverage = next(row for row in body["coverage"] if row["profile"] == "cli-fake")
+    assert shell_coverage["attempts"] == 2
+    assert shell_coverage["observed"] == 1
+    assert shell_coverage["measurement_accuracy"] == "exact"
+    worker_coverage = next(row for row in body["coverage"] if row["profile"] == "host-worker")
+    assert worker_coverage == {
+        "profile": "host-worker",
+        "attempts": 2,
+        "observed": 2,
+        "measurement_accuracy": "exact",
+    }
+    assert {obs["source"] for obs in body["observations"]} == {"native_cli", "output_estimate"}
+    assert "fee" not in body and "cost" not in body
 
     filtered = payload(invoke("usage", "--json", "--profile", "host-worker"))
     assert [row["profile"] for row in filtered["profiles"]] == ["host-worker"]
@@ -1083,3 +1107,263 @@ def test_skill_install_cli_unknown_name_error_envelope(tmp_path, monkeypatch):
     for available in ("orx-controller", "orx-agent", "orx-pbv"):
         assert available in body["error"]
     assert not (home / ".agents").exists()
+
+
+def test_one_active_goal_still_rejected(cli_project):
+    first = invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+    assert first.exit_code == 0
+    assert payload(first)["goal"]["objective"] == "ship it"
+    second = invoke("goal", "new", "--json", "--objective", "another", "--acceptance", "tests pass")
+    assert second.exit_code == 1
+    body = payload(second)
+    assert body["ok"] is False
+    assert "G001" in body["error"]
+
+
+def _open_attempts():
+    project = dispatch.open_project()
+    try:
+        return list(project.store.attempts_all())
+    finally:
+        project.close()
+
+
+def test_session_flag_precedes_env_on_host_paths(cli_project, monkeypatch):
+    monkeypatch.setenv("ORX_SESSION_REF", "from-env")
+    invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+
+    rejected = invoke("plan", "--json", "--session", "bad ref")
+    assert rejected.exit_code == 1
+    assert payload(rejected)["ok"] is False
+    assert "malformed" in payload(rejected)["error"]
+    assert _open_attempts() == []
+
+    planned = invoke("plan", "--json", "--session", "from-flag")
+    assert planned.exit_code == 0, planned.stdout
+    planner = next(a for a in _open_attempts() if a.role == "planner")
+    assert planner.session_ref == "from-flag"
+    assert planner.ended_at is None
+
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["tests pass"], verification=["agent: looks fine"]),
+    ])
+    plan_path = cli_project / "plan.json"
+    plan_path.write_text(json.dumps(plan))
+    bad_submit = invoke(
+        "plan", "submit", "--json", "--session", "   ", "--file", str(plan_path),
+    )
+    assert bad_submit.exit_code == 1
+    assert "malformed" in payload(bad_submit)["error"] or "empty" in payload(bad_submit)["error"]
+    planner = next(a for a in _open_attempts() if a.role == "planner")
+    assert planner.session_ref == "from-flag"
+    assert planner.ended_at is None
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        assert project.store.revision_active(run.id) is None
+    finally:
+        project.close()
+
+    submitted = invoke(
+        "plan", "submit", "--json", "--session", "from-submit", "--file", str(plan_path),
+    )
+    assert submitted.exit_code == 0, submitted.stdout
+    planner = next(a for a in _open_attempts() if a.role == "planner")
+    assert planner.session_ref == "from-submit"
+    assert planner.ended_at is not None
+
+    invoke("run", "--json")
+    bad_claim = invoke("task", "claim", "--json", "T001", "--session", "")
+    assert bad_claim.exit_code == 1
+    assert payload(bad_claim)["ok"] is False
+    assert "empty" in payload(bad_claim)["error"] or "malformed" in payload(bad_claim)["error"]
+    assert _task_status("T001") == "waiting_host"
+    worker = next(a for a in _open_attempts() if a.role == "worker")
+    assert worker.session_ref == "from-env"
+    assert worker.started_at is None
+
+    claimed = invoke("task", "claim", "--json", "T001", "--session", "from-claim")
+    assert claimed.exit_code == 0, claimed.stdout
+    assert payload(claimed)["session_ref"] == "from-claim"
+    assert payload(claimed)["status"] == "running"
+    worker = next(a for a in _open_attempts() if a.role == "worker")
+    assert worker.session_ref == "from-claim"
+
+    (cli_project / "ev.json").write_text('{"summary": "done"}')
+    finished = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert payload(finished)["status"] == "verifying"
+
+    bad_verify = invoke(
+        "verify", "submit", "--json", "T001", "--result", "pass", "--session", "has space",
+    )
+    assert bad_verify.exit_code == 1
+    assert "malformed" in payload(bad_verify)["error"]
+    assert not any(a.role == "verifier" for a in _open_attempts())
+    assert _task_status("T001") == "verifying"
+
+    verdict = invoke(
+        "verify", "submit", "--json", "T001", "--result", "pass", "--session", "from-verify",
+    )
+    assert verdict.exit_code == 0, verdict.stdout
+    assert payload(verdict)["status"] == "passed"
+    assert payload(verdict)["result"] == "pass"
+    verifier = next(a for a in _open_attempts() if a.role == "verifier")
+    assert verifier.session_ref == "from-verify"
+
+
+def test_absent_session_stays_null_and_claim_keeps_parked_ref(cli_project, monkeypatch):
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+    assert invoke("plan", "--json").exit_code == 0
+    planner = next(a for a in _open_attempts() if a.role == "planner")
+    assert planner.session_ref is None
+
+    monkeypatch.setenv("ORX_SESSION_REF", "parked-sess")
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["tests pass"]),
+    ])
+    (cli_project / "plan.json").write_text(json.dumps(plan))
+    assert invoke("plan", "submit", "--json", "--file", str(cli_project / "plan.json")).exit_code == 0
+    invoke("run", "--json")
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    claimed = invoke("task", "claim", "--json", "T001")
+    assert claimed.exit_code == 0, claimed.stdout
+    worker = next(a for a in _open_attempts() if a.role == "worker")
+    assert worker.session_ref == "parked-sess"
+    assert payload(claimed)["session_ref"] == "parked-sess"
+
+
+def _task_status(task_id):
+    body = payload(invoke("task", "list", "--json"))
+    return next(task["status"] for task in body["tasks"] if task["id"] == task_id)
+
+
+def _seed_host_attempt(session_ref="sess-host"):
+    invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+    invoke("plan", "--json")
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["tests pass"]),
+    ])
+    (Path.cwd() / "plan.json").write_text(json.dumps(plan))
+    invoke("plan", "submit", "--json", "--file", "plan.json")
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        revision = project.store.revision_active(run.id)
+        attempt = project.store.attempt_create(
+            revision.id, "worker", "host-worker", "host", "zcode", "m", "medium",
+            task_id="T001", session_ref=session_ref,
+        )
+        bare = project.store.attempt_create(
+            None, "worker", "host-worker", "host", "zcode", "m", "medium",
+        )
+        return attempt.id, bare.id, run.id
+    finally:
+        project.close()
+
+
+def test_usage_record_round_trip_and_conflicts(cli_project, monkeypatch):
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    attempt_id, bare_id, run_id = _seed_host_attempt()
+
+    missing = invoke("usage", "record", "--attempt", str(attempt_id), "--output", "1")
+    assert missing.exit_code == 2
+    guessed = invoke(
+        "usage", "record", "--attempt", str(attempt_id),
+        "--input", "3", "--output", "1", "--profile", "other",
+    )
+    assert guessed.exit_code == 2
+
+    recorded = invoke(
+        "usage", "record", "--json",
+        "--attempt", str(attempt_id), "--input", "3", "--output", "1",
+    )
+    assert recorded.exit_code == 0, recorded.stdout
+    body = payload(recorded)
+    assert body["ok"] is True
+    assert body["source"] == "host_report"
+    assert body["accuracy"] == "exact"
+    assert body["idempotent"] is False
+    assert body["profile"] == "host-worker"
+    assert body["run_id"] == run_id
+    assert body["task_id"] == "T001"
+    assert body["input_tokens"] == 3
+    assert body["output_tokens"] == 1
+    assert body["cached_input_tokens"] is None
+    assert "fee" not in body and "cost" not in body
+
+    again = invoke(
+        "usage", "record", "--json",
+        "--attempt", str(attempt_id), "--input", "3", "--output", "1",
+    )
+    assert again.exit_code == 0, again.stdout
+    assert payload(again)["idempotent"] is True
+
+    conflict = invoke(
+        "usage", "record", "--json",
+        "--attempt", str(attempt_id), "--input", "9", "--output", "1",
+    )
+    assert conflict.exit_code == 1
+    assert "refusing to replace" in payload(conflict)["error"]
+
+    cached = invoke(
+        "usage", "record", "--json", "--attempt", str(bare_id),
+        "--input", "4", "--output", "2", "--cached", "40", "--accuracy", "estimated",
+    )
+    assert cached.exit_code == 1
+    assert "no run association" in payload(cached)["error"]
+
+    negative = invoke(
+        "usage", "record", "--json",
+        "--attempt", str(attempt_id), "--input=-1", "--output", "1",
+    )
+    assert negative.exit_code == 1
+    assert "nonnegative" in payload(negative)["error"]
+
+    shown = invoke("usage", "--json")
+    assert shown.exit_code == 0, shown.stdout
+    usage_body = payload(shown)
+    reports = [row for row in usage_body["observations"] if row["source"] == "host_report"]
+    assert len(reports) == 1
+    report = reports[0]
+    assert report["input_tokens"] == 3
+    assert report["output_tokens"] == 1
+    assert report["cached_input_tokens"] is None
+    assert report["accuracy"] == "exact"
+    assert report["session_ref"] == "sess-host"
+    assert report["profile"] == "host-worker"
+    assert report["run_id"] == run_id
+    worker = next(row for row in usage_body["profiles"] if row["profile"] == "host-worker")
+    assert worker["input_tokens"] == 3
+    session = next(row for row in usage_body["sessions"] if row["attempt"] == attempt_id)
+    assert session["session_ref"] == "sess-host"
+    run_row = next(row for row in usage_body["runs"] if row["id"] == run_id)
+    assert "started_at" in run_row and "completed_at" in run_row
+
+    human = invoke("usage")
+    assert human.exit_code == 0
+    assert "host_report" in human.stdout
+    assert "measurement" in human.stdout
+    assert "PROFILE" in human.stdout.splitlines()[0]
+
+
+def test_usage_record_allows_cached_above_input(cli_project, monkeypatch):
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    attempt_id, _bare, _run = _seed_host_attempt(session_ref=None)
+    result = invoke(
+        "usage", "record", "--json",
+        "--attempt", str(attempt_id),
+        "--input", "10", "--output", "2", "--cached", "80", "--accuracy", "estimated",
+    )
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["cached_input_tokens"] == 80
+    assert body["input_tokens"] == 10
+    assert body["accuracy"] == "estimated"
+    shown = payload(invoke("usage", "--json"))
+    report = next(row for row in shown["observations"] if row["source"] == "host_report")
+    assert report["cached_input_tokens"] == 80
+    assert report["input_tokens"] == 10
+    coverage = next(row for row in shown["coverage"] if row["profile"] == "host-worker")
+    assert coverage["measurement_accuracy"] == "estimated"
+    assert coverage["observed"] >= 1

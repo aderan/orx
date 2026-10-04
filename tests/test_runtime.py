@@ -3,9 +3,13 @@ truncation, and the verification denylist."""
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 from orx import runtime
+from orx.adapters.base import Launch
+from orx.adapters.codex import CodexAdapter
 
 
 def test_run_argv_success_and_nonzero(tmp_path):
@@ -64,6 +68,55 @@ def test_truncate_caps_stream_size():
     assert len(out) < len(huge)
     assert out.endswith(f"[truncated at {runtime.STREAM_LIMIT} bytes]")
     assert runtime.truncate("small") == "small"
+
+
+def test_launch_log_stays_bounded_while_full_stream_keeps_tail(tmp_path):
+    """Output past LAUNCH_STREAM_LIMIT is cut from the log view and kept,
+    redacted, for parsers. The last turn.completed wins; it is not added to
+    the earlier one."""
+    limit = runtime.LAUNCH_STREAM_LIMIT
+    secret = "sk-abcdefghijklmnop123456"
+    thread = "11111111-1111-4111-8111-111111111111"
+    # A non-token character must break the sk- pattern. Otherwise redaction
+    # consumes the alphanumeric pad and the stream shrinks under the log limit.
+    lines = [
+        json.dumps({"type": "thread.started", "thread_id": thread}),
+        json.dumps({"type": "item.completed", "item": {"text": secret + " " + ("z" * (limit + 100))}}),
+        json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 10, "cached_input_tokens": 100, "output_tokens": 1}}),
+        json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 3, "cached_input_tokens": 4, "output_tokens": 2}}),
+    ]
+    blob = tmp_path / "blob.txt"
+    blob.write_text("\n".join(lines) + "\n")
+    script = tmp_path / "emit.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())\n"
+    )
+    launch = Launch(
+        argv=[sys.executable, str(script), str(blob)],
+        cwd=tmp_path, timeout=30, stdin_text="",
+    )
+    result = runtime.run_launch(launch)
+    assert result.ok
+    assert result.stdout.endswith(f"[truncated at {limit} bytes]")
+    assert len(result.stdout_full) > limit
+    assert secret not in result.stdout and secret not in result.stdout_full
+    assert "[REDACTED]" in result.stdout and "[REDACTED]" in result.stdout_full
+    assert '"output_tokens": 2' not in result.stdout
+    assert '"output_tokens": 2' in result.stdout_full
+    captured = CodexAdapter().interpret_capture(launch, result)
+    assert captured.session_ref == thread
+    assert captured.miss_reason is None
+    assert captured.usage == {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "cached_input_tokens": 4,
+        "source": "native_cli",
+        "accuracy": "exact",
+    }
+    assert captured.usage["input_tokens"] != 10 + 3
 
 
 def test_denylist():

@@ -130,16 +130,20 @@ def test_timeline_orders_filters_and_envelope(project, tmp_path, monkeypatch):
     assert at(lambda e: e["event"] == "goal.created" and e["detail"].startswith(goal.id)) < at(
         lambda e: e["event"] == "run.created" and run.id in e["detail"]
     )
+    # Host planning creates the waiting assignment, opens one planner attempt
+    # on it, then persists the route so the decision can name that attempt.
     assert at(lambda e: e["event"] == "run.created" and run.id in e["detail"]) < at(
+        lambda e: e["event"] == "plan.assign"
+    )
+    assert at(lambda e: e["event"] == "plan.assign") < at(
         lambda e: e["event"] == "attempt.start" and e["detail"].startswith("planner")
     )
     assert at(lambda e: e["event"] == "attempt.start" and e["detail"].startswith("planner")) < at(
         lambda e: e["event"] == "route" and e["detail"].startswith("planner")
     )
     assert at(lambda e: e["event"] == "route" and e["detail"].startswith("planner")) < at(
-        lambda e: e["event"] == "plan.assign"
+        lambda e: e["event"] == "plan.submit"
     )
-    assert at(lambda e: e["event"] == "plan.assign") < at(lambda e: e["event"] == "plan.submit")
     assert at(lambda e: e["event"] == "plan.submit") < at(
         lambda e: e["event"] == "route" and e["detail"].startswith("worker")
     )

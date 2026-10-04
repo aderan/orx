@@ -148,6 +148,12 @@ usage still show tasks and runtime.
 Human columns are `PROFILE`, `TASKS`, `RUNTIME`, `INPUT`, `OUTPUT`,
 `CACHED`, `ACCURACY`. An unknown `--profile` exits 1; a bad flag exits 2.
 
+Out-of-repo analysis reads `.orx/state.db` through
+[docs/observability-contract.md](docs/observability-contract.md): the v7
+tables, join keys, and the SQL for the six report dimensions. That
+contract is read-only. The analysis layer itself is not in this
+repository.
+
 ## Key invariants
 
 - `task complete` means execution finished, not that the task passed. Only
@@ -181,6 +187,8 @@ orx update --check  # install source + upgrade path (uv tool installs only)
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
+- [Observability read contract](docs/observability-contract.md) — schema v7
+  tables, joins, and read-only SQL for external analysis
 
 ## M1 layered configuration
 

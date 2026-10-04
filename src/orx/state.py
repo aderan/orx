@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 6
+CODE_SCHEMA_VERSION = 7
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -55,7 +55,9 @@ CREATE TABLE runs (
   goal_id TEXT NOT NULL REFERENCES goals(id),
   status TEXT NOT NULL CHECK (status IN ('planning','running','blocked','done')),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT
 );
 
 CREATE TABLE plan_revisions (
@@ -137,7 +139,10 @@ CREATE TABLE attempts (
   ended_at TEXT,
   result TEXT,
   failure_reason TEXT,
-  isolation TEXT
+  isolation TEXT,
+  session_ref TEXT,
+  run_id TEXT,
+  usage_missing_reason TEXT
 );
 
 CREATE TABLE evidence (
@@ -334,6 +339,81 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
     )
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn: sqlite3.Connection, table: str, name: str, ddl: str) -> None:
+    if name not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+# v7: observability columns and the widened usage source CHECK.
+# Additive only. Legacy NULLs stay NULL — session_ref, usage-missing reasons,
+# and run lifecycle timestamps are not invented. run_id is copied only when
+# a revision or planning assignment already records the run. updated_at is
+# not a completion time. The usage CHECK rebuild follows the v2
+# backup-replace pattern inside the copy-then-replace migration.
+SCHEMA_V7_USAGE = """
+CREATE TABLE usage_observations_v7 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  profile TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  task_id TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  source TEXT NOT NULL CHECK (source IN ('native_cli', 'output_estimate', 'host_report')),
+  accuracy TEXT NOT NULL CHECK (accuracy IN ('exact', 'estimated', 'unknown')),
+  created_at TEXT NOT NULL
+);
+INSERT INTO usage_observations_v7 (
+  id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+  cached_input_tokens, source, accuracy, created_at
+)
+SELECT id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+       cached_input_tokens, source, accuracy, created_at
+FROM usage_observations;
+DROP TABLE usage_observations;
+ALTER TABLE usage_observations_v7 RENAME TO usage_observations;
+"""
+
+
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "attempts", "session_ref", "session_ref TEXT")
+    _add_column(conn, "attempts", "run_id", "run_id TEXT")
+    _add_column(conn, "attempts", "usage_missing_reason", "usage_missing_reason TEXT")
+    _add_column(conn, "runs", "started_at", "started_at TEXT")
+    _add_column(conn, "runs", "completed_at", "completed_at TEXT")
+    # Deterministic attribution from an association that already exists.
+    # Rows with neither a revision nor an assignment stay NULL (unknown).
+    conn.execute(
+        "UPDATE attempts SET run_id = ("
+        " SELECT run_id FROM plan_revisions WHERE plan_revisions.id = attempts.revision_id"
+        ") WHERE run_id IS NULL AND revision_id IS NOT NULL"
+        " AND EXISTS (SELECT 1 FROM plan_revisions WHERE plan_revisions.id = attempts.revision_id)"
+    )
+    conn.execute(
+        "UPDATE attempts SET run_id = ("
+        " SELECT run_id FROM planning_assignments"
+        " WHERE planning_assignments.id = attempts.assignment_id"
+        ") WHERE run_id IS NULL AND assignment_id IS NOT NULL"
+        " AND EXISTS (SELECT 1 FROM planning_assignments"
+        "             WHERE planning_assignments.id = attempts.assignment_id)"
+    )
+    has_usage = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_observations' LIMIT 1"
+    ).fetchone()
+    if has_usage:
+        conn.executescript(SCHEMA_V7_USAGE)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -342,6 +422,7 @@ MIGRATIONS: dict[int, callable] = {
     4: _migrate_v4,
     5: _migrate_v5,
     6: _migrate_v6,
+    7: _migrate_v7,
 }
 
 
@@ -368,6 +449,11 @@ class Run:
     status: str
     created_at: str
     updated_at: str
+    # Lifecycle clock. NULL until a real transition stamps them.
+    # started_at: first entry to running. completed_at: first entry to done.
+    # updated_at is not a substitute for either.
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -446,6 +532,14 @@ class Attempt:
     # Isolation the launch actually enforced (docs/pbv-mapping.md §4.6):
     # read_only | workspace_write | prompt_only; None = no claim.
     isolation: str | None = None
+    # Opaque native session id supplied by the caller. Never synthesized.
+    session_ref: str | None = None
+    # Run this attempt belongs to, copied from a revision, an assignment,
+    # or the caller that already holds the run. NULL when none of those exist.
+    run_id: str | None = None
+    # Why this attempt has no usage observation. NULL means not assessed
+    # (legacy rows, or a path that never looked). Not a fabricated token count.
+    usage_missing_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -518,6 +612,8 @@ def _run(r: sqlite3.Row) -> Run:
         status=r["status"],
         created_at=r["created_at"],
         updated_at=r["updated_at"],
+        started_at=r["started_at"],
+        completed_at=r["completed_at"],
     )
 
 
@@ -599,6 +695,9 @@ def _attempt(r: sqlite3.Row) -> Attempt:
         result=r["result"],
         failure_reason=r["failure_reason"],
         isolation=r["isolation"],
+        session_ref=r["session_ref"],
+        run_id=r["run_id"],
+        usage_missing_reason=r["usage_missing_reason"],
     )
 
 
@@ -656,6 +755,39 @@ def _resource(r: sqlite3.Row) -> ResourceRow:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _nonnegative_count(name: str, value, *, allow_none: bool = False):
+    """A token count the caller actually reported. Never coerced from None to 0."""
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise records.ORXError(f"{name} must be a nonnegative integer")
+    return value
+
+
+def _host_report_key(row: sqlite3.Row) -> tuple:
+    return (
+        row["input_tokens"],
+        row["output_tokens"],
+        row["cached_input_tokens"],
+        row["accuracy"],
+    )
+
+
+def _host_report_payload(attempt: Attempt, row: sqlite3.Row, *, idempotent: bool) -> dict:
+    return {
+        "attempt": attempt.id,
+        "profile": attempt.profile,
+        "run_id": attempt.run_id,
+        "task_id": attempt.task_id,
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "cached_input_tokens": row["cached_input_tokens"],
+        "source": "host_report",
+        "accuracy": row["accuracy"],
+        "idempotent": idempotent,
+    }
 
 
 class Store:
@@ -729,7 +861,22 @@ class Store:
         os.close(fd)
         tmp = Path(tmp_name)
         try:
+            # Committed rows may still live in the WAL. Fold them into the
+            # main file before copying, and copy any leftover sidecars with
+            # the main file so a busy checkpoint cannot drop them.
+            src = sqlite3.connect(path)
+            try:
+                src.execute("PRAGMA busy_timeout=5000")
+                src.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                src.close()
             shutil.copy2(path, tmp)
+            # Pair the main file with its WAL so committed frames survive even
+            # when checkpoint could not truncate under another connection.
+            # The shm index is rebuilt; copying it would copy live locks.
+            wal_sidecar = Path(str(path) + "-wal")
+            if wal_sidecar.exists():
+                shutil.copy2(wal_sidecar, Path(str(tmp) + "-wal"))
             conn = sqlite3.connect(tmp, isolation_level=None)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -878,10 +1025,34 @@ class Store:
         return [_run(r) for r in rows]
 
     def run_set_status(self, run_id: str, status: records.RunStatus) -> None:
+        """Move a run and stamp lifecycle columns from the transition itself.
+
+        started_at is the first transition into running. completed_at is the
+        first transition into done. Leaving done clears completed_at and
+        keeps started_at. Repeating the current status does not rewrite
+        either stamp. updated_at still moves; it is not a completion time.
+        """
         with self.tx():
+            row = self.conn.execute(
+                "SELECT status, started_at, completed_at FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise records.NotFoundError(f"run {run_id} not found")
+            ts = now()
+            new_status = status.value
+            started_at = row["started_at"]
+            completed_at = row["completed_at"]
+            if row["status"] == records.RunStatus.DONE.value and new_status != records.RunStatus.DONE.value:
+                completed_at = None
+            if new_status == records.RunStatus.RUNNING.value and started_at is None:
+                started_at = ts
+            if new_status == records.RunStatus.DONE.value and completed_at is None:
+                completed_at = ts
             self.conn.execute(
-                "UPDATE runs SET status = ?, updated_at = ? WHERE id = ?",
-                (status.value, now(), run_id),
+                "UPDATE runs SET status = ?, updated_at = ?, started_at = ?, completed_at = ?"
+                " WHERE id = ?",
+                (new_status, ts, started_at, completed_at, run_id),
             )
 
     # -- planning assignments -------------------------------------------------
@@ -1133,13 +1304,30 @@ class Store:
         started: bool = True,
         effort_source: str | None = None,
         isolation: str | None = None,
+        session_ref: str | None = None,
+        run_id: str | None = None,
     ) -> Attempt:
         with self.tx():
+            resolved_run = run_id
+            if resolved_run is None and revision_row_id is not None:
+                parent = self.conn.execute(
+                    "SELECT run_id FROM plan_revisions WHERE id = ?",
+                    (revision_row_id,),
+                ).fetchone()
+                if parent is not None:
+                    resolved_run = parent["run_id"]
+            if resolved_run is None and assignment_id is not None:
+                parent = self.conn.execute(
+                    "SELECT run_id FROM planning_assignments WHERE id = ?",
+                    (assignment_id,),
+                ).fetchone()
+                if parent is not None:
+                    resolved_run = parent["run_id"]
             cur = self.conn.execute(
                 "INSERT INTO attempts(revision_id, task_id, assignment_id, role, profile, driver,"
                 " harness, model, requested_effort, actual_effort, effort_source, fallback_used,"
-                " routing_reason, isolation, started_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " routing_reason, isolation, started_at, session_ref, run_id)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_row_id,
                     task_id,
@@ -1156,10 +1344,31 @@ class Store:
                     routing_reason,
                     isolation,
                     now() if started else None,
+                    session_ref,
+                    resolved_run,
                 ),
             )
             aid = cur.lastrowid
         return self.attempt_get(aid)
+
+    def attempt_open_for_assignment(self, assignment_id: str) -> Attempt | None:
+        """The planner attempt still open for a waiting assignment, if any."""
+        r = self.conn.execute(
+            "SELECT * FROM attempts WHERE assignment_id = ? AND role = 'planner'"
+            " AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+            (assignment_id,),
+        ).fetchone()
+        return _attempt(r) if r else None
+
+    def attempt_mark_usage_missing(self, attempt_id: int, reason: str) -> None:
+        """Record why no usage observation was stored. Does not invent tokens."""
+        if not reason or not reason.strip():
+            return
+        with self.tx():
+            self.conn.execute(
+                "UPDATE attempts SET usage_missing_reason = ? WHERE id = ?",
+                (reason, attempt_id),
+            )
 
     def attempts_all(self) -> list[Attempt]:
         rows = self.conn.execute("SELECT * FROM attempts ORDER BY id").fetchall()
@@ -1187,6 +1396,7 @@ class Store:
         failure_reason: str | None = None,
         actual_effort: str | None = None,
         effort_source: str | None = None,
+        session_ref: str | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
@@ -1208,6 +1418,9 @@ class Store:
         if effort_source is not None:
             sets.append("effort_source = ?")
             args.append(effort_source)
+        if session_ref is not None:
+            sets.append("session_ref = ?")
+            args.append(session_ref)
         if not sets:
             return
         args.append(attempt_id)
@@ -1385,6 +1598,82 @@ class Store:
                 (attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
                  cached_input_tokens, source, accuracy, now()),
             )
+            # A stored observation supersedes an earlier "missing" reason.
+            self.conn.execute(
+                "UPDATE attempts SET usage_missing_reason = NULL WHERE id = ?",
+                (attempt_id,),
+            )
+
+    def usage_record_host(
+        self,
+        attempt_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int | None,
+        accuracy: str,
+    ) -> dict:
+        """Persist one host_report for an attempt.
+
+        Profile, run, and task come from the attempt and its stored run
+        association. Callers cannot supply those. An identical report is
+        a no-op. A different report for the same attempt is rejected so a
+        second insert cannot inflate token totals. Cached may exceed input.
+        Missing cached stays NULL. No runner normalization and no fee.
+        """
+        input_tokens = _nonnegative_count("input", input_tokens)
+        output_tokens = _nonnegative_count("output", output_tokens)
+        cached_input_tokens = _nonnegative_count(
+            "cached", cached_input_tokens, allow_none=True
+        )
+        if accuracy not in ("exact", "estimated"):
+            raise records.ORXError(
+                "--accuracy must be 'exact' or 'estimated'"
+            )
+        attempt = self.attempt_get(attempt_id)
+        if not attempt.run_id:
+            raise records.ORXError(
+                f"attempt {attempt_id} has no run association; "
+                "usage metadata is taken from the attempt and is not guessed"
+            )
+        incoming = (input_tokens, output_tokens, cached_input_tokens, accuracy)
+        with self.tx():
+            existing = self.conn.execute(
+                "SELECT * FROM usage_observations WHERE attempt_id = ? AND source = ?"
+                " ORDER BY id",
+                (attempt_id, "host_report"),
+            ).fetchall()
+            if existing:
+                mismatched = [
+                    row for row in existing if _host_report_key(row) != incoming
+                ]
+                if mismatched:
+                    row = mismatched[0]
+                    raise records.ConflictError(
+                        f"attempt {attempt_id} already has a host_report observation "
+                        f"(input={row['input_tokens']}, output={row['output_tokens']}, "
+                        f"cached={row['cached_input_tokens']}, accuracy={row['accuracy']}); "
+                        f"refusing to replace it with input={input_tokens}, "
+                        f"output={output_tokens}, cached={cached_input_tokens}, "
+                        f"accuracy={accuracy}"
+                    )
+                return _host_report_payload(attempt, existing[0], idempotent=True)
+            self.usage_add(
+                attempt.id,
+                attempt.profile,
+                attempt.run_id,
+                attempt.task_id,
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                "host_report",
+                accuracy,
+            )
+            stored = self.conn.execute(
+                "SELECT * FROM usage_observations WHERE attempt_id = ? AND source = ?"
+                " ORDER BY id DESC LIMIT 1",
+                (attempt_id, "host_report"),
+            ).fetchone()
+        return _host_report_payload(attempt, stored, idempotent=False)
 
     def usage_rows(self, profile: str | None = None) -> list[sqlite3.Row]:
         if profile is None:

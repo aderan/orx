@@ -38,9 +38,15 @@ from orx.adapters.base import (
     EFFORT_PROVIDER_DEFAULT,
     EFFORT_SOURCE_REQUESTED_VALIDATED,
     EFFORT_SOURCE_REPORTED,
+    MISS_HARNESS_OMITTED,
+    Capture,
     EffortOutcome,
     Launch,
     ProbeReport,
+    captured_stdout,
+    miss_without_usage,
+    native_usage,
+    opaque_session_id,
 )
 from orx.records import ORXError
 
@@ -174,7 +180,7 @@ class CodexAdapter:
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
         planned = launch.planned_effort or EffortOutcome(requested="medium")
-        for line in run_result.stdout.splitlines():
+        for line in captured_stdout(run_result).splitlines():
             line = line.strip()
             if not line.startswith("{"):
                 continue
@@ -202,35 +208,65 @@ class CodexAdapter:
             return planned
         return EffortOutcome(requested=planned.requested, actual=EFFORT_PROVIDER_DEFAULT, source=None)
 
-    def usage_observation(self, launch: Launch, run_result) -> dict | None:
-        """turn.completed.usage from the JSONL stream (native, exact). None
-        when the stream carries no usage (truncation, older CLI)."""
+    def interpret_capture(self, launch: Launch, run_result) -> Capture:
+        """Last ``turn.completed`` usage object only — earlier turns are not
+        summed. ``thread.started.thread_id`` is the session when it is an
+        opaque string. A numeric id, a different field, or no id is NULL."""
+        text = captured_stdout(run_result)
+        session: str | None = None
+        session_locked = False
         best: dict | None = None
-        for line in run_result.stdout.splitlines():
-            line = line.strip()
-            if not line.startswith("{") or "turn.completed" not in line:
+        broken_turn = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("{") or not stripped.endswith("}"):
+                if "turn.completed" in stripped and stripped.startswith("{"):
+                    broken_turn = True
                 continue
             try:
-                event = json.loads(line)
+                event = json.loads(stripped)
             except json.JSONDecodeError:
+                if "turn.completed" in stripped:
+                    broken_turn = True
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "thread.started" and not session_locked:
+                session_locked = True
+                session = opaque_session_id(event.get("thread_id"))
+            if event.get("type") != "turn.completed" or "usage" not in event:
                 continue
             usage = event.get("usage")
             if isinstance(usage, dict):
-                best = usage  # keep the LAST turn.completed
-        if not best:
-            return None
-        return {
-            "input_tokens": best.get("input_tokens"),
-            "output_tokens": best.get("output_tokens"),
-            "cached_input_tokens": best.get("cached_input_tokens"),
-            "source": "native_cli",
-            "accuracy": "exact",
-        }
+                best = usage  # last usage object; earlier turns are not added in
+                broken_turn = False
+            else:
+                best = None
+                broken_turn = True
+        if best is not None:
+            observation, reason = native_usage(
+                best, input_key="input_tokens", output_key="output_tokens",
+                cached_key="cached_input_tokens",
+            )
+            if observation is not None:
+                return Capture(usage=observation, session_ref=session)
+            if reason == MISS_HARNESS_OMITTED:
+                reason = miss_without_usage(run_result, text)
+            return Capture(session_ref=session, miss_reason=reason)
+        return Capture(
+            session_ref=session,
+            miss_reason=miss_without_usage(run_result, text, malformed=broken_turn),
+        )
+
+    def usage_observation(self, launch: Launch, run_result) -> dict | None:
+        """turn.completed.usage from the JSONL stream. None when nothing
+        storable was emitted. The last usage object wins; turns are not summed."""
+        return self.interpret_capture(launch, run_result).usage
 
     def extract_text(self, launch: Launch, run_result) -> str:
         if launch.last_message_path and launch.last_message_path.exists():
             return launch.last_message_path.read_text()
-        return run_result.stdout
+        return captured_stdout(run_result)
 
 
 def reset_caches() -> None:

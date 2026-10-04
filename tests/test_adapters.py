@@ -216,6 +216,9 @@ def test_shell_worker_failure_fails_task_with_reason(tmp_path, bindir, monkeypat
         task = dispatch.task_list(project)[0]
         assert task["status"] == "failed"
         assert "blocked" in task["failure_reason"]
+        worker = next(a for a in project.store.attempts_all() if a.role == "worker")
+        assert worker.usage_missing_reason == "adapter_unsupported"
+        assert project.store.usage_rows() == []
     finally:
         project.close()
 
@@ -280,6 +283,56 @@ def test_cli_verifier_verdict_contract(tmp_path, bindir, monkeypatch):
         verified = dispatch.verify_dispatch(project)
         assert verified["launched"][0]["verdict"] == "pass"
         assert dispatch.status_data(project)["run"]["status"] == "done"
+    finally:
+        project.close()
+
+
+def test_cli_completed_attempts_record_both_span_timestamps(tmp_path, bindir, monkeypatch):
+    """Regression: the CLI worker attempt was created started=False and only
+    ended_at was stamped, so every completed CLI worker lacked started_at.
+    Planner, worker, and verifier attempts from one CLI pass all have both
+    timestamps and a run id. The shell adapter emits no usage, so the miss
+    is recorded. ORX_SESSION_REF is a host stamp and is not copied here."""
+    plan = json.dumps({
+        "goal": "G001",
+        "exploration": {"summary": "fake exploration", "relevant_components": ["."],
+                        "unknowns": [], "assumptions": [], "risks": []},
+        "approach": {"summary": "fake approach", "decisions": []},
+        "tasks": [
+            {"id": "T001", "objective": "fake task", "dependencies": [],
+             "scope": {"allowed": ["src/"]}, "acceptance": ["a1"],
+             "verification": ["agent: the work is honest"],
+             "routing": {"complexity": "low"}},
+        ],
+    })
+    make_bin(bindir, "fake-planner", f"cat > /dev/null\ncat <<'PLAN'\n{plan}\nPLAN\n")
+    make_bin(bindir, "fake-worker", "exit 0\n")
+    make_bin(bindir, "fake-verifier", "echo ORX_VERDICT=pass\n")
+    monkeypatch.setenv("ORX_SESSION_REF", "host-only")
+    project = make_cli_project(tmp_path, monkeypatch=monkeypatch)
+    try:
+        goal, run = dispatch.create_goal(project, "goal text", ["a1"])
+        dispatch.plan_route(project)
+        dispatch.run_slice(project)
+        verified = dispatch.verify_dispatch(project)
+        assert verified["launched"][0]["verdict"] == "pass"
+        by_role = {}
+        for attempt in project.store.attempts_all():
+            by_role.setdefault(attempt.role, []).append(attempt)
+        assert set(by_role) == {"planner", "worker", "verifier"}
+        for role, rows in by_role.items():
+            assert len(rows) == 1, role
+            attempt = rows[0]
+            assert attempt.started_at is not None, role
+            assert attempt.ended_at is not None, role
+            assert attempt.run_id == run.id, role
+            assert attempt.session_ref is None, role
+            assert attempt.usage_missing_reason == "adapter_unsupported", role
+        done = project.store.run_get(run.id)
+        assert done.status == "done"
+        assert done.started_at is not None
+        assert done.completed_at is not None
+        assert goal.id == "G001"
     finally:
         project.close()
 
@@ -659,6 +712,11 @@ def test_codex_capability_mismatch_fails_attempt(tmp_path, bindir, monkeypatch):
         assert result["failed"][0]["task"] == "T001"
         assert "capability_mismatch" in result["failed"][0]["reason"]
         assert dispatch.task_list(project)[0]["status"] == "failed"
+        worker = next(a for a in project.store.attempts_all() if a.role == "worker")
+        assert worker.result == "failed"
+        assert worker.usage_missing_reason == "execution_failure"
+        assert worker.session_ref is None
+        assert project.store.usage_rows() == []
     finally:
         project.close()
 
@@ -1064,3 +1122,369 @@ def test_usage_observation_parsers():
 
     assert CursorAdapter().usage_observation(L(), RNone()) is None
     assert CodexAdapter().usage_observation(L(), RNone()) is None
+
+
+# ---------------------------------------------------------------------------
+# CLI usage + session capture (M1.2)
+
+
+THREAD = "11111111-1111-4111-8111-111111111111"
+SESSION = "22222222-2222-4222-8222-222222222222"
+REQUEST = "33333333-3333-4333-8333-333333333333"
+
+
+def _codex_stream(thread_id, usage: dict | None, *, extra: str = "") -> str:
+    lines = [json.dumps({"type": "thread.started", "thread_id": thread_id,
+                         "request_id": REQUEST})]
+    if extra:
+        lines.append(extra)
+    if usage is not None:
+        lines.append(json.dumps({"type": "turn.completed", "usage": usage}))
+    return "\n".join(lines) + "\n"
+
+
+def install_codex_stdout(bindir: Path, stdout: str, exit_code: int = 0,
+                         plan: str = FAKE_PLAN) -> None:
+    blob = bindir / "codex-stdout.txt"
+    blob.write_text(stdout)
+    script = f"""#!/bin/sh
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  cat <<'H'
+{CODEX_HELP}
+H
+  exit 0
+fi
+if [ "$1" = "debug" ]; then
+  cat <<'M'
+{CODEX_MODELS}
+M
+  exit 0
+fi
+prev=""
+out=""
+for arg in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$arg"; fi
+  prev="$arg"
+done
+if [ -n "$out" ]; then cat <<'P' > "$out"
+{plan}
+P
+fi
+cat "{blob}"
+exit {exit_code}
+"""
+    path = bindir / "codex"
+    path.write_text(script)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    codex_adapter.reset_caches()
+
+
+def install_cursor_stdout(bindir: Path, stdout: str, exit_code: int = 0) -> None:
+    blob = bindir / "agent-stdout.txt"
+    blob.write_text(stdout)
+    script = f"""#!/bin/sh
+if [ "$1" = "--help" ]; then
+  cat <<'H'
+{AGENT_HELP}
+H
+  exit 0
+fi
+cat "{blob}"
+exit {exit_code}
+"""
+    path = bindir / "agent"
+    path.write_text(script)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    cursor_adapter.reset_caches()
+
+
+def _cursor_envelope(result: str = "done", *, session_id=SESSION, usage=None, exit_note=""):
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": result,
+        "request_id": REQUEST,
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    if usage is not None:
+        payload["usage"] = usage
+    return json.dumps(payload) + exit_note
+
+
+def _usage_row(project, attempt_id: int):
+    rows = [row for row in project.store.usage_rows() if row["attempt_id"] == attempt_id]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def _role_attempt(project, role: str):
+    rows = [a for a in project.store.attempts_all() if a.role == role]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_codex_planner_persists_usage_and_session(tmp_path, bindir, monkeypatch):
+    monkeypatch.setenv("ORX_SESSION_REF", "host-only")
+    install_codex_stdout(bindir, _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }))
+    project = make_codex_project(tmp_path, worker=False, monkeypatch=monkeypatch)
+    try:
+        dispatch.create_goal(project, "goal text", ["a1"])
+        result = dispatch.plan_route(project)
+        assert result["mode"] == "completed"
+        attempt = _role_attempt(project, "planner")
+        assert attempt.result == "completed"
+        assert attempt.session_ref == THREAD
+        assert attempt.usage_missing_reason is None
+        row = _usage_row(project, attempt.id)
+        assert row["input_tokens"] == 10
+        assert row["output_tokens"] == 2
+        assert row["cached_input_tokens"] == 4
+        assert row["accuracy"] == "exact"
+        assert row["source"] == "native_cli"
+    finally:
+        project.close()
+
+
+def test_codex_planner_failure_still_persists_emitted_usage(tmp_path, bindir, monkeypatch):
+    install_codex_stdout(bindir, _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }), exit_code=1)
+    project = make_codex_project(tmp_path, worker=False, monkeypatch=monkeypatch)
+    try:
+        dispatch.create_goal(project, "goal text", ["a1"])
+        with pytest.raises(ORXError):
+            dispatch.plan_route(project)
+        attempt = _role_attempt(project, "planner")
+        assert attempt.result == "failed"
+        assert attempt.session_ref == THREAD
+        assert attempt.usage_missing_reason is None
+        assert _usage_row(project, attempt.id)["output_tokens"] == 2
+    finally:
+        project.close()
+
+
+def test_cursor_worker_persists_usage_and_session(tmp_path, bindir, monkeypatch):
+    monkeypatch.setenv("ORX_SESSION_REF", "host-only")
+    install_cursor_stdout(bindir, _cursor_envelope(usage={
+        "inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 500, "cacheWriteTokens": 0,
+    }))
+    project = make_cursor_project(tmp_path, planner=False, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec("T001", acceptance=["a1"])]))
+        result = dispatch.run_slice(project)
+        assert result["started"][0]["status"] == "passed"
+        attempt = _role_attempt(project, "worker")
+        assert attempt.session_ref == SESSION
+        assert attempt.session_ref != REQUEST
+        row = _usage_row(project, attempt.id)
+        assert row["input_tokens"] == 10
+        assert row["cached_input_tokens"] == 500
+        assert row["cached_input_tokens"] > row["input_tokens"]
+        assert row["accuracy"] == "exact"
+        assert attempt.usage_missing_reason is None
+    finally:
+        project.close()
+
+
+def test_cursor_worker_failure_still_persists_emitted_usage(tmp_path, bindir, monkeypatch):
+    install_cursor_stdout(bindir, _cursor_envelope(usage={
+        "inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 500,
+    }), exit_code=1)
+    project = make_cursor_project(tmp_path, planner=False, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec("T001", acceptance=["a1"])]))
+        result = dispatch.run_slice(project)
+        assert result["failed"][0]["task"] == "T001"
+        attempt = _role_attempt(project, "worker")
+        assert attempt.result == "failed"
+        assert attempt.session_ref == SESSION
+        assert _usage_row(project, attempt.id)["cached_input_tokens"] == 500
+    finally:
+        project.close()
+
+
+def test_codex_verifier_persists_usage_and_session(tmp_path, bindir, monkeypatch):
+    make_bin(bindir, "fake-worker", "exit 0\n")
+    verdict = "ORX_REASON=checked\nORX_VERDICT=pass\n"
+    install_codex_stdout(bindir, _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }), plan=verdict)
+    project = make_cli_project(
+        tmp_path,
+        profiles_extra="""
+[profiles.codex-verifier]
+driver = "cli"
+harness = "codex"
+model = "fake-codex-model"
+class = "frontier"
+effort = "high"
+capabilities = ["coding"]
+""",
+        config_replacements=(('profiles = ["shell-verifier"]', 'profiles = ["codex-verifier"]'),),
+        monkeypatch=monkeypatch,
+    )
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=["a1"], verification=["agent: check it"]),
+        ]))
+        dispatch.run_slice(project)
+        verified = dispatch.verify_dispatch(project)
+        assert verified["launched"][0]["verdict"] == "pass"
+        attempt = _role_attempt(project, "verifier")
+        assert attempt.session_ref == THREAD
+        assert _usage_row(project, attempt.id)["accuracy"] == "exact"
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+    finally:
+        project.close()
+
+
+def test_cursor_verifier_failure_keeps_verdict_and_persists_usage(tmp_path, bindir, monkeypatch):
+    """A non-zero exit is still a failed verdict even when the envelope text
+    says pass. Usage and session from that same stream are still stored."""
+    make_bin(bindir, "fake-worker", "exit 0\n")
+    install_cursor_stdout(bindir, _cursor_envelope(
+        result="ORX_REASON=checked\nORX_VERDICT=pass\n",
+        usage={"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 500},
+    ), exit_code=1)
+    project = make_cli_project(
+        tmp_path,
+        profiles_extra="""
+[profiles.cursor-verifier]
+driver = "cli"
+harness = "cursor"
+model = "fake-cursor"
+class = "frontier"
+effort = "medium"
+capabilities = ["coding"]
+""",
+        config_replacements=(('profiles = ["shell-verifier"]', 'profiles = ["cursor-verifier"]'),),
+        monkeypatch=monkeypatch,
+    )
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=["a1"], verification=["agent: check it"]),
+        ]))
+        dispatch.run_slice(project)
+        verified = dispatch.verify_dispatch(project)
+        assert verified["launched"][0]["verdict"] == "fail"
+        attempt = _role_attempt(project, "verifier")
+        assert attempt.session_ref == SESSION
+        assert _usage_row(project, attempt.id)["input_tokens"] == 10
+        assert dispatch.task_list(project)[0]["status"] == "failed"
+    finally:
+        project.close()
+
+
+def test_cli_miss_reasons_follow_the_evidence(tmp_path, bindir, monkeypatch):
+    cases = [
+        ("absent", _codex_stream(THREAD, None) + json.dumps({"type": "turn.started"}) + "\n",
+         0, "harness_omitted", THREAD, False),
+        ("malformed", _codex_stream(THREAD, {
+            "input_tokens": 1, "output_tokens": "nope", "cached_input_tokens": 1,
+         }), 0, "malformed_output", THREAD, False),
+        ("truncated", json.dumps({"type": "thread.started", "thread_id": THREAD})
+         + "\n... [truncated at 262144 bytes]\n", 0, "truncated", THREAD, False),
+        ("failed", "codex failed\n", 3, "execution_failure", None, False),
+        ("partial", _codex_stream(THREAD, {"input_tokens": 8, "output_tokens": 2}),
+         0, None, THREAD, True),
+        ("numeric-thread", json.dumps({"type": "thread.started", "thread_id": 0,
+                                        "request_id": REQUEST}) + "\n"
+         + json.dumps({"type": "turn.completed", "usage": {
+             "input_tokens": 1, "cached_input_tokens": 1, "output_tokens": 1}}) + "\n",
+         0, None, None, True),
+    ]
+    for name, stdout, code, reason, session, stored in cases:
+        install_codex_stdout(bindir, stdout, exit_code=code)
+        project_dir = tmp_path / name
+        project_dir.mkdir()
+        project = make_codex_project(project_dir, monkeypatch=monkeypatch)
+        try:
+            goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+            dispatch.submit_plan(project, ir_for(goal, [task_spec("T001", acceptance=["a1"])]))
+            dispatch.run_slice(project)
+            attempt = _role_attempt(project, "worker")
+            assert attempt.session_ref == session, name
+            rows = list(project.store.usage_rows())
+            if stored:
+                assert attempt.usage_missing_reason is None, name
+                assert len(rows) == 1, name
+            else:
+                assert attempt.usage_missing_reason == reason, name
+                assert rows == [], name
+            if name == "partial":
+                assert rows[0]["input_tokens"] == 8
+                assert rows[0]["output_tokens"] == 2
+                assert rows[0]["cached_input_tokens"] is None
+                assert rows[0]["accuracy"] == "unknown"
+            if name == "numeric-thread":
+                assert rows[0]["accuracy"] == "exact"
+                assert attempt.session_ref is None
+        finally:
+            project.close()
+
+
+def test_cursor_partial_usage_is_not_exact_and_request_id_is_not_a_session(
+        tmp_path, bindir, monkeypatch):
+    install_cursor_stdout(bindir, _cursor_envelope(session_id=None, usage={
+        "inputTokens": 8, "outputTokens": 2,
+    }))
+    project = make_cursor_project(tmp_path, planner=False, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec("T001", acceptance=["a1"])]))
+        dispatch.run_slice(project)
+        attempt = _role_attempt(project, "worker")
+        assert attempt.session_ref is None
+        row = _usage_row(project, attempt.id)
+        assert row["cached_input_tokens"] is None
+        assert row["accuracy"] == "unknown"
+        assert row["input_tokens"] == 8
+    finally:
+        project.close()
+
+
+def test_usage_and_session_survive_launch_log_limit(tmp_path, bindir, monkeypatch):
+    """The harness emits session and usage after a body larger than the log
+    bound. The log stays redacted and truncated; the attempt still stores
+    both."""
+    from orx import runtime
+    secret = "sk-abcdefghijklmnop123456"
+    # Space stops the sk- redaction pattern so the pad still exceeds the log limit.
+    pad = " " + ("y" * (runtime.LAUNCH_STREAM_LIMIT + 100))
+    payload = {
+        "type": "result",
+        "result": secret + pad,
+        "session_id": SESSION,
+        "request_id": REQUEST,
+        "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 500},
+    }
+    install_cursor_stdout(bindir, json.dumps(payload))
+    monkeypatch.setenv("ORX_SESSION_REF", "host-only")
+    project = make_cursor_project(tmp_path, planner=False, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec("T001", acceptance=["a1"])]))
+        result = dispatch.run_slice(project)
+        assert result["started"][0]["status"] == "passed"
+        attempt = _role_attempt(project, "worker")
+        assert attempt.session_ref == SESSION
+        row = _usage_row(project, attempt.id)
+        assert (row["input_tokens"], row["output_tokens"], row["cached_input_tokens"]) == (10, 4, 500)
+        assert row["accuracy"] == "exact"
+        logs = list((tmp_path / ".orx" / "runs").rglob("T001-*.log"))
+        assert len(logs) == 1
+        text = logs[0].read_text()
+        assert f"[truncated at {runtime.LAUNCH_STREAM_LIMIT} bytes]" in text
+        assert secret not in text
+        assert "[REDACTED]" in text
+        assert SESSION not in text
+    finally:
+        project.close()

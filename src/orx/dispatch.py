@@ -230,6 +230,34 @@ def _active_task(project: Project, run: Run, task_id: str) -> tuple[Revision, Ta
     return revision, task
 
 
+def resolve_session_ref(explicit: str | None) -> str | None:
+    """Opaque session id for a host attempt. Never invented.
+
+    An explicit `--session` value wins over `ORX_SESSION_REF`. Omitting it
+    uses that variable when non-blank, otherwise None (stored as NULL).
+    A blank environment value is unset. An explicit value that is empty or
+    not a single opaque token fails before the caller writes anything.
+    """
+    if explicit is not None:
+        token = explicit.strip()
+        if (
+            not token
+            or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in token)
+        ):
+            raise ORXError(
+                "session reference is empty or malformed; pass one opaque token "
+                "without whitespace or control characters, or omit --session to "
+                "use ORX_SESSION_REF (blank leaves the reference unset)"
+            )
+        return token
+    return os.environ.get("ORX_SESSION_REF", "").strip() or None
+
+
+def _host_session_ref() -> str | None:
+    """Environment session only. Blank is unset. Never invented."""
+    return resolve_session_ref(None)
+
+
 def _known_capabilities(project: Project) -> set[str]:
     caps: set[str] = set()
     for profile in project.profiles.values():
@@ -403,7 +431,7 @@ def replan_snapshot(store: Store, goal: Goal, run: Run) -> dict:
 
 def plan_route(
     project: Project, depth_flag: str | None = None, profile_flag: str | None = None,
-    context_file: str | None = None,
+    context_file: str | None = None, session: str | None = None,
 ) -> dict:
     """Route the planner. Host driver -> waiting assignment. CLI execution is
     not implemented in the M0 core kernel, so a CLI-driver result is returned
@@ -420,6 +448,9 @@ def plan_route(
     facts_md = ""
     if revision is not None:
         facts_md = plan_mod.render_replan_facts(replan_snapshot(store, goal, run))
+
+    # Reject a bad explicit session before routing or assignment writes.
+    session_ref = resolve_session_ref(session)
 
     depth = _resolve_depth(project, goal, depth_flag)
     request = routing.RouteRequest(
@@ -438,19 +469,6 @@ def plan_route(
     prompt = plan_mod.planner_prompt(goal, depth, replan_facts=facts_md, intent=intent)
     replan = revision is not None
     if profile.driver.value == "host":
-        attempt = store.attempt_create(
-            revision_row_id=revision.id if revision else None,
-            role=Role.PLANNER.value,
-            profile=profile.name,
-            driver=profile.driver.value,
-            harness=profile.harness.value,
-            model_id=profile.model,
-            requested_effort=profile.effort.value,
-            routing_reason=result.reason,
-            fallback_used=result.fallback_used,
-            isolation="prompt_only",
-        )
-        routing.persist_decision(store, request, result, attempt_id=attempt.id)
         assignment = store.assignment_waiting(run.id)
         if assignment is None:
             if run.status == RunStatus.DONE.value:
@@ -467,6 +485,28 @@ def plan_route(
             store.assignment_update_prompt(assignment.id, prompt)
             assignment = store.assignment_get(assignment.id)
             _write_assignment_file(project, run, assignment)
+        # Reuse the open planner attempt for this waiting assignment. A second
+        # plan_route must not open a duplicate span.
+        attempt = store.attempt_open_for_assignment(assignment.id)
+        if attempt is None:
+            attempt = store.attempt_create(
+                revision_row_id=revision.id if revision else None,
+                role=Role.PLANNER.value,
+                profile=profile.name,
+                driver=profile.driver.value,
+                harness=profile.harness.value,
+                model_id=profile.model,
+                requested_effort=profile.effort.value,
+                routing_reason=result.reason,
+                fallback_used=result.fallback_used,
+                assignment_id=assignment.id,
+                isolation="prompt_only",
+                session_ref=session_ref,
+                run_id=run.id,
+            )
+        elif session_ref is not None:
+            store.attempt_update(attempt.id, session_ref=session_ref)
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
         return {
             "mode": "host_required",
             "depth": depth.value,
@@ -559,6 +599,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         routing_reason=result.reason,
         fallback_used=result.fallback_used,
         isolation=launch.sandbox,
+        run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     # Archive the exact planner input (goal + facts + intent + schema rules):
@@ -616,29 +657,59 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
 
 def _record_usage(store, adapter, launch, run_result, attempt, profile_name,
                   run_id: str, task_id: str | None) -> None:
-    """Attach the adapter's usage observation to the attempt (M1 P5).
-    Harneses that report nothing simply write no row."""
-    getter = getattr(adapter, "usage_observation", None)
-    if getter is None:
+    """Attach harness usage and session id to the attempt.
+
+    The adapter reads the full captured stream (not the truncated log).
+    A recognized session id is stored even when usage is missing. Tokens
+    are never filled in. A finished CLI attempt with no storable observation
+    records why: ``adapter_unsupported`` (no hook), ``harness_omitted``
+    (no usage event), ``malformed_output``, ``truncated``, or
+    ``execution_failure``.
+    """
+    interpret = getattr(adapter, "interpret_capture", None)
+    if interpret is None:
+        getter = getattr(adapter, "usage_observation", None)
+        if getter is None:
+            store.attempt_mark_usage_missing(attempt.id, "adapter_unsupported")
+            return
+        obs = getter(launch, run_result)
+        session = None
+        reason = None if obs else "harness_omitted"
+    else:
+        captured = interpret(launch, run_result)
+        obs = captured.usage
+        session = captured.session_ref
+        reason = captured.miss_reason
+    if session:
+        store.attempt_update(attempt.id, session_ref=session)
+    if obs:
+        store.usage_add(
+            attempt_id=attempt.id, profile=profile_name, run_id=run_id,
+            task_id=task_id,
+            input_tokens=obs.get("input_tokens"),
+            output_tokens=obs.get("output_tokens"),
+            cached_input_tokens=obs.get("cached_input_tokens"),
+            source=obs.get("source", "native_cli"),
+            accuracy=obs.get("accuracy", "unknown"),
+        )
         return
-    obs = getter(launch, run_result)
-    if not obs:
-        return
-    store.usage_add(
-        attempt_id=attempt.id, profile=profile_name, run_id=run_id,
-        task_id=task_id,
-        input_tokens=obs.get("input_tokens"),
-        output_tokens=obs.get("output_tokens"),
-        cached_input_tokens=obs.get("cached_input_tokens"),
-        source=obs.get("source", "native_cli"),
-        accuracy=obs.get("accuracy", "unknown"),
-    )
+    store.attempt_mark_usage_missing(attempt.id, reason or "harness_omitted")
+
+
+def _captured(run_result, name: str) -> str:
+    """Full redacted stream when the runtime kept one, else the log view."""
+    full = getattr(run_result, f"{name}_full", None)
+    if isinstance(full, str) and full:
+        return full
+    return getattr(run_result, name, "") or ""
 
 
 def _failure_excerpt(run_result) -> str:
     if run_result.timed_out:
         return f"timed out after {run_result.duration_sec:.0f}s"
-    excerpt = (run_result.stderr or run_result.stdout).strip().splitlines()
+    # The log view is a prefix. The failure text is often at the end of the
+    # stream the harness actually wrote.
+    excerpt = (_captured(run_result, "stderr") or _captured(run_result, "stdout")).strip().splitlines()
     tail = " | ".join(excerpt[-3:]) if excerpt else "no output"
     return f"exit {run_result.exit_code}: {tail[:300]}"
 
@@ -676,13 +747,17 @@ def _routing_payload(result: routing.RouteResult) -> dict:
 
 
 def submit_plan(project: Project, ir_data: dict,
-                planner_profile: str | None = None, depth_hint: str | None = None) -> dict:
+                planner_profile: str | None = None, depth_hint: str | None = None,
+                session: str | None = None) -> dict:
     store = project.store
     goal, run = _active_context(project)
 
     # The replan guard runs before validation: a rejected replan should say
     # why it was rejected, not surface unrelated plan errors first.
     _check_replan_allowed(store, run)
+    # A malformed explicit session fails before the revision is written and
+    # before the open planner attempt is closed.
+    session_ref = resolve_session_ref(session)
 
     ir = plan_mod.parse_ir(ir_data)
     errors = plan_mod.validate_ir(ir, goal.id, goal.acceptance, _known_capabilities(project))
@@ -736,6 +811,15 @@ def submit_plan(project: Project, ir_data: dict,
             store.assignment_set_status(
                 assignment.id, AssignmentStatus.SUBMITTED, mark_submitted=True
             )
+            # Close the planner span that belongs to this assignment. A
+            # rejected submit never reaches here, so it cannot complete the
+            # attempt. Direct submits with no assignment have nothing to close.
+            open_attempt = store.attempt_open_for_assignment(assignment.id)
+            if open_attempt is not None:
+                store.attempt_update(
+                    open_attempt.id, ended_at=db_now(), result="completed",
+                    session_ref=session_ref,
+                )
 
     if run.status == RunStatus.DONE.value:
         store.goal_set_status(goal.id, GoalStatus.ACTIVE)
@@ -883,6 +967,8 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         started=False,
         # The host enforces nothing — the prompt is discipline, not a sandbox.
         isolation="prompt_only" if kind == "host" else None,
+        session_ref=_host_session_ref() if kind == "host" else None,
+        run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -937,8 +1023,11 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         routing_reason=result.reason,
         fallback_used=result.fallback_used,
         task_id=task.task_id,
-        started=False,
+        # Stamp the span at creation. started=False left completed CLI
+        # workers with a null started_at (the update path only writes ended_at).
+        started=True,
         isolation=launch.sandbox,
+        run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -948,6 +1037,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
 
     if not probe.ok:
         reason = f"capability_mismatch: {probe.detail}"
+        store.attempt_mark_usage_missing(attempt.id, "execution_failure")
         store.attempt_update(attempt.id, ended_at=db_now(), result="failed",
                              failure_reason=reason)
         machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
@@ -1154,12 +1244,13 @@ def task_list(project: Project) -> list[dict]:
                 "dependencies": deps,
                 "blocked_by": blocked_by,
                 "failure_reason": task.failure_reason,
+                "session_ref": attempt.session_ref if attempt else None,
             }
         )
     return rows
 
 
-def task_claim(project: Project, task_id: str) -> dict:
+def task_claim(project: Project, task_id: str, session: str | None = None) -> dict:
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -1169,16 +1260,22 @@ def task_claim(project: Project, task_id: str) -> dict:
                 f"task {task_id} is runnable but not routed yet; run `orx run` first"
             )
         raise ConflictError(f"task {task_id} is {task.status}, not waiting_host")
+    # Validate the caller's session before the claim transition.
+    session_ref = resolve_session_ref(session)
     machine.claim(store, revision.id, task.task_id)
     attempt = store.attempt_latest_for_task(revision.id, task.task_id)
     if attempt is not None and attempt.started_at is None:
         store.attempt_update(attempt.id, started_at=db_now())
+    if attempt is not None and session_ref is not None:
+        store.attempt_update(attempt.id, session_ref=session_ref)
+        attempt = store.attempt_get(attempt.id)
     refresh_run(store, goal, run)
     return {
         "task": task.task_id,
         "status": "running",
         "attempt": attempt.id if attempt else None,
         "driver": "host",
+        "session_ref": attempt.session_ref if attempt else None,
     }
 
 
@@ -1211,6 +1308,8 @@ def task_complete(project: Project, task_id: str, evidence: str) -> dict:
             requested_effort="medium",
             task_id=task.task_id,
             isolation="prompt_only",
+            session_ref=_host_session_ref(),
+            run_id=run.id,
         )
     store.evidence_add(attempt.id, "completion", str(evidence_path))
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
@@ -1407,11 +1506,13 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         task_id=task.task_id,
         started=True,
         isolation=launch.sandbox,
+        run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
 
     if not probe.ok:
         reason = f"capability_mismatch: {probe.detail}"
+        store.attempt_mark_usage_missing(attempt.id, "execution_failure")
         store.attempt_update(attempt.id, ended_at=db_now(), result="failed", failure_reason=reason)
         store.verification_add(
             revision.id, task.task_id, "agent", item.raw, passed=False,
@@ -1463,7 +1564,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
 
 def verify_submit(
     project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None,
-    reason: str | None = None,
+    reason: str | None = None, session: str | None = None,
 ) -> dict:
     """Record a host Agent verifier's verdict for one agent verification entry.
     `reason` carries the reviewer's issues on a fail; it becomes the recorded
@@ -1476,6 +1577,10 @@ def verify_submit(
 
     if result_value not in ("pass", "fail"):
         raise ORXError("--result must be 'pass' or 'fail'")
+    # Host verifier attempts record the caller's real session. A malformed
+    # explicit reference fails before the verdict or the attempt is written.
+    # CLI verifier attempts do not copy it; a harness id is parsed later.
+    session_ref = resolve_session_ref(session)
     passed = result_value == "pass"
 
     pending = verify.pending_agent_entries(store, revision.id, task)
@@ -1512,6 +1617,10 @@ def verify_submit(
             fallback_used=route_result.fallback_used,
             task_id=task.task_id,
             isolation="prompt_only" if profile.driver.value == "host" else None,
+            session_ref=(
+                session_ref if profile.driver.value == "host" else None
+            ),
+            run_id=run.id,
         )
         routing.persist_decision(store, request, route_result, attempt_id=attempt.id)
         store.attempt_update(
@@ -1787,7 +1896,12 @@ def status_data(project: Project) -> dict:
             "constraints": goal.constraints,
             "status": goal.status,
         },
-        "run": {"id": run.id, "status": run.status},
+        "run": {
+            "id": run.id,
+            "status": run.status,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+        },
         "plan": plan_info,
         "tasks": task_list(project),
         "verification": (
@@ -2055,12 +2169,56 @@ def _usage_entry(name: str, attempts: list, rows: list) -> dict:
     }
 
 
+def _measurement_accuracy(rows: list) -> str:
+    """Accuracy of stored observations only. Unobserved attempts do not change it.
+
+    This is independent of `_accuracy_label`, which folds coverage into the
+    profile aggregate. No observation stays `unknown`. Counts are not invented.
+    """
+    if not rows:
+        return "unknown"
+    labels = [row["accuracy"] for row in rows]
+    return max(labels, key=lambda label: _ACCURACY_RANK.get(label, 2))
+
+
+def _coverage_entry(name: str, attempts: list, rows: list) -> dict:
+    covered = {row["attempt_id"] for row in rows}
+    return {
+        "profile": name,
+        "attempts": len(attempts),
+        "observed": sum(1 for attempt in attempts if attempt.id in covered),
+        "measurement_accuracy": _measurement_accuracy(rows),
+    }
+
+
+def _observation_payload(row, session_ref: str | None) -> dict:
+    return {
+        "id": row["id"],
+        "attempt_id": row["attempt_id"],
+        "profile": row["profile"],
+        "run_id": row["run_id"],
+        "task_id": row["task_id"],
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "cached_input_tokens": row["cached_input_tokens"],
+        "source": row["source"],
+        "accuracy": row["accuracy"],
+        "created_at": row["created_at"],
+        "session_ref": session_ref,
+    }
+
+
 def usage(project: Project, profile: str | None = None) -> dict:
     """Per-profile aggregates. Task counts and runtime come from attempts.
 
     Token sums come from usage_observations. Accuracy is exact, estimated, or
     unknown; unknown is success, not an error. A missing observation does not
     zero-fill tokens.
+
+    Additive fields sit beside `profiles` and do not change that aggregate:
+    `observations` (including `host_report`), `coverage` (measurement accuracy
+    kept apart from how many attempts were observed), `sessions`, and `runs`
+    lifecycle timestamps.
     """
     store = project.store
     attempts = store.attempts_all()
@@ -2085,4 +2243,64 @@ def usage(project: Project, profile: str | None = None) -> dict:
         _usage_entry(name, by_profile_attempts.get(name, []), by_profile_rows.get(name, []))
         for name in names
     ]
-    return {"profiles": profiles}
+    selected = set(names)
+    attempts_by_id = {attempt.id: attempt for attempt in attempts}
+    observations = [
+        _observation_payload(
+            row,
+            attempts_by_id[row["attempt_id"]].session_ref
+            if row["attempt_id"] in attempts_by_id else None,
+        )
+        for row in rows
+        if row["profile"] in selected
+    ]
+    coverage = [
+        _coverage_entry(
+            name, by_profile_attempts.get(name, []), by_profile_rows.get(name, []),
+        )
+        for name in names
+    ]
+    sessions = [
+        {
+            "attempt": attempt.id,
+            "role": attempt.role,
+            "profile": attempt.profile,
+            "task_id": attempt.task_id,
+            "run_id": attempt.run_id,
+            "session_ref": attempt.session_ref,
+            "started_at": attempt.started_at,
+            "ended_at": attempt.ended_at,
+        }
+        for attempt in attempts
+        if attempt.profile in selected
+    ]
+    runs = [
+        {
+            "id": run.id,
+            "status": run.status,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+        }
+        for run in store.runs_all()
+    ]
+    return {
+        "profiles": profiles,
+        "observations": observations,
+        "coverage": coverage,
+        "sessions": sessions,
+        "runs": runs,
+    }
+
+
+def usage_record(
+    project: Project,
+    attempt_id: int,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int | None,
+    accuracy: str,
+) -> dict:
+    """Record one host_report. Metadata is read from the attempt, not the caller."""
+    return project.store.usage_record_host(
+        attempt_id, input_tokens, output_tokens, cached_input_tokens, accuracy,
+    )

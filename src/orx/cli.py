@@ -70,6 +70,15 @@ app.add_typer(agent_app, name="agent")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(auth_app, name="auth")
 
+usage_app = typer.Typer(
+    help=(
+        "Show per-profile usage: tasks, runtime, and token sums. "
+        "--profile selects one row. --json includes runtime_sec, input_tokens, "
+        "and accuracy (exact, estimated, or unknown)."
+    ),
+    no_args_is_help=False,
+)
+
 
 # ---------------------------------------------------------------------------
 # Envelope helpers
@@ -102,6 +111,16 @@ def _ok(json_out: bool, **data) -> None:
 
 
 JsonOpt = typer.Option(False, "--json", help="Emit a JSON envelope on stdout.")
+SessionOpt = typer.Option(
+    None,
+    "--session",
+    help=(
+        "Opaque native session reference for this host attempt. Overrides "
+        "ORX_SESSION_REF. An empty or malformed value fails before any write. "
+        "When omitted, ORX_SESSION_REF is used if non-blank; a blank variable "
+        "leaves the reference unset."
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +564,13 @@ def plan(
     ctx: typer.Context,
     depth: Optional[str] = typer.Option(None, "--depth", help="light | standard | deep (overrides config and tokens)."),
     profile: Optional[str] = typer.Option(None, "--profile", help="Pin the planner profile; disables fallback."),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Route the planner. Host planners receive an assignment to submit back."""
     if ctx.invoked_subcommand is not None:
         return
-    _run_plan(depth, profile, json_out)
+    _run_plan(depth, profile, json_out, session=session)
 
 
 @app.command()
@@ -567,10 +587,11 @@ def replan(
             "Goal and the execution-fact snapshot; never rewrites the Goal."
         ),
     ),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Plan again: a new revision replaces the active one (rules apply)."""
-    _run_plan(depth, profile, json_out, context_file)
+    _run_plan(depth, profile, json_out, context_file, session=session)
 
 
 def _run_plan(
@@ -578,11 +599,13 @@ def _run_plan(
     profile: Optional[str],
     json_out: bool,
     context_file: Optional[Path] = None,
+    session: Optional[str] = None,
 ) -> None:
     project = dispatch.open_project()
     result = dispatch.plan_route(
         project, depth, profile,
         str(context_file) if context_file else None,
+        session=session,
     )
     _ok(json_out, **result)
     if not json_out:
@@ -613,6 +636,7 @@ def _run_plan(
 @handle_errors
 def plan_submit(
     file: Path = typer.Option(..., "--file", help="Path to a Plan IR JSON document."),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Validate a Plan IR document and make it the active revision."""
@@ -621,7 +645,7 @@ def plan_submit(
         ir_data = json.loads(Path(file).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise ORXError(f"cannot read plan file {file}: {exc}") from None
-    result = dispatch.submit_plan(project, ir_data)
+    result = dispatch.submit_plan(project, ir_data, session=session)
     _ok(json_out, **result)
     if not json_out:
         typer.echo(
@@ -698,6 +722,10 @@ def _render_status(data: dict) -> None:
     banner = {"running": "RUNNING", "done": "DONE", "blocked": "BLOCKED", "planning": "PLANNING"}
     typer.echo(f"Goal {goal['id']} [{goal['status']}]: {goal['objective']}")
     typer.echo(f"Run {run['id']}: {banner.get(run['status'], run['status'].upper())}")
+    typer.echo(
+        f"  lifecycle: started_at {run.get('started_at') or '-'}"
+        f"  completed_at {run.get('completed_at') or '-'}"
+    )
     if data["plan"]:
         p = data["plan"]
         typer.echo(
@@ -716,6 +744,8 @@ def _render_status(data: dict) -> None:
             line += f"  blocked_by: {', '.join(task['blocked_by'])}"
         if task["failure_reason"]:
             line += f"  [{task['failure_reason']}]"
+        if task.get("session_ref"):
+            line += f"  session {task['session_ref']}"
         typer.echo(line)
     v = data["verification"]
     typer.echo(
@@ -752,11 +782,12 @@ def task_list(json_out: bool = JsonOpt) -> None:
 @handle_errors
 def task_claim(
     task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Host claim: move a waiting_host task to running (single winner)."""
     project = dispatch.open_project()
-    result = dispatch.task_claim(project, task_id)
+    result = dispatch.task_claim(project, task_id, session=session)
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"task {result['task']} claimed by host; status running")
@@ -850,12 +881,14 @@ def verify_submit(
     entry: Optional[str] = typer.Option(None, "--entry", help="Exact agent verification entry this verdict answers."),
     evidence: Optional[Path] = typer.Option(None, "--evidence", help="Optional evidence file."),
     reason: Optional[str] = typer.Option(None, "--reason", help="On a fail: the reviewer's issues; recorded as the failure state and fed to the next attempt."),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Submit a host Agent verifier's verdict for one agent verification entry."""
     project = dispatch.open_project()
     data = dispatch.verify_submit(
-        project, task_id, result, entry, str(evidence) if evidence else None, reason
+        project, task_id, result, entry, str(evidence) if evidence else None, reason,
+        session=session,
     )
     _ok(json_out, **data)
     if not json_out:
@@ -1095,9 +1128,10 @@ def timeline(
             )
 
 
-@app.command()
+@usage_app.callback(invoke_without_command=True)
 @handle_errors
 def usage(
+    ctx: typer.Context,
     profile: Optional[str] = typer.Option(
         None, "--profile", help="Only the aggregate for this profile."
     ),
@@ -1116,17 +1150,26 @@ def usage(
     result: an attempt with no observation (shell, or a stream that carried
     no usage) makes the profile `unknown` while tasks, runtime, and any
     observed token sums still report. Exact wins only when every attempt
-    has an observation and every observation is exact.
+    has an observation and every observation is exact. That label mixes
+    coverage into the aggregate. `coverage` reports attempts, observed, and
+    measurement_accuracy separately: measurement_accuracy is only the stored
+    observations and stays `unknown` when there are none.
 
     Human columns are PROFILE, TASKS, RUNTIME, INPUT, OUTPUT, CACHED,
-    ACCURACY. RUNTIME is `H:MM:SS`.
+    ACCURACY. RUNTIME is `H:MM:SS`. A coverage line follows the table.
+    host_report rows are listed when any exist. Cached tokens are not
+    subtracted from input, and no fee is computed.
 
-    --json field profiles is a list of objects: profile, tasks, runtime_sec,
-    input_tokens, output_tokens, cached_input_tokens, accuracy. The envelope
-    is {"ok": true, "profiles": [...]}. An unknown --profile exits 1. A
-    missing project exits 1. Exit 0 on success, 1 on a domain error, 2 on
-    usage errors.
+    --json keeps field profiles (profile, tasks, runtime_sec, input_tokens,
+    output_tokens, cached_input_tokens, accuracy) and adds observations
+    (source, accuracy, session_ref; host_report included), coverage,
+    sessions (session_ref), and runs (started_at, completed_at). The
+    envelope is {"ok": true, ...}. An unknown --profile exits 1. A missing
+    project exits 1. Exit 0 on success, 1 on a domain error, 2 on usage
+    errors. `orx usage record` writes one host_report.
     """
+    if ctx.invoked_subcommand is not None:
+        return
     project = dispatch.open_project()
     try:
         result = dispatch.usage(project, profile=profile)
@@ -1140,6 +1183,86 @@ def usage(
         )
         for row in result["profiles"]:
             typer.echo(_render_usage_row(row))
+        for row in result["coverage"]:
+            typer.echo(
+                f"coverage {row['profile']:<24} attempts {row['attempts']}"
+                f"  observed {row['observed']}"
+                f"  measurement {row['measurement_accuracy']}"
+            )
+        reports = [
+            obs for obs in result["observations"] if obs["source"] == "host_report"
+        ]
+        for obs in reports:
+            typer.echo(
+                f"host_report attempt {obs['attempt_id']}"
+                f"  in {_token_cell(obs['input_tokens'])}"
+                f"  out {_token_cell(obs['output_tokens'])}"
+                f"  cached {_token_cell(obs['cached_input_tokens'])}"
+                f"  {obs['accuracy']}"
+                f"  session {obs['session_ref'] or '-'}"
+            )
+        for run in result["runs"]:
+            if run["started_at"] or run["completed_at"]:
+                typer.echo(
+                    f"run {run['id']}  started_at {run['started_at'] or '-'}"
+                    f"  completed_at {run['completed_at'] or '-'}"
+                )
+
+
+@usage_app.command("record")
+@handle_errors
+def usage_record(
+    attempt: int = typer.Option(..., "--attempt", help="Attempt id to attach the observation to."),
+    input_tokens: int = typer.Option(..., "--input", help="Input token count (nonnegative integer)."),
+    output_tokens: int = typer.Option(..., "--output", help="Output token count (nonnegative integer)."),
+    cached: Optional[int] = typer.Option(
+        None, "--cached",
+        help="Cached input tokens. Omit to store NULL. May exceed --input. Not subtracted from input.",
+    ),
+    accuracy: str = typer.Option(
+        "exact", "--accuracy",
+        help="Measurement accuracy: exact | estimated. Default exact. Not a coverage claim.",
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Record one host_report observation for an attempt.
+
+    Counts must be nonnegative integers. --cached is optional and stays NULL
+    when omitted; a cached count larger than input is stored as given. There
+    is no token normalization across runners and no token-to-fee conversion.
+
+    Profile, run, and task are read from the attempt and its stored run
+    association. This command does not accept those as arguments. An attempt
+    with no run association is rejected rather than guessed.
+
+    Repeating the same counts and accuracy is idempotent. A different report
+    for that attempt is rejected and does not increase totals. --accuracy is
+    exact or estimated (the measurement). Coverage is reported by `orx usage`,
+    separately.
+
+    Exit 0 on success, 1 on a domain error (unknown attempt, bad count,
+    conflicting report), 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.usage_record(
+            project, attempt, input_tokens, output_tokens, cached, accuracy,
+        )
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        cached_cell = _token_cell(result["cached_input_tokens"])
+        note = " (already recorded)" if result["idempotent"] else ""
+        typer.echo(
+            f"host_report attempt {result['attempt']} profile {result['profile']}"
+            f" run {result['run_id']} task {result['task_id'] or '-'}"
+            f" in {result['input_tokens']} out {result['output_tokens']}"
+            f" cached {cached_cell} accuracy {result['accuracy']}{note}"
+        )
+
+
+app.add_typer(usage_app, name="usage")
 
 
 # ---------------------------------------------------------------------------

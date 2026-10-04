@@ -34,9 +34,17 @@ from orx.adapters.base import (
     EFFORT_MAP,
     EFFORT_PROVIDER_DEFAULT,
     EFFORT_SOURCE_REQUESTED_VALIDATED,
+    MISS_HARNESS_OMITTED,
+    Capture,
     EffortOutcome,
     Launch,
     ProbeReport,
+    captured_stderr,
+    captured_stdout,
+    launch_failed,
+    miss_without_usage,
+    native_usage,
+    opaque_session_id,
 )
 from orx.records import ORXError
 
@@ -161,9 +169,10 @@ class CursorAdapter:
             bracketed = next(
                 (a for a in launch.argv if "[" in a and "effort=" in a), None
             )
+            echoed = captured_stdout(run_result) + captured_stderr(run_result)
             if bracketed is not None:
                 # Bracket form: believe it only when the CLI echoed it back.
-                if run_result.exit_code == 0 and bracketed in (run_result.stdout + run_result.stderr):
+                if run_result.exit_code == 0 and bracketed in echoed:
                     return planned
             elif run_result.exit_code == 0:
                 # Catalog-confirmed slug variant (e.g. gpt-5.3-codex-high):
@@ -171,31 +180,51 @@ class CursorAdapter:
                 return planned
         return EffortOutcome(requested=planned.requested, actual=EFFORT_PROVIDER_DEFAULT, source=None)
 
+    def interpret_capture(self, launch: Launch, run_result) -> Capture:
+        """Envelope ``usage`` (camelCase, values kept as reported — cached
+        may exceed input) and ``session_id``. ``request_id`` is not a session.
+        Partial token sets stay ``unknown``; missing fields stay NULL."""
+        text = captured_stdout(run_result)
+        stripped = text.strip()
+        try:
+            data = json.loads(stripped) if stripped else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            malformed = bool(stripped) and stripped[0] in "{[" and not launch_failed(run_result)
+            return Capture(miss_reason=miss_without_usage(
+                run_result, text, malformed=malformed,
+            ))
+        session = opaque_session_id(data.get("session_id"))
+        if "usage" not in data:
+            return Capture(session_ref=session, miss_reason=miss_without_usage(run_result, text))
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return Capture(
+                session_ref=session,
+                miss_reason=miss_without_usage(run_result, text, malformed=True),
+            )
+        observation, reason = native_usage(
+            usage, input_key="inputTokens", output_key="outputTokens",
+            cached_key="cacheReadTokens",
+        )
+        if observation is not None:
+            return Capture(usage=observation, session_ref=session)
+        if reason == MISS_HARNESS_OMITTED:
+            reason = miss_without_usage(run_result, text)
+        return Capture(session_ref=session, miss_reason=reason)
+
     def usage_observation(self, launch: Launch, run_result) -> dict | None:
         """The --print JSON envelope's usage block (camelCase keys,
         verified in a real run 2026-10-03)."""
-        text = run_result.stdout.strip()
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        usage = data.get("usage") if isinstance(data, dict) else None
-        if not isinstance(usage, dict):
-            return None
-        return {
-            "input_tokens": usage.get("inputTokens"),
-            "output_tokens": usage.get("outputTokens"),
-            "cached_input_tokens": usage.get("cacheReadTokens"),
-            "source": "native_cli",
-            "accuracy": "exact",
-        }
+        return self.interpret_capture(launch, run_result).usage
 
     def extract_text(self, launch: Launch, run_result) -> str:
-        text = run_result.stdout.strip()
+        text = captured_stdout(run_result).strip()
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return run_result.stdout
+            return captured_stdout(run_result)
         if isinstance(data, dict):
             for key in ("result", "text", "message", "content", "response", "output"):
                 value = data.get(key)
@@ -208,7 +237,7 @@ class CursorAdapter:
                     ]
                     if parts:
                         return "\n".join(parts)
-        return run_result.stdout
+        return captured_stdout(run_result)
 
 
 def reset_caches() -> None:

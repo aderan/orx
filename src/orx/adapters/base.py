@@ -8,7 +8,8 @@ record; no per-adapter copies.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -44,6 +45,117 @@ class ProbeReport:
     missing: tuple[str, ...] = ()
 
 
+# Why a finished CLI attempt has no usable usage observation. Tokens are
+# never invented to fill one of these in.
+MISS_ADAPTER_UNSUPPORTED = "adapter_unsupported"  # no usage hook (unsupported capture)
+MISS_HARNESS_OMITTED = "harness_omitted"  # hook ran; the stream had no usage event
+MISS_MALFORMED = "malformed_output"
+MISS_TRUNCATED = "truncated"
+MISS_EXECUTION_FAILURE = "execution_failure"
+
+_TRUNCATION_SUFFIX = re.compile(r"\.\.\. \[truncated at \d+ bytes\]\s*$")
+
+
+def captured_stdout(run_result) -> str:
+    """Text adapters parse. The launch log is a redacted prefix; this is the
+    full redacted stream when the runtime kept one, otherwise the logged
+    stdout. An empty ``stdout_full`` means the field was not provided."""
+    full = getattr(run_result, "stdout_full", None)
+    if isinstance(full, str) and full:
+        return full
+    return getattr(run_result, "stdout", "") or ""
+
+
+def captured_stderr(run_result) -> str:
+    full = getattr(run_result, "stderr_full", None)
+    if isinstance(full, str) and full:
+        return full
+    return getattr(run_result, "stderr", "") or ""
+
+
+def capture_was_truncated(text: str) -> bool:
+    """True when the text being parsed ends in runtime's own truncation
+    marker. A mention of truncation earlier in a transcript is not a cut."""
+    return _TRUNCATION_SUFFIX.search(text) is not None
+
+
+def launch_failed(run_result) -> bool:
+    if getattr(run_result, "timed_out", False):
+        return True
+    return getattr(run_result, "exit_code", 0) != 0
+
+
+def opaque_session_id(value) -> str | None:
+    """A harness-emitted session token. Anything else is NULL — never cleaned
+    up into an id ORX invented."""
+    if not isinstance(value, str) or not value:
+        return None
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return None
+    return value
+
+
+def _token_field(payload: dict, key: str) -> tuple[int | None, bool, bool]:
+    """Return (value, present, malformed). Missing stays None. Zero stays
+    zero. Booleans, floats, strings, and negatives are malformed — they are
+    not coerced and not replaced with zero."""
+    if key not in payload:
+        return None, False, False
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None, True, True
+    return value, True, False
+
+
+def native_usage(payload: dict, *, input_key: str, output_key: str, cached_key: str
+                 ) -> tuple[dict | None, str | None]:
+    """One harness usage object → a storable observation, or a miss reason.
+
+    ``accuracy=exact`` only when input, output, and cached are all present
+    integers. A missing field is NULL, never zero, and the row is ``unknown``
+    rather than exact. A present but unusable field drops the whole object
+    (``malformed_output``) so the valid siblings cannot look complete.
+    """
+    if not isinstance(payload, dict):
+        return None, MISS_MALFORMED
+    parsed = [_token_field(payload, key) for key in (input_key, output_key, cached_key)]
+    if any(item[2] for item in parsed):
+        return None, MISS_MALFORMED
+    if not any(item[1] for item in parsed):
+        return None, MISS_HARNESS_OMITTED
+    input_tokens, output_tokens, cached_input_tokens = (item[0] for item in parsed)
+    complete = all(value is not None for value in (input_tokens, output_tokens, cached_input_tokens))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "source": "native_cli",
+        "accuracy": "exact" if complete else "unknown",
+    }, None
+
+
+def miss_without_usage(run_result, text: str, *, malformed: bool = False) -> str:
+    """Why a parsed stream produced no storable observation."""
+    if capture_was_truncated(text):
+        return MISS_TRUNCATED
+    if malformed:
+        return MISS_MALFORMED
+    if launch_failed(run_result):
+        return MISS_EXECUTION_FAILURE
+    return MISS_HARNESS_OMITTED
+
+
+@dataclass(frozen=True)
+class Capture:
+    """Usage and session read from one launch. ``session_ref`` is NULL when
+    the harness did not emit a recognized id. ``miss_reason`` is set only
+    when ``usage`` is absent."""
+
+    usage: dict | None = None
+    session_ref: str | None = None
+    miss_reason: str | None = None
+
+
 @dataclass(frozen=True)
 class Launch:
     argv: list[str]
@@ -65,7 +177,9 @@ class Launch:
 class Adapter(Protocol):
     """Every harness adapter implements this surface. M1 P5 adds an optional
     usage_observation(launch, run_result) -> dict | None; None means the
-    harness reports nothing (unknown is a legal, stored outcome)."""
+    harness reports nothing (unknown is a legal, stored outcome). M1.2 adds
+    optional interpret_capture() -> Capture so a miss records why, and so a
+    harness session id can be stored without being invented."""
 
     harness: str
 
@@ -141,7 +255,7 @@ _CLASSIFICATION_PATTERNS: tuple[tuple[str, str], ...] = (
 def classify_failure(run_result) -> str:
     """Best-effort ErrorKind for a failed launch. Anything unrecognized is
     PROCESS_FAILURE — the safe default that never auto-retries."""
-    text = (run_result.stderr or "") + "\n" + (run_result.stdout or "")
+    text = captured_stderr(run_result) + "\n" + captured_stdout(run_result)
     lowered = text.lower()
     if lowered.strip():
         for needle, kind in _CLASSIFICATION_PATTERNS:
