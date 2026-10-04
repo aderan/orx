@@ -141,3 +141,5 @@ Flash 适合作为默认 agent verifier 的候选，是否足够应由真实漏�
 读取当前源码、仓库技能、项目与用户 TOML，并核对官方文档；外部能力详见[研究记录](zcode-capabilities-research.md)。未修改运行中的 Goal、state.db、用户 ZCode 角色、路由配置或代码。
 
 执行 `uv run --offline pytest -q tests/test_assignments.py tests/test_verify.py tests/test_config.py tests/test_routing.py`：78 passed in 5.07s。这些测试验证已有 ORX 行为，不等于 ZCode 原生集成已经通过实测。本文提出的新增契约尚未实现。
+
+阶段 A（原生能力实测）已于同日执行，"尚未实测"清单中可会话内验证的项均已闭环，结果见 [zcode-subagent-verification.md](zcode-subagent-verification.md)。
