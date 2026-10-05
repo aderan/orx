@@ -30,6 +30,27 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
   marked PASSED as done work — do not re-plan or redo it unless the round's
   intent explicitly changes it. Facts labeled unknown/none-recorded are
   unknown; do not invent them.
+- A REPLAN declares its old<->new correspondence explicitly (`replan` in the
+  Plan IR; the contract is docs/replan-contract.md). Every new task carries
+  exactly one `classification` — `new` (no sources), `confirm` (source
+  recorded `passed`; the work is only confirmed, not redone), `redo` (the
+  work must be done again), or `continue` (source is non-terminal) — and
+  every task of the superseded revision gets a disposition. The same number
+  in different revisions is different work: numbers never imply a relation,
+  the declared sources do.
+- A `redo` must state its `redo_reason` concretely — what changed, what was
+  wrong, or what the new plan needs that the old result could not provide.
+  "Just in case" or an empty phrase is not a reason; the Controller and the
+  independent verifier judge whether it actually holds (a semantic judgment,
+  not a structural one).
+- A `confirm` must list the CURRENT verification that proves the work still
+  applies (`confirm_verification`, each entry verbatim in the task's
+  `verification`). A prior pass is supporting material; it never substitutes
+  for the confirming task's own checks.
+- Cite prior results through the declared correspondence only: put the
+  evidence paths the execution-facts snapshot carries (with their evidence
+  row and attempt identity) into the mapping's `artifacts` — never by task
+  number. Split parts mark `part: true`; merges list every source.
 - The "Controller's intent" block (when present) describes THIS round only;
   it supplements the Goal and never replaces it.
 - Assumptions from the Goal's background (including anything handed over

@@ -60,10 +60,16 @@ Stage 5 验收 case（用户已确认）：StockMate 新样本外窗口评估（
 
 ---
 
-# G004：重规划差异预检与成果引用（2026-10-05 起）
+# G004：重规划差异预检与成果引用（2026-10-05 起；2026-10-05 归档）
 
 Goal：新计划修订生效前，产出新旧任务对应关系与工作分类（已完成只需确认仍有效、
 新增工作、确实需要重做＋重做原因），成果按可追溯的对应关系引用而非按任务编号。
+
+**归档状态（T005 终审时记录）**：五阶段全部交付（阶段 3 的 `orx status` 呈现为
+显式遗留开放项，未做、未声称）。契约权威文档 `docs/replan-contract.md`；端到端
+回归 `tests/test_replan_e2e.py`（本地替身，无付费模型）；README 与两个 skill
+已同步真实流程并由测试钉住。G004 的临时计划部分（五阶段待办清单）已并入下方
+归档记录；本文件更早的 orx-pbv 历史原样保留。
 
 硬约束（约束原文为据）：
 - 不做旧 passed 状态自动继承：R003 复盘中"12M token 浪费在重做"的证据不成立
@@ -72,7 +78,7 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
   integer-versioned migrations with backup-replace-restore。
 - 契约：`docs/replan-contract.md`（权威字段与结构/语义边界）。
 
-## 五阶段实施计划
+## 五阶段实施记录（归档）
 
 状态图例沿用：Not Started / In Progress / Done（以证据为准）。
 
@@ -114,7 +120,7 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
 - 证据：`uv run pytest -q tests/test_revisions.py tests/test_replan_context.py
   tests/test_cli.py tests/test_handoff.py` 100 绿；全量 583 绿（10 失败修复后）。
 
-### 阶段 3：持久化与呈现 — In Progress（落库部分 Done，T002，R004）
+### 阶段 3：持久化与呈现 — 落库部分 Done（T002，R004）；呈现为遗留开放项
 - [x] 存储接口 + 映射/预检报告/可追溯成果来源落库（schema v9 additive 整数版本迁移：
       `replan_mappings`/`replan_task_mappings`/`replan_sources`/`replan_superseded`/
       `replan_reports`/`replan_artifact_sources` 六表；backup-replace-restore 保持；
@@ -153,9 +159,22 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
   tests/test_verify_check.py tests/test_verify.py tests/test_delivery_gate_e2e.py`
   70 绿（61 存量 + 9 新增）；全量 592 绿。
 
-### 阶段 5：端到端 dogfood 与终审 — Not Started
-- [ ] 真实重规划场景走通：确认/新增/重做/延续四类齐全，成果引用可追溯。
-- [ ] 全量回归 + 契约文档终审（结构/语义边界仍清晰）。
+### 阶段 5：端到端回归与终审 — Done（T005，R004）
+- [x] `tests/test_replan_e2e.py`（本地替身，无付费模型）：一次修订切换同时断言
+      差异报告、持久化引用链、原子修订切换与新任务独立验证；场景覆盖重编号确认、
+      同号不同工作（编号不构成对应，trace 为空）、新增与未完成延续、拆分（part
+      边）、合并（多来源）、明确理由的重做（报告与提示词逐字）、多轮成果追溯
+      （三轮 + 跨 prior_revision 回溯来源、每边独立成果出处与交付快照互不覆盖）、
+      失败预检后旧计划继续执行至 done、确认任务当前回归红则不能通过（旧 pass
+      不背书新任务；修复后经自己的检查通过）。
+- [x] README 与 orx-agent / orx-controller skill 同步真实流程：生效前预检
+      （`orx plan check --file`，submit 重跑同一门禁）、成果按对应关系出处引用
+      （绝不按任务编号）、具体重做理由；显式声明历史未知与语义审查边界；
+      不宣传 passed 自动继承、不宣传未经证实的 token 节省（R003 数字已撤回）。
+      文档由 `test_docs_teach_the_real_replan_flow_and_its_boundaries` 钉住。
+- [x] 全量回归绿（见下方轮次记录证据行）；G004 记录归档，临时计划部分并入本节，
+      更早历史文档保留。
+- 证据：`uv run pytest -q tests/test_replan_e2e.py` 5 绿；全量 597 绿。
 
 ## G004 轮次记录
 - 2026-10-05 R4 T001：阶段 1 完成并自验（见上证据行）。
@@ -170,3 +189,8 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
   变化以交付快照为基线，缺失不默认有效、历史出处保留）+ 交付时绑定 attempt 的
   成果出处与交付快照落库（同号跨修订互不覆盖）+ 同号跨修订 check 日志续序修复 +
   planner 事实快照携带 evidence 身份（见阶段 4 证据行）。
+- 2026-10-05 R4 T005：阶段 5 完成——`tests/test_replan_e2e.py` 五场景端到端
+  （四维同时断言：差异报告/持久化引用链/原子切换/新任务独立验证，全部本地替身）；
+  README 与两个 skill 同步真实重规划流程并声明历史未知与语义审查边界（测试钉住）；
+  `docs/replan-contract.md` 阶段 5 状态更新；G004 记录归档（临时计划并入，
+  `orx status` 呈现为显式遗留开放项）。全量 597 绿（592 存量 + 5 新增）。

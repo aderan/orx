@@ -159,8 +159,11 @@ repository.
 - `task complete` means execution finished, not that the task passed. Only
   verification passing produces `passed`; every active-revision task must be
   `passed` for the Run to be `done`.
-- Replan is rejected while any task is `running` or `verifying`; a new revision
-  cancels the old revision's unfinished tasks.
+- A replan takes effect only through the shared precheck gate; a failed
+  precheck leaves the previous revision active (see below). Replan is
+  rejected while any task is `running` or `verifying`; a new revision
+  cancels the old revision's unfinished tasks and preserves terminal
+  results as recorded facts.
 - `unknown` resource status stays routable; only `unavailable`/`exhausted` are
   skipped; `constrained` is a last resort. Resource status never rewrites TOML
   ordering.
@@ -168,6 +171,46 @@ repository.
 - Deep planning refuses classes below `frontier` unless policy allows it.
 - M0 write execution is serial: effective CLI parallelism is 1 (one process
   per `orx run`; more are reported as `deferred`).
+
+## Replanning (precheck before activation)
+
+A plan revision takes effect only through the precheck gate:
+
+```sh
+orx plan check --file plan.json    # read-only diff report before activation
+orx plan submit --file plan.json   # re-runs the same precheck fresh, then activates
+```
+
+The new plan declares the old<->new correspondence (`replan` mapping; the
+full contract is [docs/replan-contract.md](docs/replan-contract.md)): every
+new task is classified `new` / `confirm` / `redo` / `continue`, every old
+task gets a disposition (`confirmed` / `continued` / `redone` / `split` /
+`merged` / `dropped`), a `redo` carries a concrete `redo_reason` (what
+changed, what was wrong, or what the new plan needs the old result could not
+provide — not boilerplate), and a `confirm` lists the current verification
+that must still pass (`confirm_verification`, verbatim in the task's
+`verification`). Prior results are cited as artifacts through the declared
+correspondence — never by task number. The check report shows the renumbered
+correspondence, the classifications, the redo reasons, what activation would
+cancel, and which terminal results are preserved. When the check fails, the
+previous revision stays active and keeps executing: nothing is cancelled, no
+revision is written, and the waiting planning assignment is kept.
+
+Boundaries:
+
+- Task numbers are not identity: the same number in different revisions is
+  different work. Only the declared mapping relates old and new tasks.
+- No passed state is ever inherited: every task of a new revision starts
+  pending/runnable with an empty verification window and passes only through
+  its own checks. A prior pass is supporting material, never a verdict.
+- Records that were never written read as unknown; ORX does not guess them.
+- Whether a redo reason actually holds, whether a confirm's verification is
+  sufficient, and whether a dropped task's note is honest are semantic
+  judgments for the independent verifier and the Controller; the structural
+  checks do not decide them.
+- The R003 retrospective's token-waste figure was withdrawn (same-numbered
+  tasks in different revisions had been misjudged as the same work); ORX
+  claims no verified token savings from replanning.
 
 ## Skills / update
 
@@ -196,6 +239,9 @@ on top of the controller protocol: `orx skill install orx-pbv`.
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
 - [Observability read contract](docs/observability-contract.md) — schema v7
   tables, joins, and read-only SQL for external analysis
+- [Replan contract](docs/replan-contract.md) — the declared old<->new
+  correspondence, work classifications, artifact provenance, and the
+  structural-check vs semantic-review boundary
 
 ## M1 layered configuration
 

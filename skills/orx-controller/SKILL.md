@@ -159,9 +159,21 @@ structured delivery statuses and the reason prefixes in steps 6–8.
 3. Pass the assignment `prompt` and `schema` through to the subagent
    **unchanged**. Do not paraphrase the prompt or trim the schema.
 4. For a planning assignment: run the prompt in a subagent, have it produce
-   Plan IR JSON, save it to a file, then `orx plan submit --file plan.json`.
-   If validation returns `errors`, fix the plan per the errors and resubmit;
-   the assignment stays `waiting_host`.
+   Plan IR JSON, save it to a file, then precheck before activation:
+   `orx plan check --file plan.json` (read-only diff report — the declared
+   old<->new correspondence with renumbering, the four classifications, redo
+   reasons, what activation would cancel, which terminal results stay
+   recorded). `orx plan submit --file plan.json` re-runs the same precheck
+   fresh at submit time — never cache or trust an earlier report — and a red
+   check rejects the submission: the previous revision stays active and
+   keeps executing, and the assignment stays `waiting_host`. A REPLAN must
+   declare its mapping explicitly (every new task classified `new` /
+   `confirm` / `redo` / `continue` with a concrete `redo_reason` where work
+   is redone and current `confirm_verification` where it is confirmed; every
+   old task dispositioned) and cite prior results as artifacts through that
+   correspondence, never by task number. Same-numbered tasks in different
+   revisions are different work. If validation returns `errors`, fix the
+   plan per the errors and resubmit.
 5. For a host task: `orx task claim <id>` FIRST, then do the work, then submit
    the result. Claiming after working invites a conflict exit. Quote the
    attempt you answered: `orx task complete <id> --evidence evidence.json
@@ -204,6 +216,15 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    verification references) to the same prompt — the planner sees all three,
    and the Goal is never rewritten. Re-running `orx replan` refreshes a
    still-waiting planning assignment with the latest facts and intent.
+   The new plan takes effect only through the precheck gate (step 4); a
+   failed precheck keeps the previous revision active and keeps executing —
+   nothing is cancelled, nothing reopens. Passed states are never inherited:
+   a prior pass is recorded history, never a verdict, and every task of the
+   new revision starts from scratch and passes only its own checks. Whether
+   a redo reason actually holds, whether a confirm's verification is
+   sufficient, and whether a dropped task's note is honest are semantic
+   judgments for you and the independent verifier; the structural checks do
+   not decide them.
 10. When any task is in `verifying`, run `orx verify`. Agent checks come back
     to you as assignments bound to a stable `attempt` id; submit each verdict
     with `orx verify submit <task> --result pass|fail --entry '<exact entry>'
