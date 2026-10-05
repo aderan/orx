@@ -20,6 +20,7 @@ from orx import __version__, config as config_mod, dispatch, doctor as doctor_mo
 from orx import skills as skills_mod
 from orx import sources as sources_mod
 from orx import update as update_mod
+from orx.plan import ReplanCheckFailed
 from orx.records import ConfigError, NotFoundError, ORXError
 from orx.verify import DeliveryRejected
 
@@ -650,13 +651,26 @@ def plan_submit(
     session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
-    """Validate a Plan IR document and make it the active revision."""
+    """Validate a Plan IR document and make it the active revision.
+
+    A replan (a revision already exists) goes through the same precheck as
+    `orx plan check --file`, run fresh at submit time: the correspondence,
+    classifications, redo reasons, dispositions, source identities, and
+    artifact bindings are all re-judged against current state. A red
+    precheck refuses the activation with the categorized report — the
+    previous revision stays active and the planning assignment stays
+    waiting. Exit 0 on activation, 1 on any rejection, 2 on usage errors.
+    """
     project = dispatch.open_project()
     try:
         ir_data = json.loads(Path(file).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise ORXError(f"cannot read plan file {file}: {exc}") from None
-    result = dispatch.submit_plan(project, ir_data, session=session)
+    try:
+        result = dispatch.submit_plan(project, ir_data, session=session)
+    except ReplanCheckFailed as exc:
+        _render_precheck_rejected(exc, json_out)
+        raise typer.Exit(1) from None
     _ok(json_out, **result)
     if not json_out:
         typer.echo(
@@ -669,6 +683,186 @@ def plan_submit(
                 f"  superseded revision {result['superseded_revision']};"
                 f" cancelled tasks: {', '.join(result['cancelled_tasks']) or 'none'}"
             )
+        if result.get("replan_activation"):
+            counts = result["replan_activation"]["classifications"]
+            typer.echo(
+                f"  replan: prior revision {result['replan_activation']['prior_revision']},"
+                f" precheck report {result['replan_activation']['report']};"
+                f" {counts.get('new', 0)} new / {counts.get('confirm', 0)} confirm /"
+                f" {counts.get('redo', 0)} redo / {counts.get('continue', 0)} continue"
+            )
+
+
+def _render_precheck_errors(report: dict, json_out: bool, headline: str) -> None:
+    """A refused replan: full categorized detail on both surfaces."""
+    if json_out:
+        typer.echo(json.dumps(headline, indent=2))
+        return
+    typer.secho(f"error: {headline['error']}", fg=typer.colors.RED, err=True)
+    for row in report["errors"]:
+        typer.echo(
+            f"  [{row['category']}] {row['locus']}: {row['message']}", err=True
+        )
+    if report.get("prior_revision") is not None:
+        typer.echo(
+            f"  active plan revision {report['prior_revision']} remains effective;"
+            " the planning assignment is unchanged",
+            err=True,
+        )
+
+
+def _render_precheck_rejected(exc: ReplanCheckFailed, json_out: bool) -> None:
+    """plan submit refused by the shared precheck: structured report in the
+    JSON envelope, categorized lines + what survives in human output."""
+    report = exc.report
+    if json_out:
+        payload = {
+            "ok": False,
+            "error": str(exc),
+            "errors": list(exc.errors),
+            "precheck": report,
+        }
+        _render_precheck_errors(report, json_out, payload)
+    else:
+        _render_precheck_errors(
+            report,
+            json_out,
+            {
+                "error": (
+                    f"plan rejected by the replan precheck with"
+                    f" {len(report['errors'])} problem(s); no revision was created"
+                )
+            },
+        )
+
+
+def _render_plan_check(report: dict) -> None:
+    """Human rendering of a precheck report: verdict first, then the
+    categorized problems, then the correspondence, dispositions, contract
+    diff, and reference status the report carries."""
+    if report["is_replan"]:
+        typer.echo(
+            f"plan check: revision {report['prior_revision']} -> proposed revision"
+            f" {report['proposed_revision']} (run {report['run_id']})"
+        )
+    else:
+        typer.echo(f"plan check: first plan for run {report['run_id']} (no prior revision)")
+    if report["busy_tasks"]:
+        typer.echo(
+            "  note: tasks running or verifying (a submit would be rejected by"
+            f" the replan guard): {', '.join(report['busy_tasks'])}"
+        )
+    if report["ok"]:
+        typer.echo("  result: OK — the plan may be activated by `orx plan submit`")
+    else:
+        typer.echo(
+            f"  result: REJECTED — {len(report['errors'])} problem(s); the active"
+            " plan stays effective"
+        )
+    for row in report["errors"]:
+        typer.echo(f"    [{row['category']}] {row['locus']}: {row['message']}")
+    summary = report.get("summary") or {}
+    if summary.get("tasks") is not None and report["is_replan"]:
+        typer.echo(
+            f"  classification: {summary.get('new', 0)} new /"
+            f" {summary.get('confirm', 0)} confirm / {summary.get('redo', 0)} redo /"
+            f" {summary.get('continue', 0)} continue"
+            f" ({summary.get('tasks', 0)} task(s))"
+        )
+    for row in report.get("renumbered") or []:
+        typer.echo(f"  renumbered: {row['from']} -> {row['to']}")
+    for row in report.get("correspondence") or []:
+        sources = ", ".join(
+            f"{s['source']} ({s['recorded_status'] or 'unknown'})"
+            for s in row["sources"]
+        ) or "(new work)"
+        typer.echo(f"  {row['task']} {row['classification']:<9} <- {sources}")
+        if row.get("redo_reason"):
+            typer.echo(f"      redo reason: {row['redo_reason']}")
+        for entry in row.get("confirm_verification") or []:
+            typer.echo(f"      confirm verification: {entry!r}")
+        for artifact in row.get("artifacts") or []:
+            typer.echo(f"      artifact: {artifact['artifact']} ({artifact['status']})")
+    for row in report.get("superseded") or []:
+        successors = ", ".join(row["successors"]) or "(none)"
+        typer.echo(
+            f"  superseded: {row['prior']} ({row['recorded_status'] or 'unknown'}) ->"
+            f" {row['disposition']}, successors: {successors}"
+        )
+        if row.get("note"):
+            typer.echo(f"      note: {row['note']}")
+    diff = report.get("contract_diff") or {}
+    if diff:
+        typer.echo(
+            "  contract diff: would cancel"
+            f" {', '.join(diff.get('would_cancel') or []) or 'none'};"
+            " terminal preserved"
+            f" {diff.get('terminal_preserved') or 'none'}"
+        )
+        for coverage in diff.get("acceptance_coverage") or []:
+            tasks = ", ".join(coverage["tasks"]) or "NOT COVERED"
+            typer.echo(f"      acceptance {coverage['criterion']!r} -> {tasks}")
+    issues = report.get("reference_issues") or []
+    if issues:
+        for issue in issues:
+            typer.echo(
+                f"  reference issue: {issue['task']}: {issue['artifact']}:"
+                f" {issue['problem']}"
+            )
+    else:
+        typer.echo("  reference issues: none")
+    sources = report.get("sources") or []
+    if sources:
+        rendered = ", ".join(
+            f"{s['source']}={s['recorded_status'] or 'unknown'}" for s in sources
+        )
+        typer.echo(f"  sources checked: {rendered}")
+    if report.get("report_id") is not None:
+        typer.echo(f"  report stored: #{report['report_id']} (revision unbound)")
+
+
+@plan_app.command("check")
+@handle_errors
+def plan_check(
+    file: Path = typer.Option(
+        ..., "--file", help="Path to a Plan IR JSON document to precheck."
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Read-only replan precheck of a Plan IR document (nothing is activated).
+
+    Runs the exact gate `orx plan submit` runs: structural validation plus,
+    when a prior revision exists, the replan correspondence checks — every
+    task classified (new | confirm | redo | continue), redo reasons present,
+    every prior-revision task given a disposition, sources resolving to this
+    run's recorded history (no cross-run, future-revision, or same-number
+    inference), and artifacts that name recorded evidence bound to a declared
+    source. The report shows the old<->new correspondence (renumbering
+    included), classifications, redo reasons, superseded dispositions, the
+    contract diff against the active plan, and reference problems.
+
+    This command creates no revision, cancels no task, and changes no
+    Goal/Run/planning-assignment status; it stores one preflight report row
+    (audit, revision unbound) when a prior revision exists. Exit 0 when the
+    check passes, 1 when it is rejected, 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        report = dispatch.plan_check_file(project, str(file))
+    finally:
+        project.close()
+    if json_out:
+        payload = {"ok": report["ok"], "check": report}
+        if not report["ok"]:
+            payload["error"] = (
+                "replan precheck rejected the plan; the active plan stays effective"
+            )
+            payload["errors"] = [row["message"] for row in report["errors"]]
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        _render_plan_check(report)
+    if not report["ok"]:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

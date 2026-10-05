@@ -106,8 +106,10 @@ def test_host_planner_reuse_and_spans(project, goal, tmp_path, monkeypatch):
 
     dispatch.plan_route(project)
     reopened = project.store.run_get(run.id)
-    assert reopened.status == "planning"
-    assert reopened.completed_at is None
+    # G004 T003: routing a replan does NOT reopen a completed run anymore —
+    # the recorded completion survives until a new revision actually lands.
+    assert reopened.status == "done"
+    assert reopened.completed_at == completed
     assert reopened.started_at == started
 
 

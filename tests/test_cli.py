@@ -131,6 +131,167 @@ def test_plan_submit_rejects_invalid_plan_with_errors(cli_project):
     assert any("verbatim" in e for e in body["errors"])
 
 
+# -- orx plan check: read-only replan precheck (G004 T003) -------------------
+
+
+def _replan_cli_state(cli_project):
+    """Revision 1 with T001 passed: the state a replan prechecks against."""
+    invoke("goal", "new", "--json", "--objective", "ship it",
+           "--acceptance", "marker exists", "--acceptance", "summary written")
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["marker exists"], verification=["true"]),
+        task_spec("T002", deps=["T001"], acceptance=["summary written"]),
+    ])
+    (cli_project / "plan.json").write_text(json.dumps(plan))
+    assert invoke("plan", "submit", "--json", "--file", "plan.json").exit_code == 0
+    invoke("run", "--json")
+    invoke("task", "claim", "--json", "T001")
+    (cli_project / "ev.json").write_text(
+        json.dumps({"status": "passed", "summary": "done", "checks": [], "artifacts": []})
+    )
+    invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+
+
+def _write_replan_plan(cli_project, name, tasks_entries, superseded_entries,
+                       tasks=None):
+    from conftest import with_replan
+    if tasks is None:
+        tasks = [
+            task_spec("T101", acceptance=["marker exists"], verification=["true"]),
+            task_spec("T102", deps=["T101"], acceptance=["summary written"],
+                      verification=["true"]),
+        ]
+    plan = with_replan(ir_for(type("G", (), {"id": "G001"})(), tasks), 1,
+                       tasks_entries, superseded_entries)
+    (cli_project / name).write_text(json.dumps(plan))
+    return name
+
+
+def test_plan_check_ok_envelope_and_human(cli_project):
+    from conftest import replan_task_entry, superseded_entry
+    _replan_cli_state(cli_project)
+    # a waiting planning assignment exists: the read-only check must not
+    # touch it (规划指派状态不变)
+    assert payload(invoke("plan", "--json"))["mode"] == "host_required"
+    name = _write_replan_plan(
+        cli_project, "replan.json",
+        [replan_task_entry("T101", "confirm", sources=[(1, "T001")],
+                           confirm_verification=["true"]),
+         replan_task_entry("T102", "redo", sources=[(1, "T002")],
+                           redo_reason="the old summary approach cannot work")],
+        [superseded_entry(1, "T001", "confirmed", successors=["T101"]),
+         superseded_entry(1, "T002", "redone", successors=["T102"])],
+    )
+
+    result = invoke("plan", "check", "--json", "--file", name)
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    check = body["check"]
+    assert check["ok"] is True
+    assert check["is_replan"] is True
+    assert check["prior_revision"] == 1 and check["proposed_revision"] == 2
+    assert check["classifications"]["confirm"] == ["T101"]
+    assert check["classifications"]["redo"] == ["T102"]
+    assert check["summary"]["errors"] == 0
+
+    # Read-only: the active revision, task statuses, Goal/Run statuses, and
+    # the planning assignment state are all unchanged; the only write is one
+    # unbound preflight report row.
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        revision = project.store.revision_active(run.id)
+        assert revision.revision == 1
+        statuses = {t.task_id: t.status for t in project.store.tasks_all(revision.id)}
+        assert statuses["T001"] == "passed" and statuses["T002"] == "runnable"
+        assignment = project.store.assignment_waiting(run.id)
+        assert assignment is not None and assignment.status == "waiting_host"
+        assert dispatch.status_data(project)["run"]["status"] == "running"
+        reports = project.store.replan_reports_for_run(run.id)
+        assert len(reports) == 1 and reports[0].revision_id is None
+        assert reports[0].payload["ok"] is True
+    finally:
+        project.close()
+
+    human = invoke("plan", "check", "--file", name)
+    assert human.exit_code == 0
+    for marker in ("result: OK", "T101 confirm", "T102 redo",
+                   "superseded: 1:T001 (passed) -> confirmed",
+                   "renumbered: 1:T002 -> T102",
+                   "reference issues: none", "sources checked: 1:T001=passed"):
+        assert marker in human.stdout, marker
+
+
+def test_plan_check_failure_envelope_categories_and_exit_1(cli_project):
+    _replan_cli_state(cli_project)
+    # no mapping declared: the check reports the categorized reason and
+    # keeps everything untouched
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T101", acceptance=["marker exists", "summary written"]),
+    ])
+    (cli_project / "nomap.json").write_text(json.dumps(plan))
+
+    result = invoke("plan", "check", "--json", "--file", "nomap.json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    assert any(e["category"] == "mapping" for e in body["check"]["errors"])
+    assert body["errors"]
+    assert body["check"]["prior_revision"] == 1
+
+    human = invoke("plan", "check", "--file", "nomap.json")
+    assert human.exit_code == 1
+    assert "[mapping]" in human.stdout
+    assert "REJECTED" in human.stdout
+    assert "stays effective" in human.stdout
+
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        assert project.store.revision_active(run.id).revision == 1
+    finally:
+        project.close()
+
+
+def test_plan_check_usage_error_exits_2(cli_project):
+    assert invoke("plan", "check").exit_code == 2
+
+
+def test_plan_submit_precheck_rejection_envelope(cli_project):
+    _replan_cli_state(cli_project)
+    invoke("plan", "--json")  # a waiting planning assignment exists
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T101", acceptance=["marker exists", "summary written"]),
+    ])
+    (cli_project / "nomap.json").write_text(json.dumps(plan))
+
+    result = invoke("plan", "submit", "--json", "--file", "nomap.json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    assert body["errors"]
+    assert any(e["category"] == "mapping" for e in body["precheck"]["errors"])
+    assert body["precheck"]["prior_revision"] == 1
+
+    human = invoke("plan", "submit", "--file", "nomap.json")
+    assert human.exit_code == 1
+    assert "[mapping]" in human.output
+    assert "remains effective" in human.output
+
+    # the original plan and the planning assignment both survived
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        assert project.store.revision_active(run.id).revision == 1
+        assignment = project.store.assignment_waiting(run.id)
+        assert assignment is not None and assignment.status == "waiting_host"
+        attempt = project.store.attempt_open_for_assignment(assignment.id)
+        assert attempt is not None and attempt.ended_at is None
+    finally:
+        project.close()
+
+
 def test_resource_commands_and_toml_untouched(cli_project):
     before = (cli_project / ".orx" / "profiles.toml").read_bytes()
     result = invoke("resource", "set", "--json", "host-worker", "constrained", "--note", "tight")

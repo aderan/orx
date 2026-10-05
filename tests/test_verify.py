@@ -103,8 +103,17 @@ def test_forbidden_command_refuses_completion_without_running(planned, tmp_path,
     """A denylisted command entry can never pass: the gate refuses the
     completion with the denial detail (the command never executed), records
     the row with exit NULL and passed false, and the task stays running."""
-    dispatch.submit_plan(planned, ir_for(goal, [
+    from conftest import replan_task_entry, superseded_entry, with_replan
+    # G004 (out-of-scope mechanical fixture fix): the replacement plan
+    # declares its correspondence explicitly instead of relying on numbers.
+    dispatch.submit_plan(planned, with_replan(ir_for(goal, [
         task_spec("T900", acceptance=goal.acceptance, verification=["sudo rm /tmp/x"]),
+    ]), 1, [
+        replan_task_entry("T900", "continue", sources=[(1, "T001")]),
+    ], [
+        superseded_entry(1, "T001", "continued", successors=["T900"]),
+        superseded_entry(1, "T002", "dropped", note="not needed for this check"),
+        superseded_entry(1, "T003", "dropped", note="not needed for this check"),
     ]))
     dispatch.run_slice(planned)
     dispatch.task_claim(planned, "T900")

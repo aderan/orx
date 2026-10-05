@@ -339,10 +339,19 @@ def test_submit_closed_attempt_is_stale(sub_planned, tmp_path):
 def test_submit_attempt_from_wrong_entry_rejected(sub_planned, tmp_path):
     # Two agent entries on one task: an attempt bound to entry A must not
     # carry the verdict for entry B.
+    # G004 (out-of-scope mechanical fixture fix): the replacement declares
+    # its correspondence explicitly (merged redo), not by task number.
+    from conftest import replan_task_entry, superseded_entry, with_replan
     goal = sub_planned.store.goal_active()
-    dispatch.submit_plan(sub_planned, ir_for(goal, [
+    dispatch.submit_plan(sub_planned, with_replan(ir_for(goal, [
         task_spec("T003", acceptance=goal.acceptance,
                   verification=["agent: alpha reads well", "agent: beta reads well"]),
+    ]), 1, [
+        replan_task_entry("T003", "redo", sources=[(1, "T001"), (1, "T002")],
+                          redo_reason="both phases are re-verified under one task"),
+    ], [
+        superseded_entry(1, "T001", "merged", successors=["T003"]),
+        superseded_entry(1, "T002", "merged", successors=["T003"]),
     ]))
     dispatch.run_slice(sub_planned)
     dispatch.task_claim(sub_planned, "T003")

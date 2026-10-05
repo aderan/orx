@@ -17,6 +17,7 @@ from orx import records
 from orx.records import (
     PlanDepth,
     PlanSyntaxError,
+    PlanValidationError,
     ReplanClassification,
     SupersededDisposition,
     TaskStatus,
@@ -641,6 +642,70 @@ def validate_replan(ir: PlanIR, prior_tasks: list[dict]) -> list[str]:
                     " the successor to combine at least two prior-revision tasks"
                 )
     return errors
+
+
+class ReplanCheckFailed(PlanValidationError):
+    """The shared replan precheck rejected the plan (G004 T003).
+
+    ``report`` carries the full structured precheck report: categorized
+    ``errors`` rows (``{category, locus, message}``) plus the
+    correspondence / classification / disposition / contract-diff /
+    reference-issue sections. A rejected submission changes nothing — the
+    previous revision stays active, its tasks keep their statuses, and the
+    planning assignment (if any) stays waiting.
+    """
+
+    def __init__(self, report: dict):
+        self.report = dict(report)
+        super().__init__([row["message"] for row in report.get("errors", [])])
+
+
+_ERROR_LOCUS_RES = (
+    (re.compile(r"^replan mapping: task (T\d+)\b"), "task"),
+    (re.compile(r"^task (T\d+)\b"), "task"),
+    (re.compile(r"^prior task (\d+:T\d+)\b"), "prior"),
+)
+
+# Deterministic classification of validator messages into report categories.
+# First matching rule wins; unknown shapes fall back to structure/plan. The
+# predicates match the stable validator phrasings in this module only.
+_ERROR_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
+    ("mapping", "replan mapping missing"),
+    ("verification", "confirm verification"),
+    ("verification", "verification list"),
+    ("artifact", "artifact"),
+    ("classification", "classification"),
+    ("classification", "redo_reason"),
+    ("source", "source"),
+    ("source", "no such task is recorded"),
+    ("disposition", "disposition"),
+    ("disposition", "successors"),
+    ("disposition", "superseded"),
+    ("acceptance", "not present verbatim"),
+    ("acceptance", "Goal acceptance criterion"),
+)
+
+
+def replan_error_category(message: str) -> tuple[str, str]:
+    """(category, locus) for one validator error message.
+
+    Category is one of mapping | classification | source | disposition |
+    verification | artifact | acceptance | structure | plan; locus names
+    the offending task (``T101``), prior task (``1:T001``), or ``plan``.
+    Pure string classification over this module's own messages — enrichment
+    that needs recorded state (cross-run detection and the like) belongs to
+    the caller, not here.
+    """
+    locus = "plan"
+    for pattern, kind in _ERROR_LOCUS_RES:
+        match = pattern.match(message)
+        if match:
+            locus = match.group(1)
+            break
+    for category, marker in _ERROR_CATEGORY_RULES:
+        if marker in message:
+            return category, locus
+    return ("structure" if message.startswith(("task ", "prior task ")) else "plan"), locus
 
 
 def extract_json_object(text: str) -> dict | None:

@@ -26,6 +26,7 @@ from orx.records import (
     NotFoundError,
     ORXError,
     PlanDepth,
+    PlanSyntaxError,
     PlanValidationError,
     ResourceStatus,
     ReplanRejectedError,
@@ -459,6 +460,376 @@ def replan_snapshot(store: Store, goal: Goal, run: Run) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Replan precheck: the shared diff gate every activation path goes through
+# (G004 T003). `orx plan check --file` runs it read-only; `submit_plan`
+# (manual `orx plan submit` AND the CLI planner's auto-submit) runs it fresh
+# and refuses to activate on any red row — there is no activation entry that
+# skips it. Nothing here infers a correspondence from task numbers or
+# inherits a prior passed status (docs/replan-contract.md §1-2).
+
+
+def _snapshot_task_rows(snapshot: dict) -> list[dict]:
+    """validate_replan rows from a replan snapshot: (revision, task_id,
+    status) triples of every task this run has ever recorded."""
+    return [
+        {"revision": t["revision"], "task_id": t["task_id"], "status": t["status"]}
+        for t in snapshot["tasks"]
+    ]
+
+
+def _evidence_owners(snapshot: dict) -> dict[str, set[tuple[int, str]]]:
+    """Recorded evidence path -> the (revision, task_id) set that recorded
+    it, for artifact binding checks. Identity is the pair, never a bare
+    task number."""
+    owners: dict[str, set[tuple[int, str]]] = {}
+    for task in snapshot["tasks"]:
+        key = (task["revision"], task["task_id"])
+        for item in task["evidence"]:
+            owners.setdefault(item["path"], set()).add(key)
+    return owners
+
+
+def _artifact_matches(artifact: str, path: str) -> bool:
+    """Does artifact reference the recorded evidence at `path`? Exact match,
+    or a project-relative artifact naming the tail of a recorded absolute
+    path (manual completions record the resolved absolute evidence path)."""
+    if artifact == path:
+        return True
+    return not artifact.startswith("/") and path.endswith("/" + artifact)
+
+
+def _enrich_not_recorded(store: Store, run: Run, snapshot: dict, message: str) -> str | None:
+    """Rewrite validate_replan's generic 'names a prior task that is not
+    recorded' into the specific rejection reason: cross-run reference,
+    future revision, or a task id that only exists in another revision of
+    this run. Returns None when the message is not that error."""
+    import re as _re
+
+    match = _re.fullmatch(
+        r"task (T\d+): source (\d+):(T\d+) names a prior task that is not recorded",
+        message,
+    )
+    if match is None:
+        return None
+    task_id, revision, source_task = match.group(1), int(match.group(2)), match.group(3)
+    runs_with = [
+        row["run_id"]
+        for row in store.conn.execute(
+            "SELECT DISTINCT pr.run_id AS run_id FROM tasks t"
+            " JOIN plan_revisions pr ON pr.id = t.revision_id"
+            " WHERE pr.revision = ? AND t.task_id = ?",
+            (revision, source_task),
+        )
+    ]
+    foreign = sorted(run_id for run_id in runs_with if run_id != run.id)
+    if foreign:
+        return (
+            f"task {task_id}: source {revision}:{source_task} belongs to run"
+            f" {', '.join(foreign)}, not this run ({run.id}); sources must be"
+            " this Run's own history — cross-run references are rejected"
+        )
+    recorded = sorted(rev["revision"] for rev in snapshot["revisions"])
+    if revision not in recorded:
+        kind = "a future revision" if recorded and revision > max(recorded) else "a nonexistent revision"
+        return (
+            f"task {task_id}: source {revision}:{source_task} names {kind} of"
+            f" run {run.id} (revisions recorded: {recorded or 'none'});"
+            " sources must name recorded history"
+        )
+    return (
+        f"task {task_id}: source {revision}:{source_task} is not a task of"
+        f" run {run.id}; task ids are per-revision — the same number in"
+        " another revision is different work, and no correspondence is ever"
+        " inferred from the number"
+    )
+
+
+def _replan_precheck(project: Project, ir, goal: Goal, run: Run) -> dict:
+    """The shared precheck report over CURRENT recorded state. Read-only:
+    no revision, task, Goal/Run, or assignment row is written.
+
+    Composes the same validators a first plan faces (``validate_ir``) with
+    the replan cross-check (``validate_replan``) against this run's task
+    history, the prior-revision identity rule, and artifact binding. Every
+    error is categorized ``{category, locus, message}``; the report body
+    carries the old<->new correspondence, classifications, redo reasons,
+    superseded dispositions, the contract diff vs the active plan, artifact
+    reference statuses, and each source's recorded status at check time.
+    """
+    store = project.store
+    old = store.revision_active(run.id)
+    snapshot = replan_snapshot(store, goal, run)
+    prior_rows = _snapshot_task_rows(snapshot)
+    recorded = {(row["revision"], row["task_id"]): row["status"] for row in prior_rows}
+    errors: list[dict] = []
+
+    def err(category: str, locus: str, message: str) -> None:
+        errors.append({"category": category, "locus": locus, "message": message})
+
+    # 1. the structural validation every plan faces (goal match, acceptance
+    #    coverage, task shape, plus the replan-internal rules when a mapping
+    #    is declared).
+    for message in plan_mod.validate_ir(
+        ir, goal.id, goal.acceptance, _known_capabilities(project)
+    ):
+        category, locus = plan_mod.replan_error_category(message)
+        err(category, locus, message)
+
+    # 2. the replan cross-check against recorded history — mandatory
+    #    whenever a prior revision exists OR the plan claims one.
+    if old is not None or ir.replan is not None:
+        for message in plan_mod.validate_replan(ir, prior_rows):
+            enriched = _enrich_not_recorded(store, run, snapshot, message)
+            final = enriched or message
+            category, locus = plan_mod.replan_error_category(message)
+            if enriched is not None:
+                category, locus = "source", locus
+            err(category, locus, final)
+
+    replan = ir.replan
+    if replan is not None and old is not None and replan.prior_revision != old.revision:
+        err(
+            "prior-revision",
+            "plan",
+            f"replan declares prior_revision {replan.prior_revision} but the"
+            f" active revision is {old.revision}; the new plan replaces the"
+            " active revision and must declare exactly its tasks superseded",
+        )
+
+    # 3. artifact binding: an artifact that names recorded evidence of this
+    #    run must belong to a declared source of that task — references bind
+    #    through the correspondence, never a task number. Unrecorded paths
+    #    are semantic review (contract §7-8), reported, not rejected.
+    owners = _evidence_owners(snapshot)
+    artifact_rows: dict[str, list[dict]] = {}
+    reference_issues: list[dict] = []
+    correspondence: list[dict] = []
+    renumbered: list[dict] = []
+    redos: list[dict] = []
+    buckets: dict[str, list[str]] = {"new": [], "confirm": [], "redo": [], "continue": []}
+    source_states: dict[str, dict] = {}
+
+    if replan is not None:
+        for mapping in replan.tasks:
+            source_keys = {(s.revision, s.task_id) for s in mapping.sources}
+            rows: list[dict] = []
+            for artifact in mapping.artifacts:
+                matches = {
+                    key
+                    for path, keys in owners.items()
+                    if _artifact_matches(artifact, path)
+                    for key in keys
+                }
+                if not matches:
+                    rows.append({
+                        "artifact": artifact,
+                        "status": "unresolved",
+                        "detail": "not recorded evidence of this run; whether it"
+                                  " points at the right prior result is semantic review",
+                    })
+                    continue
+                if matches & source_keys:
+                    rows.append({
+                        "artifact": artifact,
+                        "status": "source-evidence",
+                        "detail": "recorded evidence of "
+                                  + ", ".join(f"{r}:{t}" for r, t in sorted(matches & source_keys)),
+                    })
+                    continue
+                bound = ", ".join(f"{r}:{t}" for r, t in sorted(matches))
+                declared = ", ".join(f"{r}:{t}" for r, t in sorted(source_keys)) or "none"
+                rows.append({
+                    "artifact": artifact,
+                    "status": "mis-bound",
+                    "detail": f"recorded evidence of {bound}, not of the declared sources ({declared})",
+                })
+                problem = (
+                    f"artifact {artifact!r} is recorded evidence of {bound},"
+                    f" not of the declared sources ({declared}); artifacts"
+                    " bind through the declared correspondence, never a task number"
+                )
+                err("artifact", mapping.task, f"task {mapping.task}: {problem}")
+                reference_issues.append({
+                    "task": mapping.task,
+                    "artifact": artifact,
+                    "problem": problem,
+                })
+            artifact_rows[mapping.task] = rows
+
+            classification = mapping.classification
+            if classification in buckets:
+                buckets[classification].append(mapping.task)
+            sources_out = []
+            for source in mapping.sources:
+                key = (source.revision, source.task_id)
+                status = recorded.get(key)
+                sources_out.append({
+                    "source": f"{source.revision}:{source.task_id}",
+                    "recorded_status": status,
+                    "part": source.part,
+                })
+                source_states[f"{source.revision}:{source.task_id}"] = {
+                    "source": f"{source.revision}:{source.task_id}",
+                    "recorded_status": status,
+                    "classified_by": sorted(
+                        m.task for m in replan.tasks
+                        for s in m.sources
+                        if (s.revision, s.task_id) == key
+                    ),
+                }
+                if source.task_id != mapping.task:
+                    renumbered.append({
+                        "from": f"{source.revision}:{source.task_id}",
+                        "to": mapping.task,
+                    })
+            entry = {
+                "task": mapping.task,
+                "classification": classification,
+                "sources": sources_out,
+                "redo_reason": mapping.redo_reason or None,
+                "confirm_verification": list(mapping.confirm_verification),
+                "artifacts": rows,
+            }
+            correspondence.append(entry)
+            if classification == "redo" and mapping.redo_reason.strip():
+                redos.append({"task": mapping.task, "reason": mapping.redo_reason})
+
+    superseded_out: list[dict] = []
+    if replan is not None:
+        for entry in replan.superseded:
+            key = (entry.revision, entry.task_id)
+            superseded_out.append({
+                "prior": f"{entry.revision}:{entry.task_id}",
+                "recorded_status": recorded.get(key),
+                "disposition": entry.disposition,
+                "successors": list(entry.successors),
+                "note": entry.note or None,
+            })
+
+    # 4. the contract diff vs the active plan: what activation would change.
+    would_cancel: list[str] = []
+    terminal_preserved: dict[str, str] = {}
+    if old is not None:
+        for task in store.tasks_all(old.id):
+            if TaskStatus(task.status) in UNFINISHED_TASK_STATUSES:
+                would_cancel.append(task.task_id)
+            else:
+                terminal_preserved[task.task_id] = task.status
+    acceptance_coverage = [
+        {
+            "criterion": criterion,
+            "tasks": [t.id for t in ir.tasks if criterion in t.acceptance],
+        }
+        for criterion in goal.acceptance
+        if criterion.strip()
+    ]
+
+    busy = [
+        t.task_id
+        for t in (store.tasks_all(old.id) if old is not None else [])
+        if TaskStatus(t.status) in (TaskStatus.RUNNING, TaskStatus.VERIFYING)
+    ]
+
+    summary = {
+        "errors": len(errors),
+        "tasks": len(ir.tasks),
+        "new": len(buckets["new"]),
+        "confirm": len(buckets["confirm"]),
+        "redo": len(buckets["redo"]),
+        "continue": len(buckets["continue"]),
+        "superseded": len(superseded_out),
+        "renumbered": len(renumbered),
+        "reference_issues": len(reference_issues),
+    }
+    return {
+        "run_id": run.id,
+        "goal_id": goal.id,
+        "is_replan": old is not None,
+        "prior_revision": old.revision if old is not None else None,
+        "proposed_revision": (old.revision + 1) if old is not None else 1,
+        "ok": not errors,
+        "busy_tasks": sorted(busy),
+        "summary": summary,
+        "errors": errors,
+        "classifications": buckets,
+        "renumbered": renumbered,
+        "redos": redos,
+        "correspondence": correspondence,
+        "superseded": superseded_out,
+        "contract_diff": {
+            "would_cancel": sorted(would_cancel),
+            "terminal_preserved": dict(sorted(terminal_preserved.items())),
+            "acceptance_coverage": acceptance_coverage,
+        },
+        "reference_issues": reference_issues,
+        "sources": [source_states[key] for key in sorted(source_states)],
+    }
+
+
+def plan_check_file(project: Project, file_str: str) -> dict:
+    """`orx plan check --file`: the read-only precheck of one plan document.
+
+    Runs the shared gate and persists exactly one ``replan_reports`` row
+    (revision unbound — the revision does not exist yet) when a prior
+    revision exists; the row is the audit trail of what was checked and
+    when. Beyond that report row this command writes nothing: no revision is
+    created, no task is cancelled, and Goal/Run/assignment statuses are
+    untouched. Whether a redo reason is justified or a confirm verification
+    sufficient stays with semantic review (contract §7)."""
+    path = Path(file_str).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        raise ORXError(f"cannot read plan file {file_str}: {exc}") from None
+    try:
+        ir_data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ORXError(f"cannot read plan file {file_str}: {exc}") from None
+
+    goal, run = _active_context(project)
+    report: dict
+    try:
+        ir = plan_mod.parse_ir(ir_data)
+    except PlanSyntaxError as exc:
+        report = {
+            "run_id": run.id,
+            "goal_id": goal.id,
+            "is_replan": project.store.revision_active(run.id) is not None,
+            "prior_revision": None,
+            "proposed_revision": None,
+            "ok": False,
+            "busy_tasks": [],
+            "summary": {"errors": len(exc.errors)},
+            "errors": [
+                {"category": "syntax", "locus": "plan", "message": message}
+                for message in exc.errors
+            ],
+            "classifications": {},
+            "renumbered": [],
+            "redos": [],
+            "correspondence": [],
+            "superseded": [],
+            "contract_diff": {},
+            "reference_issues": [],
+            "sources": [],
+        }
+        prior = project.store.revision_active(run.id)
+        if prior is not None:
+            report["prior_revision"] = prior.revision
+            report["proposed_revision"] = prior.revision + 1
+    else:
+        report = _replan_precheck(project, ir, goal, run)
+
+    old = project.store.revision_active(run.id)
+    if old is not None:
+        row = project.store.replan_report_add(run.id, old.revision, report)
+        report["report_id"] = row.id
+    return report
+
+
 def plan_route(
     project: Project, depth_flag: str | None = None, profile_flag: str | None = None,
     context_file: str | None = None, session: str | None = None,
@@ -501,9 +872,10 @@ def plan_route(
     if profile.driver.value == "host":
         assignment = store.assignment_waiting(run.id)
         if assignment is None:
-            if run.status == RunStatus.DONE.value:
-                store.run_set_status(run.id, RunStatus.PLANNING)
-                store.goal_set_status(goal.id, GoalStatus.ACTIVE)
+            # NOTE: a completed Run is NOT reopened here. Routing a replan
+            # only creates the planning assignment; the Goal/Run keep their
+            # recorded completion until a new revision actually lands in
+            # submit_plan (a failed replan must not lose the completion).
             assignment = store.assignment_create(
                 run.id, profile.name, depth.value, prompt
             )
@@ -821,6 +1193,24 @@ def _routing_payload(result: routing.RouteResult) -> dict:
 def submit_plan(project: Project, ir_data: dict,
                 planner_profile: str | None = None, depth_hint: str | None = None,
                 session: str | None = None) -> dict:
+    """Activate a plan revision through the shared gate (G004 T003).
+
+    Every activation path — manual `orx plan submit --file` and the CLI
+    planner's auto-submit — lands here and runs the same fresh precheck
+    (`_replan_precheck`) against CURRENT recorded state: a replan must
+    declare the full correspondence, classifications, redo reasons, and
+    superseded dispositions, sources must resolve to this run's recorded
+    tasks, and artifacts recorded as evidence of this run must belong to a
+    declared source. A red precheck raises ReplanCheckFailed with the
+    categorized report and changes nothing: the previous revision stays
+    active, its tasks keep their statuses, the planning assignment stays
+    waiting, and a completed Run keeps its completion.
+
+    Activation itself is one transaction: supersede the old revision and
+    cancel its unfinished tasks, insert the new revision and tasks, persist
+    the declared mapping, store and bind the precheck report, and close the
+    planning assignment — a fault anywhere rolls the whole activation back
+    (no partially effective revision can exist)."""
     store = project.store
     goal, run = _active_context(project)
 
@@ -832,9 +1222,17 @@ def submit_plan(project: Project, ir_data: dict,
     session_ref = resolve_session_ref(session)
 
     ir = plan_mod.parse_ir(ir_data)
-    errors = plan_mod.validate_ir(ir, goal.id, goal.acceptance, _known_capabilities(project))
-    if errors:
-        raise PlanValidationError(errors)
+
+    # The shared precheck gate — never skipped, never cached: source
+    # statuses are re-read now, so a source that changed since an earlier
+    # `orx plan check` is re-judged here (核对来源版本).
+    precheck = _replan_precheck(project, ir, goal, run)
+    if not precheck["ok"]:
+        old = store.revision_active(run.id)
+        if old is not None:
+            # Audit the failed precheck (own transaction; nothing else moves).
+            store.replan_report_add(run.id, old.revision, precheck)
+        raise plan_mod.ReplanCheckFailed(precheck)
 
     assignment = store.assignment_waiting(run.id)
     depth_value = (
@@ -849,6 +1247,11 @@ def submit_plan(project: Project, ir_data: dict,
     old = store.revision_active(run.id)
     cancelled_old: list[str] = []
     with store.tx():
+        report_row = None
+        if ir.replan is not None and old is not None:
+            report_row = store.replan_report_add(
+                run.id, ir.replan.prior_revision, precheck
+            )
         if old is not None:
             store.revision_mark_superseded(old.id)
             for task in store.tasks_all(old.id):
@@ -879,6 +1282,12 @@ def submit_plan(project: Project, ir_data: dict,
                 store, revision.id, task.id, status,
                 reason="waiting on dependencies" if has_unmet else "no unmet dependencies",
             )
+        if ir.replan is not None:
+            # Anchor the declared correspondence to real task rows; inside
+            # the activation transaction so a fault rolls it all back.
+            store.replan_mapping_save(revision.id, ir.replan)
+            if report_row is not None:
+                store.replan_report_bind(report_row.id, revision.id)
         if assignment is not None:
             store.assignment_set_status(
                 assignment.id, AssignmentStatus.SUBMITTED, mark_submitted=True
@@ -894,9 +1303,11 @@ def submit_plan(project: Project, ir_data: dict,
                 )
 
     if run.status == RunStatus.DONE.value:
+        # The reopen of a completed Run happens only now that a new revision
+        # has actually landed; a failed replan above never reaches this.
         store.goal_set_status(goal.id, GoalStatus.ACTIVE)
     refresh(store, goal, run)
-    return {
+    result = {
         "revision": revision.revision,
         "depth": revision.depth,
         "planner_profile": revision.planner_profile,
@@ -905,6 +1316,15 @@ def submit_plan(project: Project, ir_data: dict,
         "cancelled_tasks": cancelled_old,
         "assignment": assignment.id if assignment else None,
     }
+    if ir.replan is not None:
+        result["replan_activation"] = {
+            "prior_revision": ir.replan.prior_revision,
+            "report": report_row.id if report_row is not None else None,
+            "classifications": {
+                key: len(ids) for key, ids in precheck["classifications"].items()
+            },
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------

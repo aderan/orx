@@ -19,7 +19,18 @@ from orx import dispatch
 from orx import plan as plan_mod
 from orx.records import ORXError
 
-from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, ir_for, make_project, task_spec, write_evidence, active_task
+from conftest import (
+    HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
+    ir_for,
+    make_project,
+    replan_task_entry,
+    superseded_entry,
+    task_spec,
+    with_replan,
+    write_evidence,
+    active_task,
+)
 
 
 INTENT_TEXT = """\
@@ -177,8 +188,17 @@ def test_replan_prompt_separates_goal_facts_and_intent(mixed_run, goal, intent_f
 def test_context_file_never_rewrites_the_goal(mixed_run, goal, intent_file):
     before = project_store_goal(mixed_run)
     dispatch.plan_route(mixed_run, context_file=str(intent_file))
-    dispatch.submit_plan(mixed_run, ir_for(goal, [
+    # mixed_run revision 1: T001 passed, T002 failed (terminal) — the replan
+    # declares both explicitly (redo), never a same-number guess.
+    dispatch.submit_plan(mixed_run, with_replan(ir_for(goal, [
         task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+    ]), 1, [
+        replan_task_entry("T101", "redo",
+                          sources=[(1, "T001"), (1, "T002")],
+                          redo_reason="the new round needs a fresh combined result"),
+    ], [
+        superseded_entry(1, "T001", "merged", successors=["T101"]),
+        superseded_entry(1, "T002", "merged", successors=["T101"]),
     ]))
     assert project_store_goal(mixed_run) == before
 
@@ -263,7 +283,9 @@ def test_cli_planner_input_archived_and_contains_goal_facts_intent(
         dispatch.task_fail(project, "T002", "assumption broken: cache helper does not exist")
 
         # The stub planner echoes plan.json after capturing its stdin prompt.
-        plan = {
+        # Revision 1 here: T001 passed, T002 failed — the plan declares the
+        # correspondence explicitly (confirm + redo), as the gate requires.
+        plan = with_replan({
             "goal": goal.id,
             "exploration": {"summary": "", "relevant_components": ["src/"],
                             "unknowns": [], "assumptions": [], "risks": []},
@@ -273,7 +295,15 @@ def test_cli_planner_input_archived_and_contains_goal_facts_intent(
                 task_spec("T102", deps=["T101"], acceptance=goal.acceptance[1:],
                           verification=["true"]),
             ],
-        }
+        }, 1, [
+            replan_task_entry("T101", "confirm", sources=[(1, "T001")],
+                              confirm_verification=["true"]),
+            replan_task_entry("T102", "redo", sources=[(1, "T002")],
+                              redo_reason="the old approach cannot finish the summary"),
+        ], [
+            superseded_entry(1, "T001", "confirmed", successors=["T101"]),
+            superseded_entry(1, "T002", "redone", successors=["T102"]),
+        ])
         (tmp_path / "plan.json").write_text(json.dumps(plan))
 
         result = dispatch.plan_route(project, context_file=str(intent_file))
@@ -289,5 +319,52 @@ def test_cli_planner_input_archived_and_contains_goal_facts_intent(
                        "T001", "PASSED", "assumption broken: cache helper does not exist",
                        "Controller's intent for THIS replan round"):
             assert marker in archived
+    finally:
+        project.close()
+
+
+def test_cli_planner_auto_submit_goes_through_the_same_gate(
+        tmp_path, monkeypatch, intent_file):
+    """The CLI planner's automatic submit has no bypass: a replan without a
+    declared correspondence is refused by the shared precheck, nothing is
+    activated, and the old revision stays active."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-planner"]', 'profiles = ["cli-planner"]'
+    ).replace(
+        'profiles = ["host-frontier", "host-planner"]', 'profiles = ["cli-planner"]'
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=HOST_PROFILES_TOML + CLI_PLANNER_PROFILES)
+    try:
+        goal = dispatch.create_goal(
+            project,
+            objective="Ship the login fix",
+            acceptance=["marker file exists", "summary is written"],
+            constraints=[],
+            context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        dispatch.run_slice(project)
+        dispatch.task_claim(project, "T001")
+        dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+
+        # The stub planner emits a replan WITHOUT the mapping declaration.
+        (tmp_path / "plan.json").write_text(json.dumps(ir_for(goal, [
+            task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+        ])))
+        with pytest.raises(plan_mod.ReplanCheckFailed) as excinfo:
+            dispatch.plan_route(project, context_file=str(intent_file))
+        report = excinfo.value.report
+        assert any(e["category"] == "mapping" for e in report["errors"])
+
+        run = project.store.run_for_goal(goal.id)
+        assert project.store.revision_active(run.id).revision == 1
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+        # the failed precheck is audited as an unbound report row
+        reports = project.store.replan_reports_for_run(run.id)
+        assert reports and all(r.revision_id is None for r in reports)
     finally:
         project.close()

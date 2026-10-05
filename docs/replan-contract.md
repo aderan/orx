@@ -152,13 +152,39 @@ R003 复盘曾提出"12M token 浪费在重做"并据此建议自动继承旧 pa
 每行保留 Run、修订、来源任务全身份、来源任务自身的 attempt、evidence 行与成果引用；
 attempt 与来源身份不符（同号不同修订）即拒绝。预检报告经 `replan_report_add` /
 `replan_report_bind` 落库：修订落地前 `revision_id` 为 NULL（unknown，不猜测）。
-执行面（worker 指派、验证提示词）按此边引用旧成果的接线在后续阶段（§9）。
+
+执行面（阶段 2，已交付 T003）：`dispatch._replan_precheck` 是唯一的差异预检——
+`orx plan check --file` 只读运行；`submit_plan`（手工 `orx plan submit` 与 CLI planner
+自动提交都汇聚于此）在生效前**重新**运行同一预检（不缓存、不信任早先的报告：来源
+状态变化在提交时重新判定）。预检内容 = `validate_ir` 结构内检 + `validate_replan`
+以 `replan_snapshot` 的任务行外检 + prior_revision 必须等于当前 active 修订 +
+成果绑定检查。成果绑定规则：映射 `artifacts` 中出现且恰好是本 Run 已记录 evidence
+路径的引用，必须属于该任务**已声明的来源**（按全身份 `(修订, 任务)` 匹配，相对路径
+按记录绝对路径的尾部匹配）；指向其它任务的 evidence 即"错绑"，定位到该新任务拒绝；
+不是已记录 evidence 的路径（仓库路径等）结构上无法判定，按 §7 留给语义审查并在
+报告中标注 `unresolved`。
+
+预检失败（`plan.ReplanCheckFailed`，携带分类报告）时**原计划继续有效**：不创建修订、
+不取消旧任务、Goal/Run 状态与规划指派不动（waiting 的规划指派与打开的 planner
+attempt 原样保留），失败报告本身经 `replan_report_add` 落库审计（revision 保持
+NULL）。生效是单事务：作废旧修订+取消未终态旧任务、插入新修订与任务、
+`replan_mapping_save` 落映射、报告 `replan_report_bind` 绑定到落地修订、关闭规划
+指派——任一步故障整体回滚，不存在部分生效的修订。已完成 Run 的重规划只在**新修订
+真正落地时**才重开 Goal（run 状态由新任务重新计算）；路由重规划与预检失败都不再
+提前改变完成状态（`completed_at` 不丢）。只读 `orx plan check --file` 除落一条
+`replan_reports` 审计行外不写任何状态。报告（JSON envelope 与可读文本双形态）展示：
+新旧对应（含重编号）、四类分类、重做原因、契约差异（将取消的未终态旧任务、保留的
+终态事实、验收条款覆盖）、旧任务去向（含记录状态与去向）、来源状态核对、引用问题。
 
 ## 9. 实施阶段与当前状态
 
 - **阶段 1（已交付）**：本契约 + IR 字段 + 纯校验 + 行为测试 + 规划提示词同步。
-- **阶段 2**：dispatch 接线——重规划提交强制携带映射，`validate_replan` 以快照数据
-  调用；拒绝路径保持 exit codes 0/1/2 与 `--json` envelope 不变量。
+- **阶段 2（已交付，T003）**：dispatch 接线——共用差异预检
+  （`_replan_precheck`：`validate_ir` + `validate_replan` 快照外检 + prior_revision
+  一致性 + 成果绑定检查）与原子生效路径；`orx plan check --file` 只读命令；手工
+  submit 与 CLI planner 同一门禁（无跳过预检的生效入口）；失败保留原计划与规划
+  指派；已完成 Run 失败重规划不提前重开；既有重规划夹具显式声明关系（同号推断
+  不再能绕过检查）。exit codes 0/1/2 与 `--json` envelope 不变量保持。
 - **阶段 3**：
   - **落库（已交付，T002）**：存储接口 + additive 整数版本迁移 v9
     （`replan_mappings` / `replan_task_mappings` / `replan_sources` /
@@ -179,5 +205,8 @@ attempt 与来源身份不符（同号不同修订）即拒绝。预检报告经
   任何行；迁移走既有 backup-replace-restore（先迁移副本、成功后替换），失败时
   原库保持 v8 可继续使用。旧任务、attempt、evidence、verification 记录原样保留；
   没有 passed 状态继承，也没有按编号猜测的对应关系。
+- 行为变更（T003）：路由重规划（`orx plan`/`orx replan`）不再立即把已完成 Run 置回
+  planning/active——重开只在 新修订落地（`plan submit` 成功）时发生；失败的重规划
+  不改变完成状态。首次计划（无先前修订）不要求映射，行为不变。
 - M0/M1/M1.2 不变量不受影响：exit codes 与 `--json` envelope 约定原样；观测读取
   gate 从单值 `8` 变为显式白名单 `8`/`9`（既有六个读数查询不变）。

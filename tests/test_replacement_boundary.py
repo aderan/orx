@@ -17,7 +17,18 @@ import pytest
 from orx import dispatch
 from orx.records import ORXError, PlanValidationError, ReplanRejectedError
 
-from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, ir_for, make_project, task_spec, write_evidence, active_task
+from conftest import (
+    HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
+    active_task,
+    ir_for,
+    make_project,
+    replan_task_entry,
+    superseded_entry,
+    task_spec,
+    with_replan,
+    write_evidence,
+)
 
 
 @pytest.fixture
@@ -141,8 +152,15 @@ def test_busy_tasks_reject_replan_including_with_context_file(planned, goal, tmp
 
 
 def test_verifying_task_rejects_replan(planned, goal, tmp_path):
-    dispatch.submit_plan(planned, ir_for(goal, [
+    # G004 (out-of-scope mechanical fixture fix): the replacement declares
+    # its correspondence explicitly.
+    dispatch.submit_plan(planned, with_replan(ir_for(goal, [
         task_spec("T001", acceptance=goal.acceptance, verification=["agent: look at it"]),
+    ]), 1, [
+        replan_task_entry("T001", "continue", sources=[(1, "T001")]),
+    ], [
+        superseded_entry(1, "T001", "continued", successors=["T001"]),
+        superseded_entry(1, "T002", "dropped", note="folded into the new T001"),
     ]))
     dispatch.run_slice(planned)
     dispatch.task_claim(planned, "T001")
@@ -178,10 +196,18 @@ def test_successful_replacement_commit_semantics(planned, goal, tmp_path):
     assert "T001" in prompt and "PASSED" in prompt
     assert "never auto-passes" in prompt
 
-    result = dispatch.submit_plan(planned, ir_for(goal, [
+    result = dispatch.submit_plan(planned, with_replan(ir_for(goal, [
         task_spec("T101", acceptance=goal.acceptance[:1], verification=["true"]),
         task_spec("T102", deps=["T101"], acceptance=goal.acceptance[1:],
                   verification=["true"]),
+    ]), 1, [
+        replan_task_entry("T101", "confirm", sources=[(1, "T001")],
+                          confirm_verification=["true"]),
+        replan_task_entry("T102", "redo", sources=[(1, "T002")],
+                          redo_reason="the unfinished summary work is planned anew"),
+    ], [
+        superseded_entry(1, "T001", "confirmed", successors=["T101"]),
+        superseded_entry(1, "T002", "redone", successors=["T102"]),
     ]))
     assert result["revision"] == 2
     assert result["superseded_revision"] == 1
@@ -201,10 +227,18 @@ def test_replacement_then_completion_lands_done(planned, goal, tmp_path):
     dispatch.task_claim(planned, "T001")
     dispatch.task_complete(planned, "T001", str(write_evidence(tmp_path)))
     dispatch.run_slice(planned)
-    dispatch.submit_plan(planned, ir_for(goal, [
+    dispatch.submit_plan(planned, with_replan(ir_for(goal, [
         task_spec("T101", acceptance=goal.acceptance[:1], verification=["true"]),
         task_spec("T102", deps=["T101"], acceptance=goal.acceptance[1:],
                   verification=["true"]),
+    ]), 1, [
+        replan_task_entry("T101", "confirm", sources=[(1, "T001")],
+                          confirm_verification=["true"]),
+        replan_task_entry("T102", "redo", sources=[(1, "T002")],
+                          redo_reason="the unfinished summary work is planned anew"),
+    ], [
+        superseded_entry(1, "T001", "confirmed", successors=["T101"]),
+        superseded_entry(1, "T002", "redone", successors=["T102"]),
     ]))
     dispatch.run_slice(planned)
     dispatch.task_claim(planned, "T101")

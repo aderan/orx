@@ -37,10 +37,25 @@ def planned(project, goal):
 
 def _replan(project, goal, tasks):
     """Replace the active revision with a fresh plan (the supersede path
-    test_verify.py also uses), park the tasks, and return the new revision."""
-    dispatch.submit_plan(project, ir_for(goal, tasks))
-    dispatch.run_slice(project)
+    test_verify.py also uses), park the tasks, and return the new revision.
+    G004 (out-of-scope mechanical fixture fix): the replacement now declares
+    its correspondence explicitly — the new tasks are new work and every
+    prior task is dropped with a note (recorded task rows, not numbers)."""
+    from conftest import replan_task_entry, superseded_entry, with_replan
     run = project.store.run_for_goal(goal.id)
+    prior = project.store.revision_active(run.id)
+    prior_ids = [t.task_id for t in project.store.tasks_all(prior.id)]
+    ir = with_replan(
+        ir_for(goal, tasks), prior.revision,
+        [replan_task_entry(task["id"], "new") for task in tasks],
+        [
+            superseded_entry(prior.revision, tid, "dropped",
+                             note="replaced by this test's fresh plan")
+            for tid in prior_ids
+        ],
+    )
+    dispatch.submit_plan(project, ir)
+    dispatch.run_slice(project)
     return project.store.revision_active(run.id)
 
 

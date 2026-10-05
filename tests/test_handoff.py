@@ -19,7 +19,17 @@ from typer.testing import CliRunner
 from orx import dispatch
 from orx.cli import app
 
-from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, ir_for, task_spec, write_evidence, active_task
+from conftest import (
+    HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
+    ir_for,
+    replan_task_entry,
+    superseded_entry,
+    task_spec,
+    with_replan,
+    write_evidence,
+    active_task,
+)
 
 runner = CliRunner()
 
@@ -86,13 +96,25 @@ def test_cross_phase_handoff_full_scenario(project, tmp_path):
     assert (project.root / routed["assignment"]["prompt_file"]).read_text() == planner_prompt
 
     # ---- the (stub) planner's new plan commits; boundary rules hold -------
-    dispatch.submit_plan(project, ir_for(goal, [
+    # The replan declares its correspondence explicitly: phase 1 passed and is
+    # confirmed (with the CURRENT verification), phase 2 failed and is redone
+    # with the reason. Same-number inference is not a thing.
+    dispatch.submit_plan(project, with_replan(ir_for(goal, [
         task_spec("T101", objective="keep the phase-1 marker true",
                   acceptance=["phase one marker file exists"],
                   verification=["test -f marker.txt"]),
         task_spec("T102", deps=["T101"], objective="write the summary directly",
                   acceptance=["phase two summary file exists"],
                   verification=["test -f summary.txt"]),
+    ]), 1, [
+        replan_task_entry("T101", "confirm", sources=[(1, "T001")],
+                          confirm_verification=["test -f marker.txt"]),
+        replan_task_entry("T102", "redo", sources=[(1, "T002")],
+                          redo_reason="the summary helper does not exist; the"
+                                      " summary must be written directly"),
+    ], [
+        superseded_entry(1, "T001", "confirmed", successors=["T101"]),
+        superseded_entry(1, "T002", "redone", successors=["T102"]),
     ]))
     assert goal_tuple(project) == goal_before  # intent never rewrote the Goal
 

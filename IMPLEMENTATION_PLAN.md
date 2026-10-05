@@ -89,10 +89,30 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
 - [x] `to_dict()` exclude_none：首计划输出形状不变；历史 IR 照常可读。
 - 证据：`uv run pytest -q tests/test_plan_ir.py` 74 绿；全量 561 绿（524 存量 + 37 新增）。
 
-### 阶段 2：dispatch 接线 — Not Started
-- [ ] 重规划提交（存在先前修订）强制携带 `replan` 映射：`validate_replan` 以
-      `replan_snapshot` 的任务行调用；缺失/不一致按 PlanValidationError 拒绝。
-- [ ] 首次计划仍不要求映射；exit codes 0/1/2 与 `--json` envelope 不变量测试。
+### 阶段 2：dispatch 接线 — Done（T003，R004）
+- [x] 共用差异预检 `dispatch._replan_precheck`：`validate_ir` 结构内检 +
+      `validate_replan`（以 `replan_snapshot` 任务行）外检 + prior_revision 必须
+      等于当前 active 修订 + 成果绑定检查（命名了本 Run 已记录 evidence 的
+      artifact 必须属于已声明来源；错绑定位到任务拒绝，未记录路径留给语义审查）。
+- [x] 新命令 `orx plan check --file`（只读）：不创建修订、不取消旧任务、不改
+      Goal/Run/规划指派状态；仅落一条 `replan_reports` 审计行（revision NULL）。
+      报告双形态（--json envelope + 可读文本）：新旧对应（含重编号）、四类分类、
+      重做原因、契约差异（将取消/终态保留/验收覆盖）、旧任务去向、来源状态核对、
+      引用问题；失败含分类（category/locus/message）与具体错误，exit 0/1/2 保持。
+- [x] 手工 submit 与 CLI planner 自动提交同一门禁：`submit_plan` 单入口生效前
+      重新预检（来源状态变化重新判定）；失败抛 `plan.ReplanCheckFailed`
+      （PlanValidationError 子类，携带分类报告），原计划继续有效、规划指派与
+      planner attempt 原样保留、失败报告落库审计。
+- [x] 原子生效：作废旧修订+取消未终态旧任务+新修订任务+`replan_mapping_save`
+      +报告绑定+关闭规划指派在单事务内，任一故障整体回滚（无部分生效修订）。
+- [x] 修复提前重开：路由重规划不再立即置 planning/active；重开只在新修订落地时
+      发生，失败重规划不丢 completed_at。
+- [x] 既有重规划夹具显式声明关系（conftest `with_replan` 等字面量助手）；范围外
+      夹具最小机械修正并披露（test_replacement_boundary / test_verify /
+      test_verify_check / test_subagent_contract / test_observability /
+      test_m12_acceptance）。
+- 证据：`uv run pytest -q tests/test_revisions.py tests/test_replan_context.py
+  tests/test_cli.py tests/test_handoff.py` 100 绿；全量 583 绿（10 失败修复后）。
 
 ### 阶段 3：持久化与呈现 — In Progress（落库部分 Done，T002，R004）
 - [x] 存储接口 + 映射/预检报告/可追溯成果来源落库（schema v9 additive 整数版本迁移：
@@ -122,3 +142,6 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
   存储接口（对应关系/预检报告/成果出处）+ 多轮追溯 + 观测契约 v9 同步；
   `uv run pytest -q tests/test_state.py tests/test_subagent_contract.py
   tests/test_m12_acceptance.py tests/test_observability_contract.py` 56 绿。
+- 2026-10-05 R4 T003：阶段 2 完成——共用差异预检（`_replan_precheck`）+ 原子生效
+  单事务 + `orx plan check --file` 只读命令 + 手工 submit/CLI planner 同一门禁 +
+  已完成 Run 失败重规划不再提前重开 + 夹具显式声明关系（见阶段 2 证据行）。

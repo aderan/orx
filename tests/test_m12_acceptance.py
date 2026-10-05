@@ -231,10 +231,12 @@ def test_m12_acceptance_integration(tmp_path: Path, monkeypatch):
     try:
         dispatch.plan_route(project)
         reopened = project.store.run_get(run_id)
-        assert reopened.status == "planning"
-        assert reopened.completed_at is None
+        # G004 T003: routing a replan does NOT reopen a completed run
+        # anymore — the recorded completion survives until a new revision
+        # actually lands.
+        assert reopened.status == "done"
+        assert reopened.completed_at == completed
         assert reopened.started_at == started
-        assert reopened.completed_at != completed
     finally:
         project.close()
 

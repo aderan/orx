@@ -152,6 +152,52 @@ def ir_for(goal, tasks):
     }
 
 
+# -- replan mapping declaration helpers (G004) ------------------------------
+#
+# The correspondence between old and new tasks is DECLARED, never inferred
+# from task numbers: a replan IR carries an explicit "replan" mapping built
+# from these literals (docs/replan-contract.md §2-6).
+
+
+def replan_source(revision, task_id, part=False):
+    return {"revision": revision, "task_id": task_id, "part": part}
+
+
+def replan_task_entry(task, classification, sources=(), redo_reason="",
+                      confirm_verification=(), artifacts=()):
+    return {
+        "task": task,
+        "classification": classification,
+        "sources": [
+            s if isinstance(s, dict) else replan_source(*s) for s in sources
+        ],
+        "redo_reason": redo_reason,
+        "confirm_verification": list(confirm_verification),
+        "artifacts": list(artifacts),
+    }
+
+
+def superseded_entry(revision, task_id, disposition, successors=(), note=""):
+    return {
+        "revision": revision,
+        "task_id": task_id,
+        "disposition": disposition,
+        "successors": list(successors),
+        "note": note,
+    }
+
+
+def with_replan(ir, prior_revision, task_entries, superseded_entries):
+    """Copy of a first-plan IR carrying the declared replan mapping."""
+    out = dict(ir)
+    out["replan"] = {
+        "prior_revision": prior_revision,
+        "tasks": list(task_entries),
+        "superseded": list(superseded_entries),
+    }
+    return out
+
+
 def task_spec(tid, objective="do the thing", deps=(), acceptance=(), verification=(),
               caps=("coding",), complexity="medium", allowed=("src/",), preread=()):
     return {
