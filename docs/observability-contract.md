@@ -1,25 +1,28 @@
-# ORX observability read contract (schema v8)
+# ORX observability read contract (schema v8/v9)
 
-Status: contract for external readers (2026-10-04). This document is the
-supported way to analyze `.orx/state.db` from outside this repository.
-The analysis layer lives at `~/Sources/Tools/orx-analytics/` and is not
-shipped here. ORX stores the rows and defines how to read them.
+Status: contract for external readers (2026-10-04; amended 2026-10-05 for
+v9). This document is the supported way to analyze `.orx/state.db` from
+outside this repository. The analysis layer lives at
+`~/Sources/Tools/orx-analytics/` and is not shipped here. ORX stores the
+rows and defines how to read them.
 
 Readers select named columns. They do not call `Store.open`, and they do
 not migrate. Worked SQL below is the source the contract tests execute
 against `tests/fixtures/observability/seed.sql`.
 
-## Schema version, stability, and the v5-to-v7 amendment
+## Schema version, stability, and the amendments
 
 `meta.schema_version` is the integer version of the file, stored as text.
-This contract is version **7** only.
+The gate accepts **exactly the explicitly supported versions — `8` and
+`9`** and refuses every other value: never a range, never "at least X".
 
 | File value | Reader action |
 |---|---|
 | missing `meta` table, missing `schema_version` row, or a non-integer value | refuse; do not infer a version |
-| integer less than 7 | refuse; do not add columns and do not run ORX migrations |
-| `7` | read |
-| integer greater than 7 | refuse; do not rewrite the file |
+| integer less than 8 (including `7`) | refuse; do not add columns and do not run ORX migrations |
+| `8` | read the sections up to and including the six readings; the v9 replan tables do not exist on a v8 file |
+| `9` | read everything, including the G004 replan correspondence and artifact-provenance queries |
+| integer greater than 9 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -62,12 +65,25 @@ verifier attempt was dispatched for), `actual_model` and `model_source`
 rows stay NULL; no column is back-filled. No table this contract names
 loses a column, so every v7 query runs unchanged on a v8 file.
 
+The third amendment, dated 2026-10-05 (G004 replan correspondence and
+traceable artifact provenance), adds **v9**. v9 is purely additive: six new
+tables (`replan_mappings`, `replan_task_mappings`, `replan_sources`,
+`replan_superseded`, `replan_reports`, `replan_artifact_sources`) plus the
+`evidence` table, which becomes part of the named subset because
+`replan_artifact_sources.evidence_id` references it. No existing table
+changes and no row is rewritten or back-filled — a database upgraded from
+v8 has empty replan tables, and every read on it returns "no
+correspondence recorded" rather than a guess. See the G004 section below
+for the tables and their queries. The gate continues to accept `8`
+explicitly: every query this contract named before the v9 amendment runs
+unchanged on a v8 file, and only the replan queries require `9`.
+
 ```sql
 -- query: schema_gate
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) = '8' THEN 'ok'
+  ) IN ('8', '9') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```
@@ -354,8 +370,9 @@ values, two log files). "Current" is a window over the rows, not the whole
 table — the "Per-attempt verification history and the current view" section
 below gives the exact rule and the queries.
 
-Other tables (`goals`, `evidence`, `routing_decisions`, `resource_status`,
-inbox) are real and are not required for the six readings below.
+Other tables (`goals`, `routing_decisions`, `resource_status`, inbox) are
+real and are not required for the six readings below. `evidence` joined the
+named subset with v9 (see the G004 section).
 
 ## Delivery contract rows (R002 follow-up)
 
@@ -1119,3 +1136,135 @@ SELECT
   SUM(CASE WHEN cached_input_tokens IS NULL THEN 1 ELSE 0 END) AS cached_missing
 FROM usage_observations;
 ```
+
+## G004 replan correspondence, preflight reports, and artifact provenance (v9)
+
+These tables exist only on v9 files. A v8 `ok` from `schema_gate` does not
+make them runnable; readers of replan data must also see
+`meta.schema_version = '9'`. Nothing in ORX derives a correspondence from
+task numbers, and no rule inherits a prior `passed` status into a new plan:
+the declared mapping rows are the only old<->new correspondence, and their
+absence (a first plan, a pre-G004 revision, an upgraded legacy database)
+means unknown — never a guess.
+
+| Table | Column | Null | Meaning |
+|---|---|---|---|
+| `replan_mappings` | `id` | no | mapping row id |
+| | `run_id` | no | run the replan revision belongs to |
+| | `revision_id` | no | `plan_revisions.id` of the replan (new) revision; unique |
+| | `prior_revision` | no | revision number the plan replaces |
+| | `created_at` | no | insert time |
+| `replan_task_mappings` | `id` | no | row id |
+| | `mapping_id` | no | parent mapping |
+| | `run_id`, `revision_id` | no | denormalized run/revision of the new task |
+| | `task_id` | no | the new task; unique with `revision_id` |
+| | `classification` | no | `new`, `confirm`, `redo`, or `continue` |
+| | `redo_reason` | yes | mandatory in the IR when `redo`; NULL when not declared |
+| | `confirm_verification_json` | no | current verification requirements a `confirm` relies on |
+| | `artifacts_json` | no | task-level artifact references declared with the mapping |
+| | `created_at` | no | insert time |
+| `replan_sources` | `id` | no | row id |
+| | `task_mapping_id` | no | the new task's mapping row |
+| | `run_id` | no | run context |
+| | `source_revision` | no | revision **number** of the prior task |
+| | `source_task_id` | no | prior task's short id |
+| | `source_task_row_id` | no | resolved `tasks.id` of the prior task — the anchor that survives renumbering |
+| | `part` | no | 1 when the new task covers only part of the prior task |
+| | `created_at` | no | insert time |
+| `replan_superseded` | `id` | no | row id |
+| | `mapping_id`, `run_id` | no | declaring mapping and run context |
+| | `source_revision`, `source_task_id`, `source_task_row_id` | no | the prior task, full identity |
+| | `disposition` | no | `confirmed`, `continued`, `redone`, `split`, `merged`, `dropped` |
+| | `successors_json` | no | new task ids that took the work over |
+| | `note` | yes | mandatory in the IR when `dropped`; NULL when not declared |
+| `replan_reports` | `id` | no | row id |
+| | `run_id` | no | run the preflight report was produced for |
+| | `prior_revision` | no | revision the pre-check diffed against |
+| | `revision_id` | yes | bound when the proposed revision landed; NULL until then (unknown, never guessed) |
+| | `payload_json` | no | the report document, stored verbatim |
+| `replan_artifact_sources` | `id` | no | row id |
+| | `run_id` | no | run context |
+| | `revision_id`, `task_id` | no | the replan task the reference hangs on |
+| | `source_revision`, `source_task_id` | no | the prior task the artifact came through — a declared edge, not a bare number |
+| | `artifact` | no | the artifact reference (project-relative path or recorded evidence reference) |
+| | `attempt_id` | yes | the source task's own attempt that produced it |
+| | `evidence_id` | yes | the `evidence` row backing it |
+
+Identity rules for these reads:
+
+- Source identity is `(run_id, source_revision, source_task_id)`. The same
+  short `task_id` on two revisions is two tasks; a same-numbered task in
+  another revision never satisfies a source, a successor lookup, or a
+  provenance row.
+- Provenance resolution is `(run_id, revision, task_id, attempt_id)` plus
+  `evidence_id` — four attempts of one task are four distinct provenances.
+- `replan_mappings.revision_id` is unique: a revision declares at most one
+  mapping, and mappings are append-only.
+
+The correspondence read, one row per (new task, source) edge. Tasks with
+classification `new` have no sources and appear with NULL source columns:
+
+```sql
+-- query: replan_correspondence
+SELECT
+  :project_id AS project_id,
+  m.run_id,
+  pr.revision AS revision,
+  tm.task_id,
+  tm.classification,
+  s.source_revision,
+  s.source_task_id,
+  s.part
+FROM replan_mappings m
+JOIN plan_revisions pr ON pr.id = m.revision_id
+JOIN replan_task_mappings tm ON tm.mapping_id = m.id
+LEFT JOIN replan_sources s ON s.task_mapping_id = tm.id
+ORDER BY m.run_id, pr.revision, tm.task_id, s.source_revision, s.source_task_id;
+```
+
+The superseded read, one row per prior-revision task with its declared
+destination:
+
+```sql
+-- query: replan_superseded
+SELECT
+  :project_id AS project_id,
+  x.run_id,
+  pr.revision AS superseded_in_revision,
+  x.source_revision,
+  x.source_task_id,
+  x.disposition,
+  x.successors_json,
+  x.note
+FROM replan_superseded x
+JOIN replan_mappings m ON m.id = x.mapping_id
+JOIN plan_revisions pr ON pr.id = m.revision_id
+ORDER BY x.run_id, x.source_revision, x.source_task_id;
+```
+
+The artifact provenance read. On the fixture, rows 1 and 2 are the same
+source task's two attempts (4 = the failed round, 5 = the retry) and row 3
+binds the retry's completion evidence — the same task number `T001` on
+revisions 1 and 2 never collapses them:
+
+```sql
+-- query: replan_artifact_provenance
+SELECT
+  :project_id AS project_id,
+  a.run_id,
+  pr.revision AS revision,
+  a.task_id,
+  a.source_revision,
+  a.source_task_id,
+  a.artifact,
+  a.attempt_id,
+  a.evidence_id
+FROM replan_artifact_sources a
+JOIN plan_revisions pr ON pr.id = a.revision_id
+ORDER BY a.run_id, pr.revision, a.task_id, a.source_revision,
+         a.source_task_id, a.attempt_id, a.id;
+```
+
+`successors_json` is JSON text; read it as a list of new-revision task ids
+inside `superseded_in_revision`. A successor id still only resolves
+together with that revision number.

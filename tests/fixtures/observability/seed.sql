@@ -1,4 +1,4 @@
--- Schema v8 subset for the observability read contract.
+-- Schema v9 subset for the observability read contract.
 -- Column names and nullability match src/orx/state.py. This file is data
 -- only: applying it does not open Store and does not migrate anything.
 --
@@ -19,6 +19,15 @@
 -- and the agent verifier (attempt 6, row 1) then failed the round. Rows 9
 -- and 10 are the per-attempt history the pre-R002 semantics deleted on
 -- retry; they stay, and only attempt 5's window is the current result.
+--
+-- v9 (G004) replan subset: revision 2 declares the correspondence that made
+-- it effective — 2:T001 redoes 1:T001 (the round that failed its gate and
+-- the agent verdict), every other revision 1 task is dropped with a note.
+-- Artifact provenance rows hang on that declared edge and distinguish the
+-- source task's two attempts (4 = the failed round, 5 = the retry) plus the
+-- retry's completion evidence (evidence row 1). Identity everywhere is
+-- (run, revision, task_id) and attempt/evidence row ids — the bare task
+-- number T001, which exists on both revisions, resolves nothing.
 
 PRAGMA foreign_keys = ON;
 
@@ -154,7 +163,88 @@ CREATE TABLE usage_observations (
   created_at TEXT NOT NULL
 );
 
-INSERT INTO meta(key, value) VALUES ('schema_version', '8');
+CREATE TABLE evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- v9 (G004) replan storage subset: correspondence, reports, provenance.
+
+CREATE TABLE replan_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  prior_revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(revision_id)
+);
+
+CREATE TABLE replan_task_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES replan_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  task_id TEXT NOT NULL,
+  classification TEXT NOT NULL CHECK (classification IN ('new','confirm','redo','continue')),
+  redo_reason TEXT,
+  confirm_verification_json TEXT NOT NULL DEFAULT '[]',
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  UNIQUE(revision_id, task_id)
+);
+
+CREATE TABLE replan_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_mapping_id INTEGER NOT NULL REFERENCES replan_task_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  source_task_row_id INTEGER NOT NULL REFERENCES tasks(id),
+  part INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(task_mapping_id, source_revision, source_task_id)
+);
+
+CREATE TABLE replan_superseded (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES replan_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  source_task_row_id INTEGER NOT NULL REFERENCES tasks(id),
+  disposition TEXT NOT NULL CHECK (disposition IN ('confirmed','continued','redone','split','merged','dropped')),
+  successors_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(mapping_id, source_revision, source_task_id)
+);
+
+CREATE TABLE replan_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  prior_revision INTEGER NOT NULL,
+  revision_id INTEGER REFERENCES plan_revisions(id),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE replan_artifact_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  task_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  artifact TEXT NOT NULL,
+  attempt_id INTEGER REFERENCES attempts(id),
+  evidence_id INTEGER REFERENCES evidence(id),
+  created_at TEXT NOT NULL
+);
+
+INSERT INTO meta(key, value) VALUES ('schema_version', '9');
 
 INSERT INTO goals(id, objective, status, created_at, updated_at)
 VALUES ('G001', 'fixture', 'done',
@@ -320,3 +410,71 @@ INSERT INTO usage_observations(
    '2026-10-04T02:40:00.000000+00:00'),
   (7, 8, 'cursor-economy', 'R001', 'T002', 99, 99, 99, 'native_cli', 'exact',
    '2026-10-04T01:31:00.000000+00:00');
+
+-- The retry's completion evidence (attempt 5, the round that ran the gate
+-- green before the agent verdict failed the task).
+INSERT INTO evidence(id, attempt_id, kind, path, created_at)
+VALUES (1, 5, 'completion', '.orx/runs/R001/evidence/T001-5.json',
+        '2026-10-04T02:00:30.000000+00:00');
+
+-- Revision 2's declared correspondence (G004 v9): 2:T001 redoes 1:T001;
+-- every other revision 1 task is dropped with a note. Source identity is
+-- the (revision, task_id) pair plus the resolved tasks row id.
+INSERT INTO replan_mappings(id, run_id, revision_id, prior_revision, created_at)
+VALUES (1, 'R001', 2, 1, '2026-10-04T02:04:00.000000+00:00');
+
+INSERT INTO replan_task_mappings(
+  id, mapping_id, run_id, revision_id, task_id, classification, redo_reason,
+  confirm_verification_json, artifacts_json, created_at
+) VALUES
+  (1, 1, 'R001', 2, 'T001', 'redo',
+   'revision 1 T001 failed its command gate and the agent verdict; the restructured plan does the work again',
+   '[]', '["docs/observability-contract.md"]',
+   '2026-10-04T02:04:00.000000+00:00');
+
+INSERT INTO replan_sources(
+  id, task_mapping_id, run_id, source_revision, source_task_id,
+  source_task_row_id, part, created_at
+) VALUES
+  (1, 1, 'R001', 1, 'T001', 10, 0, '2026-10-04T02:04:00.000000+00:00');
+
+INSERT INTO replan_superseded(
+  id, mapping_id, run_id, source_revision, source_task_id, source_task_row_id,
+  disposition, successors_json, note, created_at
+) VALUES
+  (1, 1, 'R001', 1, 'T001', 10, 'redone', '["T001"]', NULL,
+   '2026-10-04T02:04:00.000000+00:00'),
+  (2, 1, 'R001', 1, 'T002', 11, 'dropped', '[]',
+   'clean pass retired with revision 1',
+   '2026-10-04T02:04:00.000000+00:00'),
+  (3, 1, 'R001', 1, 'T003', 12, 'dropped', '[]',
+   'first-acceptance fixture row retired with revision 1',
+   '2026-10-04T02:04:00.000000+00:00'),
+  (4, 1, 'R001', 1, 'T004', 13, 'dropped', '[]',
+   'retry-history fixture row retired with revision 1',
+   '2026-10-04T02:04:00.000000+00:00');
+
+-- The preflight report produced before revision 2 took effect; bound to the
+-- revision that landed.
+INSERT INTO replan_reports(
+  id, run_id, prior_revision, revision_id, payload_json, created_at
+) VALUES
+  (1, 'R001', 1, 2,
+   '{"correspondence": [{"from": "1:T001", "to": "2:T001", "classification": "redo"}], "classification_counts": {"new": 0, "confirm": 0, "redo": 1, "continue": 0}, "dropped": ["1:T002", "1:T003", "1:T004"]}',
+   '2026-10-04T02:03:00.000000+00:00');
+
+-- Traceable artifact provenance on the declared (2:T001 <-> 1:T001) edge:
+-- the same source task's two attempts stay distinct rows (4 = the round
+-- that failed the gate, 5 = the retry), and evidence row 1 binds the
+-- retry's completion. The task number T001 appears on both revisions; only
+-- the (revision, task_id, attempt) identity resolves these rows.
+INSERT INTO replan_artifact_sources(
+  id, run_id, revision_id, task_id, source_revision, source_task_id, artifact,
+  attempt_id, evidence_id, created_at
+) VALUES
+  (1, 'R001', 2, 'T001', 1, 'T001', '.orx/runs/R001/check/T001/0001-a4-command.log',
+   4, NULL, '2026-10-04T02:04:00.000000+00:00'),
+  (2, 'R001', 2, 'T001', 1, 'T001', '.orx/runs/R001/check/T001/0002-a5-command.log',
+   5, NULL, '2026-10-04T02:04:00.000000+00:00'),
+  (3, 'R001', 2, 'T001', 1, 'T001', '.orx/runs/R001/evidence/T001-5.json',
+   5, 1, '2026-10-04T02:04:00.000000+00:00');

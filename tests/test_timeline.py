@@ -34,6 +34,13 @@ SCHEMA_TABLES = {
     "usage_observations",
     "external_events",
     "inbox_items",
+    # v9 (G004): replan correspondence, preflight reports, artifact provenance
+    "replan_mappings",
+    "replan_task_mappings",
+    "replan_sources",
+    "replan_superseded",
+    "replan_reports",
+    "replan_artifact_sources",
 }
 
 

@@ -30,6 +30,9 @@ QUERIES = (
     "rework",
     "coverage",
     "coverage_fields",
+    "replan_correspondence",
+    "replan_superseded",
+    "replan_artifact_provenance",
 )
 
 _FENCE = re.compile(r"```sql\n(.*?)```", re.S)
@@ -114,7 +117,9 @@ def _write_was_rejected(conn: sqlite3.Connection) -> bool:
     return False
 
 
-def test_schema_gate_refuses_anything_but_v8(tmp_path: Path):
+def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
+    """The gate is an explicit allowlist (8 and 9), never a range: every
+    other value — older, newer, or malformed — is refused."""
     queries = load_queries()
     db = tmp_path / "state.db"
     build_db(db)
@@ -124,7 +129,8 @@ def test_schema_gate_refuses_anything_but_v8(tmp_path: Path):
     finally:
         conn.close()
 
-    for value in ("7", "9", "v8", None):
+    for value, expected in (("8", "ok"), ("7", "refuse"), ("10", "refuse"),
+                            ("v9", "refuse"), (None, "refuse")):
         sample = tmp_path / f"state-{value}.db"
         build_db(sample)
         writer = sqlite3.connect(sample)
@@ -141,7 +147,7 @@ def test_schema_gate_refuses_anything_but_v8(tmp_path: Path):
             writer.close()
         reader = open_readonly(sample)
         try:
-            assert run(reader, queries["schema_gate"])[0]["decision"] == "refuse"
+            assert run(reader, queries["schema_gate"])[0]["decision"] == expected, value
         finally:
             reader.close()
 
@@ -364,5 +370,57 @@ def test_verification_history_and_current_window_split_rounds():
             if row["revision_id"] == 1 and row["task_id"] == "T003"
         ]
         assert rev1_t003 == [4, 5]
+    finally:
+        conn.close()
+
+
+def test_replan_reads_resolve_identity_not_task_numbers():
+    """The G004 reads key on (run, revision, task_id) plus attempt/evidence
+    row ids: the short id T001 exists on revisions 1 and 2, and only the
+    full identity tells the mapped task, its source, and the two attempts
+    of that source apart."""
+    queries = load_queries()
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SEED.read_text())
+    try:
+        # No mapping rows for revision 1 at all: first plans and legacy
+        # revisions simply have no correspondence rows to read.
+        rows = run(conn, queries["replan_correspondence"])
+        assert [(r["run_id"], r["revision"], r["task_id"], r["classification"],
+                 r["source_revision"], r["source_task_id"], r["part"])
+                for r in rows] == [
+            ("R001", 2, "T001", "redo", 1, "T001", 0),
+        ]
+        # The one row carries T001 as BOTH the revision 2 task and the
+        # revision 1 source: the same number, two revisions, two tasks —
+        # the row only exists because the mapping declared the pair.
+
+        superseded = run(conn, queries["replan_superseded"])
+        assert [(r["source_revision"], r["source_task_id"], r["disposition"],
+                 r["successors_json"]) for r in superseded] == [
+            (1, "T001", "redone", '["T001"]'),
+            (1, "T002", "dropped", "[]"),
+            (1, "T003", "dropped", "[]"),
+            (1, "T004", "dropped", "[]"),
+        ]
+        assert all(r["note"] for r in superseded if r["disposition"] == "dropped")
+        assert {r["superseded_in_revision"] for r in superseded} == {2}
+
+        provenance = run(conn, queries["replan_artifact_provenance"])
+        assert [(r["revision"], r["task_id"], r["source_revision"],
+                 r["source_task_id"], r["artifact"], r["attempt_id"], r["evidence_id"])
+                for r in provenance] == [
+            # same source task (1, T001), three provenances: the failed
+            # round's attempt 4, the retry's attempt 5, and the retry's
+            # completion evidence row 1 — never collapsed by task number.
+            (2, "T001", 1, "T001",
+             ".orx/runs/R001/check/T001/0001-a4-command.log", 4, None),
+            (2, "T001", 1, "T001",
+             ".orx/runs/R001/check/T001/0002-a5-command.log", 5, None),
+            (2, "T001", 1, "T001",
+             ".orx/runs/R001/evidence/T001-5.json", 5, 1),
+        ]
+        assert len({r["attempt_id"] for r in provenance}) == 2
     finally:
         conn.close()

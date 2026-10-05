@@ -1,6 +1,6 @@
 # 重规划对应关系与工作分类契约（G004）
 
-创建：2026-10-05。状态：契约与纯校验已实现（阶段 1）；状态库接线与执行面引用见 §9 阶段划分。
+创建：2026-10-05。状态：契约与纯校验已实现（阶段 1）；存储接口与 v9 持久化已实现（阶段 3 的落库部分，T002）；dispatch 接线与执行面引用见 §9 阶段划分。
 
 本文件是 Plan IR 重规划映射（`replan` 字段）的正式契约：新计划修订生效前，必须产出
 新旧任务的对应关系与工作分类；成果（artifact/evidence）按此对应关系引用，而不是按任务编号。
@@ -10,7 +10,8 @@
 - 字段与解析：`src/orx/plan.py`（`ReplanMapping` / `ReplanTaskMapping` / `ReplanSource` / `ReplanSuperseded`）
 - 枚举：`src/orx/records.py`（`ReplanClassification` / `SupersededDisposition`）
 - 校验：`plan.validate_ir`（结构内检）与 `plan.validate_replan`（对照历史的外检，纯函数）
-- 行为测试：`tests/test_plan_ir.py`
+- 持久化：`src/orx/state.py` 的 `Store.replan_*` 接口（schema v9，additive 迁移；见 `docs/observability-contract.md` 的 v9 修订）
+- 行为测试：`tests/test_plan_ir.py`（纯校验）、`tests/test_state.py`（存储与迁移）
 
 ---
 
@@ -143,15 +144,29 @@ R003 复盘曾提出"12M token 浪费在重做"并据此建议自动继承旧 pa
 成果按可追溯的对应关系引用：`ReplanTaskMapping.artifacts` 挂在"新任务 ↔ 来源"的
 边上，引用项目相对路径或已记录的证据（结构上仅要求非空字符串；指向是否恰当属
 语义审查）。规划提示词明确要求"经由对应关系引用成果，绝不按任务编号引用"。
+
+存储面（阶段 3 的落库部分，schema v9，已交付）：`state.Store.replan_mapping_save`
+把声明的映射规范成可查询的行（映射头、任务分类、来源边、旧任务去向）；来源以
+`(run, 修订, 任务)` 解析到具体任务行，同号任务在另一修订中不满足解析。
+`Store.replan_artifact_source_add` 在**已声明的**（新任务 ↔ 来源）边上记录成果出处，
+每行保留 Run、修订、来源任务全身份、来源任务自身的 attempt、evidence 行与成果引用；
+attempt 与来源身份不符（同号不同修订）即拒绝。预检报告经 `replan_report_add` /
+`replan_report_bind` 落库：修订落地前 `revision_id` 为 NULL（unknown，不猜测）。
 执行面（worker 指派、验证提示词）按此边引用旧成果的接线在后续阶段（§9）。
 
 ## 9. 实施阶段与当前状态
 
-- **阶段 1（本次，已交付）**：本契约 + IR 字段 + 纯校验 + 行为测试 + 规划提示词同步。
+- **阶段 1（已交付）**：本契约 + IR 字段 + 纯校验 + 行为测试 + 规划提示词同步。
 - **阶段 2**：dispatch 接线——重规划提交强制携带映射，`validate_replan` 以快照数据
   调用；拒绝路径保持 exit codes 0/1/2 与 `--json` envelope 不变量。
-- **阶段 3**：持久化——映射随任务落库（additive 整数版本迁移，backup-replace-restore），
-  `orx status` 呈现对应关系。
+- **阶段 3**：
+  - **落库（已交付，T002）**：存储接口 + additive 整数版本迁移 v9
+    （`replan_mappings` / `replan_task_mappings` / `replan_sources` /
+    `replan_superseded` / `replan_reports` / `replan_artifact_sources` 六表，
+    backup-replace-restore 流程保持，v8 旧库升级后新表为空、历史缺失保持
+    unknown）；多轮追溯（`replan_trace_chain`）、拆分/合并、数据库重新打开后
+    均可查询；观测读取契约同步至 v9（gate 只接受明确支持的版本 8/9）。
+  - `orx status` 呈现对应关系（待做）。
 - **阶段 4**：worker/verifier 提示词与证据按对应关系引用旧成果（不再按编号）。
 - **阶段 5**：端到端 dogfood + 全量回归 + 契约文档终审。
 
@@ -160,5 +175,9 @@ R003 复盘曾提出"12M token 浪费在重做"并据此建议自动继承旧 pa
 - 首次计划：`"replan": null`（或省略键）照常解析、校验；`to_dict()` 输出形状不变
   （exclude_none）。
 - 历史 IR：无 `replan` 键的既有文档照常可读；`replan` 内外未知字段同样被忽略。
-- M0/M1/M1.2 不变量不受影响：本阶段无迁移、无 CLI 行为变化，exit codes 与
-  `--json` envelope 约定原样。
+- 存储迁移（T002）：v9 为 additive 整数版本迁移，只新增表、不改既有表、不回填
+  任何行；迁移走既有 backup-replace-restore（先迁移副本、成功后替换），失败时
+  原库保持 v8 可继续使用。旧任务、attempt、evidence、verification 记录原样保留；
+  没有 passed 状态继承，也没有按编号猜测的对应关系。
+- M0/M1/M1.2 不变量不受影响：exit codes 与 `--json` envelope 约定原样；观测读取
+  gate 从单值 `8` 变为显式白名单 `8`/`9`（既有六个读数查询不变）。

@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from orx import dispatch, machine
-from orx.records import ConflictError, MigrationError, TaskStatus
+from orx import dispatch, machine, plan
+from orx.records import ConflictError, MigrationError, NotFoundError, ORXError, TaskStatus
 from orx.state import Store
 import orx.state as state_mod
 
@@ -57,11 +57,36 @@ ALTER TABLE usage_observations_old RENAME TO usage_observations;
 """)
 
 
+REPLAN_V9_TABLES = (
+    "replan_mappings",
+    "replan_task_mappings",
+    "replan_sources",
+    "replan_superseded",
+    "replan_reports",
+    "replan_artifact_sources",
+)
+
+
+def _drop_v9_tables(conn) -> None:
+    """Drop the v9 replan tables so a reopen has to recreate them, as a real
+    v8 file would look."""
+    for table in reversed(REPLAN_V9_TABLES):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+def _mk_revision(store: Store, run_id: str, task_ids: list[str]) -> int:
+    """A revision row with real task rows, for replan storage tests."""
+    rev = store.revision_create(run_id, "standard", "host-planner", {"tasks": task_ids})
+    for tid in task_ids:
+        store.task_insert(rev.id, tid, f"objective {tid}", {}, [], [], {}, "pending")
+    return rev.id
+
+
 def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 8
+        assert store.schema_version() == 9
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -73,6 +98,9 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
             "tasks", "task_dependencies", "task_events", "attempts", "evidence",
             "verifications", "routing_decisions", "resource_status",
             "external_events", "inbox_items",
+            # v9 (G004): replan correspondence, preflight reports, and
+            # traceable artifact provenance, additive on top of v8.
+            *REPLAN_V9_TABLES,
         }
         assert expected <= names
         # v5: fresh databases create attempts with the isolation column in
@@ -307,7 +335,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 8
+        assert reopened.schema_version() == 9
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -342,7 +370,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 8
+        assert reopened.schema_version() == 9
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -382,7 +410,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 8
+        assert reopened.schema_version() == 9
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -486,7 +514,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 8
+        assert reopened.schema_version() == 9
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -572,10 +600,479 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 8
+            assert reopened.schema_version() == 9
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()
     finally:
         writer.close()
     assert not list(tmp_path.glob("wal.db.migrate-*"))
+
+
+# ---------------------------------------------------------------------------
+# G004 replan storage (schema v9): correspondence, reports, provenance
+
+
+def _worker_attempt(store: Store, revision_row_id: int, task_id: str):
+    return store.attempt_create(
+        revision_row_id=revision_row_id,
+        role="worker",
+        profile="host-worker",
+        driver="host",
+        harness="zcode",
+        model_id="m-worker",
+        requested_effort="high",
+        task_id=task_id,
+    )
+
+
+def test_replan_mapping_persists_renumbered_correspondence(project, goal):
+    """A declared mapping round-trips as queryable rows keyed by
+    (revision, task_id) on both ends, so renumbered tasks stay traceable in
+    both directions; a second save for one revision is a conflict."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    rev1 = _mk_revision(store, run.id, ["T001", "T002", "T003"])
+    # Real terminal history on the old task: attempts, evidence, and a
+    # verification row must all survive the replan storage untouched.
+    attempt = _worker_attempt(store, rev1, "T001")
+    store.attempt_update(attempt.id, ended_at="2026-10-05T00:00:00+00:00", result="completed")
+    store.evidence_add(attempt.id, "completion", ".orx/runs/R001/evidence/T001-1.json")
+    store.verification_add(rev1, "T001", "command", "true", True, attempt_id=attempt.id)
+    store.task_update_status(rev1, "T001", TaskStatus.PASSED)
+    store.revision_mark_superseded(rev1)
+
+    rev2 = _mk_revision(store, run.id, ["T101", "T102", "T103"])
+    mapping = plan.ReplanMapping(
+        prior_revision=1,
+        tasks=[
+            plan.ReplanTaskMapping(
+                task="T101", classification="confirm",
+                sources=[plan.ReplanSource(revision=1, task_id="T001")],
+                confirm_verification=["true"],
+            ),
+            plan.ReplanTaskMapping(
+                task="T102", classification="redo",
+                sources=[plan.ReplanSource(revision=1, task_id="T002")],
+                redo_reason="the interface changed under us",
+            ),
+            plan.ReplanTaskMapping(task="T103", classification="new"),
+        ],
+        superseded=[
+            plan.ReplanSuperseded(revision=1, task_id="T001", disposition="confirmed",
+                                  successors=["T101"]),
+            plan.ReplanSuperseded(revision=1, task_id="T002", disposition="redone",
+                                  successors=["T102"]),
+            plan.ReplanSuperseded(revision=1, task_id="T003", disposition="dropped",
+                                  successors=[], note="out of scope now"),
+        ],
+    )
+    saved = store.replan_mapping_save(rev2, mapping)
+    assert saved.run_id == run.id
+    assert saved.revision_id == rev2
+    assert saved.prior_revision == 1
+    by_task = {t.task_id: t for t in saved.tasks}
+    assert set(by_task) == {"T101", "T102", "T103"}
+    assert by_task["T101"].classification == "confirm"
+    assert by_task["T101"].confirm_verification == ["true"]
+    assert [(s.source_revision, s.source_task_id, s.part) for s in by_task["T101"].sources] == [
+        (1, "T001", False)
+    ]
+    assert by_task["T102"].redo_reason == "the interface changed under us"
+    assert by_task["T102"].classification == "redo"
+    assert by_task["T103"].sources == []  # new work claims no prior task
+    by_source = {s.source_task_id: s for s in saved.superseded}
+    assert by_source["T001"].disposition == "confirmed"
+    assert by_source["T001"].successors == ["T101"]
+    assert by_source["T003"].disposition == "dropped"
+    assert by_source["T003"].note == "out of scope now"
+
+    # Trace forward across the renumbering: T001's successor is T101, found
+    # by (run, revision, task_id) — never by task number.
+    successors = store.replan_successors_for_source(run.id, 1, "T001")
+    assert [(s.revision, s.task_id, s.classification) for s in successors] == [
+        (2, "T101", "confirm")
+    ]
+    # Trace backward: the new task's sources read back the same way.
+    sources = store.replan_sources_for_task(rev2, "T102")
+    assert [(s.source_revision, s.source_task_id, s.part) for s in sources] == [
+        (1, "T002", False)
+    ]
+    # A source that does not resolve inside the run is refused, not guessed
+    # (on a fresh revision, so the append-only conflict cannot mask it).
+    rev3 = _mk_revision(store, run.id, ["T201"])
+    with pytest.raises(NotFoundError, match="T999"):
+        store.replan_mapping_save(rev3, plan.ReplanMapping(
+            prior_revision=1,
+            tasks=[plan.ReplanTaskMapping(
+                task="T201", classification="confirm",
+                sources=[plan.ReplanSource(revision=1, task_id="T999")],
+            )],
+        ))
+    assert store.replan_mapping_for(rev3) is None  # the failed save left nothing
+    # Declared mappings are append-only per revision.
+    with pytest.raises(ConflictError):
+        store.replan_mapping_save(rev2, mapping)
+
+    # Reopen: the mapping and the untouched legacy rows stay queryable.
+    db_path = store.path
+    project.close()
+    reopened = Store.open(db_path)
+    try:
+        assert reopened.schema_version() == 9
+        again = reopened.replan_mapping_for(rev2)
+        assert again is not None
+        assert {t.task_id: t.classification for t in again.tasks} == {
+            "T101": "confirm", "T102": "redo", "T103": "new",
+        }
+        # Revision 1 has no mapping: unknown, never backfilled.
+        assert reopened.replan_mapping_for(rev1) is None
+        # The old task's attempts, evidence, and verification rows are intact.
+        assert [a.id for a in reopened.attempts_all()] == [attempt.id]
+        assert reopened.evidence_for_task(rev1, "T001") == [
+            ("completion", ".orx/runs/R001/evidence/T001-1.json")
+        ]
+        verifications = reopened.verifications_for(rev1, "T001")
+        assert len(verifications) == 1 and verifications[0].passed
+        assert verifications[0].attempt_id == attempt.id
+        assert reopened.task_get(rev1, "T001").status == "passed"  # recorded fact, not inherited
+    finally:
+        reopened.close()
+
+
+def test_replan_trace_chain_spans_rounds_split_and_merge(project, goal):
+    """Multi-round tracing: a split (one old task into two new), then a merge
+    (two old tasks into one), each round renumbering — the chain stays
+    queryable across all of it."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    rev1 = _mk_revision(store, run.id, ["T001"])
+    store.revision_mark_superseded(rev1)
+    rev2 = _mk_revision(store, run.id, ["T101", "T102"])
+    store.replan_mapping_save(rev2, plan.ReplanMapping(
+        prior_revision=1,
+        tasks=[
+            plan.ReplanTaskMapping(
+                task="T101", classification="redo",
+                sources=[plan.ReplanSource(revision=1, task_id="T001", part=True)],
+                redo_reason="half the approach was wrong",
+            ),
+            plan.ReplanTaskMapping(
+                task="T102", classification="continue",
+                sources=[plan.ReplanSource(revision=1, task_id="T001", part=True)],
+            ),
+        ],
+        superseded=[
+            plan.ReplanSuperseded(revision=1, task_id="T001", disposition="split",
+                                  successors=["T101", "T102"]),
+        ],
+    ))
+    store.revision_mark_superseded(rev2)
+    rev3 = _mk_revision(store, run.id, ["T201"])
+    store.replan_mapping_save(rev3, plan.ReplanMapping(
+        prior_revision=2,
+        tasks=[
+            plan.ReplanTaskMapping(
+                task="T201", classification="confirm",
+                sources=[plan.ReplanSource(revision=2, task_id="T101"),
+                         plan.ReplanSource(revision=2, task_id="T102")],
+                confirm_verification=["true"],
+            ),
+        ],
+        superseded=[
+            plan.ReplanSuperseded(revision=2, task_id="T101", disposition="merged",
+                                  successors=["T201"]),
+            plan.ReplanSuperseded(revision=2, task_id="T102", disposition="merged",
+                                  successors=["T201"]),
+        ],
+    ))
+
+    assert [m.revision_id for m in store.replan_mappings_for_run(run.id)] == [rev2, rev3]
+    chain = store.replan_trace_chain(run.id, 1, "T001")
+    steps = [
+        (s.from_revision, s.from_task_id, s.to_revision, s.to_task_id, s.classification, s.part)
+        for s in chain
+    ]
+    assert steps == [
+        (1, "T001", 2, "T101", "redo", True),      # split, part 1
+        (1, "T001", 2, "T102", "continue", True),  # split, part 2
+        (2, "T101", 3, "T201", "confirm", False),  # merge, part 1
+        (2, "T102", 3, "T201", "confirm", False),  # merge, part 2
+    ]
+    # A mid-chain start traces only the remaining rounds.
+    tail = store.replan_trace_chain(run.id, 2, "T102")
+    assert [(s.from_revision, s.to_revision, s.to_task_id) for s in tail] == [
+        (2, 3, "T201")
+    ]
+    # A task with no successors ends the chain.
+    assert store.replan_trace_chain(run.id, 3, "T201") == []
+
+    # Still queryable after a reopen.
+    db_path = store.path
+    project.close()
+    reopened = Store.open(db_path)
+    try:
+        assert len(reopened.replan_trace_chain(run.id, 1, "T001")) == 4
+        assert reopened.replan_successors_for_source(run.id, 1, "T001")[0].task_id == "T101"
+    finally:
+        reopened.close()
+
+
+def test_replan_artifact_sources_bind_full_identity(project, goal):
+    """Artifact provenance resolves by full identity: the same task number in
+    a different revision never matches, and two attempts of the same source
+    task stay distinct rows."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    rev1 = _mk_revision(store, run.id, ["T001", "T002"])
+    store.revision_mark_superseded(rev1)
+    # Same task number on a new revision: different work by definition.
+    rev2 = _mk_revision(store, run.id, ["T001"])
+    store.replan_mapping_save(rev2, plan.ReplanMapping(
+        prior_revision=1,
+        tasks=[plan.ReplanTaskMapping(
+            task="T001", classification="redo",
+            sources=[plan.ReplanSource(revision=1, task_id="T001")],
+            redo_reason="the old result did not hold",
+        )],
+        superseded=[plan.ReplanSuperseded(revision=1, task_id="T001", disposition="redone",
+                                          successors=["T001"])],
+    ))
+    first_round = _worker_attempt(store, rev1, "T001")
+    retry_round = _worker_attempt(store, rev1, "T001")  # second attempt, same task
+    store.evidence_add(retry_round.id, "completion", ".orx/runs/R001/evidence/T001-retry.json")
+    new_round = _worker_attempt(store, rev2, "T001")  # same NUMBER, revision 2
+
+    # An attempt of the wrong revision (same task number) must be refused.
+    with pytest.raises(ORXError, match="belongs to"):
+        store.replan_artifact_source_add(
+            run.id, rev2, "T001", 1, "T001", "not-this-one.json", attempt_id=new_round.id,
+        )
+    # An artifact edge must be a declared correspondence, not a bare number.
+    with pytest.raises(ORXError, match="no declared correspondence edge"):
+        store.replan_artifact_source_add(
+            run.id, rev2, "T001", 1, "T002", "undeclared-edge.json",
+        )
+
+    row_a = store.replan_artifact_source_add(
+        run.id, rev2, "T001", 1, "T001",
+        ".orx/runs/R001/check/T001/0001-a4-command.log", attempt_id=first_round.id,
+    )
+    row_b = store.replan_artifact_source_add(
+        run.id, rev2, "T001", 1, "T001",
+        ".orx/runs/R001/check/T001/0002-a5-command.log", attempt_id=retry_round.id,
+    )
+    # Same source task, different attempts: distinct provenance rows.
+    assert row_a.attempt_id == first_round.id
+    assert row_b.attempt_id == retry_round.id
+    assert row_a.id != row_b.id
+
+    # Evidence carries its own recorded attempt binding.
+    evidence_id = store.conn.execute(
+        "SELECT id FROM evidence WHERE attempt_id = ?", (retry_round.id,)
+    ).fetchone()["id"]
+    row_c = store.replan_artifact_source_add(
+        run.id, rev2, "T001", 1, "T001",
+        ".orx/runs/R001/evidence/T001-retry.json", evidence_id=evidence_id,
+    )
+    assert row_c.evidence_id == evidence_id
+    assert row_c.attempt_id == retry_round.id  # the evidence row's own binding
+    # Evidence and attempt that disagree are refused.
+    with pytest.raises(ORXError, match="belongs to attempt"):
+        store.replan_artifact_source_add(
+            run.id, rev2, "T001", 1, "T001", "mismatch.json",
+            attempt_id=first_round.id, evidence_id=evidence_id,
+        )
+    # An identical reference is idempotent.
+    again = store.replan_artifact_source_add(
+        run.id, rev2, "T001", 1, "T001",
+        ".orx/runs/R001/check/T001/0001-a4-command.log", attempt_id=first_round.id,
+    )
+    assert again.id == row_a.id
+
+    # Reads: by new task, and back by source task — full identity everywhere.
+    by_task = store.replan_artifact_sources_for_task(rev2, "T001")
+    assert [r.attempt_id for r in by_task] == [
+        first_round.id, retry_round.id, retry_round.id,
+    ]
+    by_source = store.replan_artifact_sources_for_source(run.id, 1, "T001")
+    assert [(r.artifact, r.attempt_id, r.evidence_id) for r in by_source] == [
+        (".orx/runs/R001/check/T001/0001-a4-command.log", first_round.id, None),
+        (".orx/runs/R001/check/T001/0002-a5-command.log", retry_round.id, None),
+        (".orx/runs/R001/evidence/T001-retry.json", retry_round.id, evidence_id),
+    ]
+    # The revision-2 task of the same number has no provenance of its own.
+    assert store.replan_artifact_sources_for_task(rev2, "T001") != (
+        store.replan_artifact_sources_for_task(rev1, "T001")
+    )
+    assert store.replan_artifact_sources_for_task(rev1, "T001") == []
+
+    # Reopen keeps the provenance queryable.
+    db_path = store.path
+    project.close()
+    reopened = Store.open(db_path)
+    try:
+        rows = reopened.replan_artifact_sources_for_task(rev2, "T001")
+        assert [r.attempt_id for r in rows] == [
+            first_round.id, retry_round.id, retry_round.id,
+        ]
+    finally:
+        reopened.close()
+
+
+def test_replan_report_pending_then_bound(project, goal):
+    """A preflight report is stored verbatim with its revision unbound
+    (unknown) until the revision lands and the caller binds it."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    _mk_revision(store, run.id, ["T001"])
+
+    report = store.replan_report_add(run.id, 1, {
+        "correspondence": [{"from": "1:T001", "to": "2:T101", "classification": "confirm"}],
+        "classification_counts": {"new": 0, "confirm": 1, "redo": 0, "continue": 0},
+    })
+    assert report.revision_id is None  # unknown until the revision lands
+    assert report.payload["classification_counts"]["confirm"] == 1
+
+    rev2 = _mk_revision(store, run.id, ["T101"])
+    store.replan_report_bind(report.id, rev2)
+    got = store.replan_reports_for_run(run.id)
+    assert [r.id for r in got] == [report.id]
+    assert got[0].revision_id == rev2
+    assert got[0].prior_revision == 1
+    # Binding is one-shot; a different revision is a conflict.
+    rev3 = _mk_revision(store, run.id, ["T201"])
+    with pytest.raises(ConflictError):
+        store.replan_report_bind(report.id, rev3)
+
+
+def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
+    """A v8 database gains the replan tables on reopen; every legacy task,
+    attempt, evidence, and verification row survives; nothing is backfilled
+    into the new tables — unknown stays unknown."""
+    db = tmp_path / "v8.db"
+    store = Store.open(db)  # code is v9; build a v8 db by hand
+    goal, run = store.goal_create("legacy objective", ["keep this"], [], "")
+    rev1 = store.revision_create(run.id, "standard", "legacy-planner", {"tasks": ["T001"]}).id
+    store.task_insert(rev1, "T001", "legacy task", {}, ["keep this"], ["true"], {}, "passed")
+    attempt = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="legacy", driver="host",
+        harness="zcode", model_id="m", requested_effort="high", task_id="T001",
+    )
+    store.evidence_add(attempt.id, "completion", ".orx/runs/R001/evidence/legacy.json")
+    store.verification_add(rev1, "T001", "command", "true", True, attempt_id=attempt.id)
+    _drop_v9_tables(store.conn)
+    store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
+    store.close()
+    check = sqlite3.connect(db)
+    tables_before = {
+        r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    check.close()
+    assert not set(REPLAN_V9_TABLES) <= tables_before
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 9
+        tables = {
+            r["name"]
+            for r in reopened.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert set(REPLAN_V9_TABLES) <= tables
+        # Legacy rows are intact, byte for byte in meaning.
+        assert reopened.goal_get(goal.id).objective == "legacy objective"
+        task = reopened.tasks_all(rev1)[0]
+        assert (task.task_id, task.status, task.acceptance) == ("T001", "passed", ["keep this"])
+        stored_attempt = reopened.attempts_all()[0]
+        assert stored_attempt.task_id == "T001" and stored_attempt.id == attempt.id
+        assert reopened.evidence_for_task(rev1, "T001") == [
+            ("completion", ".orx/runs/R001/evidence/legacy.json")
+        ]
+        verifications = reopened.verifications_for(rev1, "T001")
+        assert len(verifications) == 1 and verifications[0].passed
+        assert verifications[0].attempt_id == attempt.id
+        # The new tables are empty: no guessed correspondence, no invented
+        # report, no provenance, and no mapping derived from the passed task.
+        assert reopened.replan_mapping_for(rev1) is None
+        assert reopened.replan_mappings_for_run(run.id) == []
+        assert reopened.replan_reports_for_run(run.id) == []
+        assert reopened.replan_artifact_sources_for_task(rev1, "T001") == []
+        assert reopened.replan_successors_for_source(run.id, 1, "T001") == []
+        assert reopened.replan_trace_chain(run.id, 1, "T001") == []
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v8.db.migrate-*")), "stale migration backups"
+
+
+def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch):
+    """A failing v9 migration leaves the v8 file untouched and usable; a
+    later clean open migrates it normally."""
+    db = tmp_path / "keep9.db"
+    store = Store.open(db)
+    goal, _run = store.goal_create("do not lose", ["a"], [], "")
+    _drop_v9_tables(store.conn)
+    store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
+    store.close()
+
+    def boom(_conn):
+        raise RuntimeError("v9 failed")
+
+    monkeypatch.setitem(state_mod.MIGRATIONS, 9, boom)
+    with pytest.raises(RuntimeError, match="v9 failed"):
+        Store.open(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        objective = conn.execute(
+            "SELECT objective FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()[0]
+        assert version == "8"
+        assert objective == "do not lose"
+    finally:
+        conn.close()
+    assert not list(tmp_path.glob("keep9.db.migrate-*"))
+
+    # The v8 original is still usable: reopening without the sabotage
+    # migrates it and keeps the row.
+    monkeypatch.undo()
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 9
+        assert reopened.goal_get(goal.id).objective == "do not lose"
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("keep9.db.migrate-*"))
+
+
+def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
+    """A commit that still lives in the WAL must survive the v8 -> v9
+    replacement, and the temporary migration files must be gone."""
+    db = tmp_path / "wal9.db"
+    store = Store.open(db)
+    _drop_v9_tables(store.conn)
+    store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
+    store.close()
+
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(
+        "INSERT INTO goals(id, objective, constraints_json, acceptance_json, context,"
+        " status, created_at, updated_at) VALUES('G888', 'wal kept 9', '[]', '[]', '',"
+        " 'done', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+    )
+    writer.commit()
+    try:
+        reopened = Store.open(db)
+        try:
+            assert reopened.schema_version() == 9
+            assert reopened.goal_get("G888").objective == "wal kept 9"
+        finally:
+            reopened.close()
+    finally:
+        writer.close()
+    assert not list(tmp_path.glob("wal9.db.migrate-*"))

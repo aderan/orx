@@ -498,11 +498,12 @@ def test_submit_unknown_attempt_rejected(sub_planned, tmp_path):
 
 def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
     """A v7 database (attempts without the subagent contract columns) upgrades
-    on reopen; existing rows survive with NULLs (never invented)."""
+    on reopen through v8 to v9; existing rows survive with NULLs (never
+    invented) and the v9 replan tables come along additively."""
     import sqlite3
 
     db = tmp_path / "v7.db"
-    store = Store.open(db)  # code is v8; build a v7 db by hand
+    store = Store.open(db)  # code is v9; build a v7 db by hand
     store.conn.execute("ALTER TABLE attempts DROP COLUMN verify_entry")
     store.conn.execute("ALTER TABLE attempts DROP COLUMN actual_model")
     store.conn.execute("ALTER TABLE attempts DROP COLUMN model_source")
@@ -515,20 +516,29 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 8
+        assert reopened.schema_version() == 9
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert {"verify_entry", "actual_model", "model_source"} <= columns
         legacy = reopened.attempts_all()[0]
         assert legacy.verify_entry is None
         assert legacy.actual_model is None
         assert legacy.model_source is None
+        # v9 replan tables arrive empty on the upgraded file (G004).
+        tables = {
+            r["name"]
+            for r in reopened.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "replan_mappings" in tables and "replan_artifact_sources" in tables
+        assert reopened.replan_mappings_for_run("R001") == []
     finally:
         reopened.close()
     check = sqlite3.connect(db)
     try:
         assert check.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "8"
+        ).fetchone()[0] == "9"
     finally:
         check.close()
     assert not list(tmp_path.glob("v7.db.migrate-*")), "stale migration backups"

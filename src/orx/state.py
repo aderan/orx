@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 8
+CODE_SCHEMA_VERSION = 9
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -436,6 +436,97 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+# v9: G004 replan storage (docs/replan-contract.md §8-9, observability read
+# contract v9 amendment). Additive only: six new tables for the replan
+# correspondence, the preflight report, and traceable artifact provenance.
+# Identity everywhere is (run_id, revision, task_id) — never a bare task
+# number — plus attempt/evidence row ids on provenance. Nothing is
+# backfilled: a database upgraded from v8 has empty replan tables, reads on
+# it return unknown (None / []), and no code path derives a correspondence
+# or inherits a prior passed status.
+SCHEMA_V9_REPLAN = """
+CREATE TABLE IF NOT EXISTS replan_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  prior_revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(revision_id)
+);
+
+CREATE TABLE IF NOT EXISTS replan_task_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES replan_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  task_id TEXT NOT NULL,
+  classification TEXT NOT NULL CHECK (classification IN ('new','confirm','redo','continue')),
+  redo_reason TEXT,
+  confirm_verification_json TEXT NOT NULL DEFAULT '[]',
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  UNIQUE(revision_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS replan_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_mapping_id INTEGER NOT NULL REFERENCES replan_task_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  source_task_row_id INTEGER NOT NULL REFERENCES tasks(id),
+  part INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE(task_mapping_id, source_revision, source_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS replan_superseded (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mapping_id INTEGER NOT NULL REFERENCES replan_mappings(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  source_task_row_id INTEGER NOT NULL REFERENCES tasks(id),
+  disposition TEXT NOT NULL CHECK (disposition IN ('confirmed','continued','redone','split','merged','dropped')),
+  successors_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(mapping_id, source_revision, source_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS replan_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  prior_revision INTEGER NOT NULL,
+  revision_id INTEGER REFERENCES plan_revisions(id),
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS replan_artifact_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+  task_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL,
+  source_task_id TEXT NOT NULL,
+  artifact TEXT NOT NULL,
+  attempt_id INTEGER REFERENCES attempts(id),
+  evidence_id INTEGER REFERENCES evidence(id),
+  created_at TEXT NOT NULL
+);
+"""
+
+
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V9_REPLAN)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -446,6 +537,7 @@ MIGRATIONS: dict[int, callable] = {
     6: _migrate_v6,
     7: _migrate_v7,
     8: _migrate_v8,
+    9: _migrate_v9,
 }
 
 
@@ -600,6 +692,125 @@ class RoutingDecision:
     reason: str | None
     downgrade_blocked: bool
     created_at: str
+
+
+@dataclass(frozen=True)
+class ReplanSourceRow:
+    """One declared source edge (docs/replan-contract.md §5).
+
+    Identity is the (source_revision, source_task_id) pair inside the
+    mapping's run; source_task_row_id is the resolved tasks row so the
+    correspondence is mechanically anchored even when tasks are renumbered.
+    """
+
+    id: int
+    task_mapping_id: int
+    run_id: str
+    source_revision: int
+    source_task_id: str
+    source_task_row_id: int
+    part: bool
+
+
+@dataclass(frozen=True)
+class ReplanTaskMappingRow:
+    id: int
+    mapping_id: int
+    run_id: str
+    revision_id: int
+    task_id: str
+    classification: str
+    redo_reason: str | None
+    confirm_verification: list[str]
+    artifacts: list[str]
+    sources: list[ReplanSourceRow] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ReplanSupersededRow:
+    id: int
+    mapping_id: int
+    run_id: str
+    source_revision: int
+    source_task_id: str
+    source_task_row_id: int
+    disposition: str
+    successors: list[str]
+    note: str | None
+
+
+@dataclass(frozen=True)
+class ReplanMappingRow:
+    """One replan revision's declared old<->new correspondence."""
+
+    id: int
+    run_id: str
+    revision_id: int
+    prior_revision: int
+    created_at: str
+    tasks: list[ReplanTaskMappingRow] = field(default_factory=list)
+    superseded: list[ReplanSupersededRow] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ReplanReportRow:
+    """A replan preflight report (the pre-check diff before a revision lands).
+
+    revision_id is NULL until the proposed revision actually lands and the
+    caller binds it; a NULL is unknown, never guessed.
+    """
+
+    id: int
+    run_id: str
+    prior_revision: int
+    revision_id: int | None
+    payload: dict
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ReplanArtifactSourceRow:
+    """Traceable artifact provenance on a declared (task <-> source) edge.
+
+    Carries run, revision (the replan revision), the source task's full
+    (revision, task_id) identity, the producing attempt and evidence row
+    when known, and the artifact reference itself. A same-numbered task in
+    another revision never satisfies this identity.
+    """
+
+    id: int
+    run_id: str
+    revision_id: int
+    task_id: str
+    source_revision: int
+    source_task_id: str
+    artifact: str
+    attempt_id: int | None
+    evidence_id: int | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ReplanSuccessorRow:
+    """The new-revision task that took over one old task."""
+
+    revision_id: int
+    revision: int
+    task_id: str
+    classification: str
+    part: bool
+
+
+@dataclass(frozen=True)
+class ReplanTraceStep:
+    """One hop of a forward trace across replan rounds."""
+
+    from_revision: int
+    from_task_id: str
+    to_revision: int
+    to_task_id: str
+    classification: str
+    part: bool
 
 
 @dataclass(frozen=True)
@@ -762,6 +973,73 @@ def _decision(r: sqlite3.Row) -> RoutingDecision:
         selected=r["selected"],
         reason=r["reason"],
         downgrade_blocked=bool(r["downgrade_blocked"]),
+        created_at=r["created_at"],
+    )
+
+
+def _replan_source(r: sqlite3.Row) -> ReplanSourceRow:
+    return ReplanSourceRow(
+        id=r["id"],
+        task_mapping_id=r["task_mapping_id"],
+        run_id=r["run_id"],
+        source_revision=r["source_revision"],
+        source_task_id=r["source_task_id"],
+        source_task_row_id=r["source_task_row_id"],
+        part=bool(r["part"]),
+    )
+
+
+def _replan_task_mapping(r: sqlite3.Row, sources: list[ReplanSourceRow]) -> ReplanTaskMappingRow:
+    return ReplanTaskMappingRow(
+        id=r["id"],
+        mapping_id=r["mapping_id"],
+        run_id=r["run_id"],
+        revision_id=r["revision_id"],
+        task_id=r["task_id"],
+        classification=r["classification"],
+        redo_reason=r["redo_reason"],
+        confirm_verification=_j(r["confirm_verification_json"], []),
+        artifacts=_j(r["artifacts_json"], []),
+        sources=list(sources),
+    )
+
+
+def _replan_superseded(r: sqlite3.Row) -> ReplanSupersededRow:
+    return ReplanSupersededRow(
+        id=r["id"],
+        mapping_id=r["mapping_id"],
+        run_id=r["run_id"],
+        source_revision=r["source_revision"],
+        source_task_id=r["source_task_id"],
+        source_task_row_id=r["source_task_row_id"],
+        disposition=r["disposition"],
+        successors=_j(r["successors_json"], []),
+        note=r["note"],
+    )
+
+
+def _replan_report(r: sqlite3.Row) -> ReplanReportRow:
+    return ReplanReportRow(
+        id=r["id"],
+        run_id=r["run_id"],
+        prior_revision=r["prior_revision"],
+        revision_id=r["revision_id"],
+        payload=_j(r["payload_json"], {}),
+        created_at=r["created_at"],
+    )
+
+
+def _replan_artifact_source(r: sqlite3.Row) -> ReplanArtifactSourceRow:
+    return ReplanArtifactSourceRow(
+        id=r["id"],
+        run_id=r["run_id"],
+        revision_id=r["revision_id"],
+        task_id=r["task_id"],
+        source_revision=r["source_revision"],
+        source_task_id=r["source_task_id"],
+        artifact=r["artifact"],
+        attempt_id=r["attempt_id"],
+        evidence_id=r["evidence_id"],
         created_at=r["created_at"],
     )
 
@@ -1595,6 +1873,409 @@ class Store:
             (revision_row_id, task_id, boundary),
         ).fetchall()
         return [_verification(r) for r in rows]
+
+    # -- replan correspondence / reports / artifact provenance (G004) ------
+
+    def _replan_task_row_id(self, run_id: str, revision: int, task_id: str) -> int:
+        """Resolve a (revision number, task_id) pair inside one run to its
+        tasks row. Identity is the pair, never the bare task number: the same
+        task_id on another revision of the same run is different work and
+        never satisfies this lookup."""
+        row = self.conn.execute(
+            "SELECT t.id AS task_row_id FROM tasks t"
+            " JOIN plan_revisions pr ON pr.id = t.revision_id"
+            " WHERE pr.run_id = ? AND pr.revision = ? AND t.task_id = ?",
+            (run_id, revision, task_id),
+        ).fetchone()
+        if not row:
+            raise records.NotFoundError(
+                f"replan task ({run_id}, revision {revision}, {task_id}) not found"
+            )
+        return row["task_row_id"]
+
+    def _replan_mapping_assemble(self, header: sqlite3.Row) -> ReplanMappingRow:
+        mid = header["id"]
+        tasks: list[ReplanTaskMappingRow] = []
+        for t in self.conn.execute(
+            "SELECT * FROM replan_task_mappings WHERE mapping_id = ? ORDER BY id", (mid,)
+        ).fetchall():
+            sources = [
+                _replan_source(s)
+                for s in self.conn.execute(
+                    "SELECT * FROM replan_sources WHERE task_mapping_id = ? ORDER BY id",
+                    (t["id"],),
+                ).fetchall()
+            ]
+            tasks.append(_replan_task_mapping(t, sources))
+        superseded = [
+            _replan_superseded(s)
+            for s in self.conn.execute(
+                "SELECT * FROM replan_superseded WHERE mapping_id = ?"
+                " ORDER BY source_revision, source_task_id, id",
+                (mid,),
+            ).fetchall()
+        ]
+        return ReplanMappingRow(
+            id=mid,
+            run_id=header["run_id"],
+            revision_id=header["revision_id"],
+            prior_revision=header["prior_revision"],
+            created_at=header["created_at"],
+            tasks=tasks,
+            superseded=superseded,
+        )
+
+    def replan_mapping_save(self, revision_row_id: int, mapping) -> ReplanMappingRow:
+        """Persist one declared replan correspondence (docs/replan-contract.md §3).
+
+        ``mapping`` is a ``plan.ReplanMapping`` (duck-typed): ``prior_revision``,
+        ``tasks`` (task / classification / sources / redo_reason /
+        confirm_verification / artifacts) and ``superseded`` declarations.
+        Every source and superseded entry resolves by (revision, task_id)
+        inside the revision's run — an unresolvable pair is an error, not a
+        guess — and each new task must exist in the revision. Mappings are
+        append-only per revision: saving a second mapping for one revision is
+        a ConflictError. Nothing here derives a correspondence from task
+        numbers or inherits a prior passed status.
+        """
+        with self.tx():
+            rev = self.conn.execute(
+                "SELECT id, run_id FROM plan_revisions WHERE id = ?", (revision_row_id,)
+            ).fetchone()
+            if not rev:
+                raise records.NotFoundError(f"plan revision row {revision_row_id} not found")
+            existing = self.conn.execute(
+                "SELECT id FROM replan_mappings WHERE revision_id = ?", (revision_row_id,)
+            ).fetchone()
+            if existing:
+                raise records.ConflictError(
+                    f"revision row {revision_row_id} already has replan mapping {existing['id']};"
+                    " declared mappings are append-only"
+                )
+            ts = now()
+            revision_number = self.conn.execute(
+                "SELECT revision FROM plan_revisions WHERE id = ?", (revision_row_id,)
+            ).fetchone()["revision"]
+            cur = self.conn.execute(
+                "INSERT INTO replan_mappings(run_id, revision_id, prior_revision, created_at)"
+                " VALUES(?,?,?,?)",
+                (rev["run_id"], revision_row_id, int(mapping.prior_revision), ts),
+            )
+            mid = cur.lastrowid
+            for t in mapping.tasks:
+                try:
+                    classification = records.ReplanClassification(t.classification).value
+                except ValueError:
+                    raise records.ORXError(
+                        f"invalid replan classification {t.classification!r} for task {t.task}"
+                    ) from None
+                # The mapped task must be a task of this revision.
+                self._replan_task_row_id(rev["run_id"], revision_number, t.task)
+                tcur = self.conn.execute(
+                    "INSERT INTO replan_task_mappings(mapping_id, run_id, revision_id, task_id,"
+                    " classification, redo_reason, confirm_verification_json, artifacts_json,"
+                    " created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (mid, rev["run_id"], revision_row_id, t.task, classification,
+                     t.redo_reason or None, json.dumps(t.confirm_verification),
+                     json.dumps(t.artifacts), ts),
+                )
+                for s in t.sources:
+                    source_row_id = self._replan_task_row_id(rev["run_id"], s.revision, s.task_id)
+                    self.conn.execute(
+                        "INSERT INTO replan_sources(task_mapping_id, run_id, source_revision,"
+                        " source_task_id, source_task_row_id, part, created_at)"
+                        " VALUES(?,?,?,?,?,?,?)",
+                        (tcur.lastrowid, rev["run_id"], s.revision, s.task_id,
+                         source_row_id, 1 if s.part else 0, ts),
+                    )
+            for s in mapping.superseded:
+                try:
+                    disposition = records.SupersededDisposition(s.disposition).value
+                except ValueError:
+                    raise records.ORXError(
+                        f"invalid superseded disposition {s.disposition!r}"
+                        f" for ({s.revision}, {s.task_id})"
+                    ) from None
+                source_row_id = self._replan_task_row_id(rev["run_id"], s.revision, s.task_id)
+                self.conn.execute(
+                    "INSERT INTO replan_superseded(mapping_id, run_id, source_revision,"
+                    " source_task_id, source_task_row_id, disposition, successors_json,"
+                    " note, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (mid, rev["run_id"], s.revision, s.task_id, source_row_id,
+                     disposition, json.dumps(s.successors), s.note or None, ts),
+                )
+        return self.replan_mapping_for(revision_row_id)  # type: ignore[return-value]
+
+    def replan_mapping_for(self, revision_row_id: int) -> ReplanMappingRow | None:
+        """The declared mapping of one revision, or None when no mapping was
+        recorded (a first plan, a pre-G004 revision, or an upgraded legacy
+        database). None means unknown; it is never filled by inference."""
+        header = self.conn.execute(
+            "SELECT * FROM replan_mappings WHERE revision_id = ?", (revision_row_id,)
+        ).fetchone()
+        if not header:
+            return None
+        return self._replan_mapping_assemble(header)
+
+    def replan_mappings_for_run(self, run_id: str) -> list[ReplanMappingRow]:
+        """Every mapping declared in a run, oldest revision first — the
+        multi-round trace input."""
+        headers = self.conn.execute(
+            "SELECT m.* FROM replan_mappings m"
+            " JOIN plan_revisions pr ON pr.id = m.revision_id"
+            " WHERE m.run_id = ? ORDER BY pr.revision, m.id",
+            (run_id,),
+        ).fetchall()
+        return [self._replan_mapping_assemble(h) for h in headers]
+
+    def replan_sources_for_task(self, revision_row_id: int, task_id: str) -> list[ReplanSourceRow]:
+        """The declared sources of one replan task (trace backward)."""
+        rows = self.conn.execute(
+            "SELECT s.* FROM replan_sources s"
+            " JOIN replan_task_mappings tm ON tm.id = s.task_mapping_id"
+            " WHERE tm.revision_id = ? AND tm.task_id = ? ORDER BY s.id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [_replan_source(r) for r in rows]
+
+    def replan_successors_for_source(
+        self, run_id: str, source_revision: int, source_task_id: str
+    ) -> list[ReplanSuccessorRow]:
+        """The new-revision tasks that took over one old task (trace forward
+        across renumbering): identity is (run, source_revision, task_id)."""
+        rows = self.conn.execute(
+            "SELECT pr.id AS revision_id, pr.revision AS revision, tm.task_id AS task_id,"
+            " tm.classification AS classification, s.part AS part"
+            " FROM replan_sources s"
+            " JOIN replan_task_mappings tm ON tm.id = s.task_mapping_id"
+            " JOIN replan_mappings m ON m.id = tm.mapping_id"
+            " JOIN plan_revisions pr ON pr.id = m.revision_id"
+            " WHERE s.run_id = ? AND s.source_revision = ? AND s.source_task_id = ?"
+            " ORDER BY pr.revision, tm.task_id",
+            (run_id, source_revision, source_task_id),
+        ).fetchall()
+        return [
+            ReplanSuccessorRow(
+                revision_id=r["revision_id"],
+                revision=r["revision"],
+                task_id=r["task_id"],
+                classification=r["classification"],
+                part=bool(r["part"]),
+            )
+            for r in rows
+        ]
+
+    def replan_trace_chain(
+        self, run_id: str, revision: int, task_id: str
+    ) -> list[ReplanTraceStep]:
+        """Forward trace across replan rounds: every hop that carries this
+        task's work forward, through renumbering, splits (one task to many
+        successors), merges (many sources into one task), and sources that
+        reach back past prior_revision. Hop order is by revision, then task.
+        A cycle in malformed data cannot loop forever: each (from, to) hop
+        is emitted once."""
+        steps: list[ReplanTraceStep] = []
+        emitted: set[tuple[int, str, int, str]] = set()
+        frontier = {(revision, task_id)}
+        mappings = self.conn.execute(
+            "SELECT m.id AS mapping_id, pr.revision AS revision FROM replan_mappings m"
+            " JOIN plan_revisions pr ON pr.id = m.revision_id"
+            " WHERE m.run_id = ? ORDER BY pr.revision, m.id",
+            (run_id,),
+        ).fetchall()
+        for m in mappings:
+            edges = self.conn.execute(
+                "SELECT s.source_revision AS source_revision, s.source_task_id AS source_task_id,"
+                " tm.task_id AS task_id, tm.classification AS classification, s.part AS part"
+                " FROM replan_sources s"
+                " JOIN replan_task_mappings tm ON tm.id = s.task_mapping_id"
+                " WHERE tm.mapping_id = ? ORDER BY tm.task_id, s.source_revision, s.source_task_id",
+                (m["mapping_id"],),
+            ).fetchall()
+            for e in edges:
+                key = (e["source_revision"], e["source_task_id"])
+                if key not in frontier:
+                    continue
+                hop = (key[0], key[1], m["revision"], e["task_id"])
+                if hop in emitted:
+                    continue
+                emitted.add(hop)
+                steps.append(
+                    ReplanTraceStep(
+                        from_revision=key[0],
+                        from_task_id=key[1],
+                        to_revision=m["revision"],
+                        to_task_id=e["task_id"],
+                        classification=e["classification"],
+                        part=bool(e["part"]),
+                    )
+                )
+                frontier.add((m["revision"], e["task_id"]))
+        return steps
+
+    def replan_report_add(self, run_id: str, prior_revision: int, payload: dict) -> ReplanReportRow:
+        """Store one replan preflight report (the pre-check diff produced
+        before a new revision takes effect). The report is a document; ORX
+        stores it verbatim and never edits it afterwards."""
+        with self.tx():
+            cur = self.conn.execute(
+                "INSERT INTO replan_reports(run_id, prior_revision, revision_id,"
+                " payload_json, created_at) VALUES(?,?,NULL,?,?)",
+                (run_id, int(prior_revision), json.dumps(payload), now()),
+            )
+            rid = cur.lastrowid
+        r = self.conn.execute("SELECT * FROM replan_reports WHERE id = ?", (rid,)).fetchone()
+        return _replan_report(r)
+
+    def replan_report_bind(self, report_id: int, revision_row_id: int) -> None:
+        """Bind a preflight report to the revision that actually landed.
+        Binding is one-shot: re-binding the same revision is a no-op and a
+        different revision is a ConflictError."""
+        with self.tx():
+            row = self.conn.execute(
+                "SELECT revision_id FROM replan_reports WHERE id = ?", (report_id,)
+            ).fetchone()
+            if not row:
+                raise records.NotFoundError(f"replan report {report_id} not found")
+            rev = self.conn.execute(
+                "SELECT id FROM plan_revisions WHERE id = ?", (revision_row_id,)
+            ).fetchone()
+            if not rev:
+                raise records.NotFoundError(f"plan revision row {revision_row_id} not found")
+            if row["revision_id"] is not None and row["revision_id"] != revision_row_id:
+                raise records.ConflictError(
+                    f"replan report {report_id} is already bound to revision row"
+                    f" {row['revision_id']}"
+                )
+            self.conn.execute(
+                "UPDATE replan_reports SET revision_id = ? WHERE id = ?",
+                (revision_row_id, report_id),
+            )
+
+    def replan_reports_for_run(self, run_id: str) -> list[ReplanReportRow]:
+        rows = self.conn.execute(
+            "SELECT * FROM replan_reports WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+        return [_replan_report(r) for r in rows]
+
+    def replan_artifact_source_add(
+        self,
+        run_id: str,
+        revision_row_id: int,
+        task_id: str,
+        source_revision: int,
+        source_task_id: str,
+        artifact: str,
+        attempt_id: int | None = None,
+        evidence_id: int | None = None,
+    ) -> ReplanArtifactSourceRow:
+        """Record one traceable artifact provenance row on a declared
+        (task <-> source) edge.
+
+        Artifacts are referenced through the correspondence, never by a bare
+        task number: the edge must exist in this revision's declared mapping.
+        ``attempt_id`` must be an attempt of the source task itself — the
+        same task_id in another revision does not match. ``evidence_id``
+        carries its own recorded attempt binding; when only evidence is
+        given, that binding is the provenance attempt (a stored fact, not a
+        guess). An identical row already stored is returned unchanged.
+        """
+        with self.tx():
+            edge = self.conn.execute(
+                "SELECT tm.id FROM replan_task_mappings tm"
+                " JOIN replan_sources s ON s.task_mapping_id = tm.id"
+                " WHERE tm.revision_id = ? AND tm.task_id = ?"
+                " AND s.source_revision = ? AND s.source_task_id = ?",
+                (revision_row_id, task_id, source_revision, source_task_id),
+            ).fetchone()
+            if not edge:
+                raise records.ORXError(
+                    f"no declared correspondence edge for (revision row {revision_row_id},"
+                    f" {task_id}) <-> ({source_revision}, {source_task_id});"
+                    " artifacts are referenced through the mapping, not by task number"
+                )
+            if evidence_id is not None:
+                ev = self.conn.execute(
+                    "SELECT id, attempt_id FROM evidence WHERE id = ?", (evidence_id,)
+                ).fetchone()
+                if not ev:
+                    raise records.NotFoundError(f"evidence {evidence_id} not found")
+                if attempt_id is None:
+                    # the evidence row's own recorded binding is the fact
+                    attempt_id = ev["attempt_id"]
+                elif ev["attempt_id"] != attempt_id:
+                    raise records.ORXError(
+                        f"evidence {evidence_id} belongs to attempt {ev['attempt_id']},"
+                        f" not attempt {attempt_id}"
+                    )
+            if attempt_id is not None:
+                a = self.conn.execute(
+                    "SELECT a.id AS id, a.task_id AS task_id, pr.revision AS revision,"
+                    " pr.run_id AS run_id FROM attempts a"
+                    " LEFT JOIN plan_revisions pr ON pr.id = a.revision_id"
+                    " WHERE a.id = ?",
+                    (attempt_id,),
+                ).fetchone()
+                if not a:
+                    raise records.NotFoundError(f"attempt {attempt_id} not found")
+                if (
+                    a["run_id"] != run_id
+                    or a["revision"] != source_revision
+                    or a["task_id"] != source_task_id
+                ):
+                    raise records.ORXError(
+                        f"attempt {attempt_id} belongs to ({a['run_id']}, revision"
+                        f" {a['revision']}, task {a['task_id']}); the declared source is"
+                        f" ({run_id}, revision {source_revision}, task {source_task_id})"
+                        " — provenance must name the source task's own attempt,"
+                        " never a same-numbered task in another revision"
+                    )
+            existing = self.conn.execute(
+                "SELECT * FROM replan_artifact_sources WHERE revision_id = ? AND task_id = ?"
+                " AND source_revision = ? AND source_task_id = ? AND artifact = ?"
+                " AND attempt_id IS ? AND evidence_id IS ?",
+                (revision_row_id, task_id, source_revision, source_task_id, artifact,
+                 attempt_id, evidence_id),
+            ).fetchone()
+            if existing:
+                return _replan_artifact_source(existing)
+            self.conn.execute(
+                "INSERT INTO replan_artifact_sources(run_id, revision_id, task_id,"
+                " source_revision, source_task_id, artifact, attempt_id, evidence_id,"
+                " created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (run_id, revision_row_id, task_id, source_revision, source_task_id,
+                 artifact, attempt_id, evidence_id, now()),
+            )
+        r = self.conn.execute(
+            "SELECT * FROM replan_artifact_sources WHERE run_id = ? AND revision_id = ?"
+            " AND task_id = ? AND source_revision = ? AND source_task_id = ? AND artifact = ?"
+            " AND attempt_id IS ? AND evidence_id IS ? ORDER BY id DESC LIMIT 1",
+            (run_id, revision_row_id, task_id, source_revision, source_task_id, artifact,
+             attempt_id, evidence_id),
+        ).fetchone()
+        return _replan_artifact_source(r)
+
+    def replan_artifact_sources_for_task(
+        self, revision_row_id: int, task_id: str
+    ) -> list[ReplanArtifactSourceRow]:
+        """Every provenance row hanging on one replan task, oldest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM replan_artifact_sources WHERE revision_id = ? AND task_id = ?"
+            " ORDER BY id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [_replan_artifact_source(r) for r in rows]
+
+    def replan_artifact_sources_for_source(
+        self, run_id: str, source_revision: int, source_task_id: str
+    ) -> list[ReplanArtifactSourceRow]:
+        """Every provenance row citing one old task as its source."""
+        rows = self.conn.execute(
+            "SELECT * FROM replan_artifact_sources WHERE run_id = ? AND source_revision = ?"
+            " AND source_task_id = ? ORDER BY id",
+            (run_id, source_revision, source_task_id),
+        ).fetchall()
+        return [_replan_artifact_source(r) for r in rows]
 
     # -- routing decisions ---------------------------------------------------------
 

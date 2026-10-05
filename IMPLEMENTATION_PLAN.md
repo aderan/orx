@@ -94,8 +94,18 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
       `replan_snapshot` 的任务行调用；缺失/不一致按 PlanValidationError 拒绝。
 - [ ] 首次计划仍不要求映射；exit codes 0/1/2 与 `--json` envelope 不变量测试。
 
-### 阶段 3：持久化与呈现 — Not Started
-- [ ] 映射随修订落库（additive 整数版本迁移，backup-replace-restore 流程）。
+### 阶段 3：持久化与呈现 — In Progress（落库部分 Done，T002，R004）
+- [x] 存储接口 + 映射/预检报告/可追溯成果来源落库（schema v9 additive 整数版本迁移：
+      `replan_mappings`/`replan_task_mappings`/`replan_sources`/`replan_superseded`/
+      `replan_reports`/`replan_artifact_sources` 六表；backup-replace-restore 保持；
+      v8→v9 失败原库可用、WAL 已提交记录不丢；旧库升级后新表为空，历史缺失保持
+      unknown，无回填、无 passed 继承）。
+- [x] 多轮追溯与身份规则：来源以 (run, 修订, 任务) 解析并锚定任务行；成果出处保留
+      Run/修订/来源任务/attempt/evidence/成果身份，同号任务不同修订或不同 attempt
+      不混淆（`replan_trace_chain` 跨轮、拆分、合并、重编号、重新打开可查询）。
+- [x] 观测读取契约同步 v9：gate 只接受明确支持的版本（8/9 白名单），既有查询不变，
+      新增 replan_correspondence/replan_superseded/replan_artifact_provenance 三查询
+      + 旧库构造夹具（seed.sql v9 子集）。
 - [ ] `orx status` / 快照呈现新旧对应关系与分类。
 
 ### 阶段 4：成果按对应关系引用 — Not Started
@@ -108,3 +118,7 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
 
 ## G004 轮次记录
 - 2026-10-05 R4 T001：阶段 1 完成并自验（见上证据行）。
+- 2026-10-05 R4 T002：阶段 3 落库部分完成——schema v9 additive 迁移 + `Store.replan_*`
+  存储接口（对应关系/预检报告/成果出处）+ 多轮追溯 + 观测契约 v9 同步；
+  `uv run pytest -q tests/test_state.py tests/test_subagent_contract.py
+  tests/test_m12_acceptance.py tests/test_observability_contract.py` 56 绿。

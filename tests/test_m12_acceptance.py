@@ -51,7 +51,7 @@ def test_m12_acceptance_integration(tmp_path: Path, monkeypatch):
     fresh = tmp_path / "fresh.db"
     opened = Store.open(fresh)
     try:
-        assert opened.schema_version() == 8
+        assert opened.schema_version() == 9
         assert {"session_ref", "run_id", "usage_missing_reason"} <= _columns(opened.conn, "attempts")
         assert {"started_at", "completed_at"} <= _columns(opened.conn, "runs")
     finally:
@@ -77,7 +77,7 @@ def test_m12_acceptance_integration(tmp_path: Path, monkeypatch):
 
     upgraded = Store.open(legacy)
     try:
-        assert upgraded.schema_version() == 8
+        assert upgraded.schema_version() == 9
         migrated = upgraded.run_get(run.id)
         assert migrated.started_at is None and migrated.completed_at is None
         assert migrated.updated_at == "2099-01-01T00:00:00+00:00"
