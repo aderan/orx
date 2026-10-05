@@ -57,3 +57,54 @@ Stage 5 验收 case（用户已确认）：StockMate 新样本外窗口评估（
 - 新开发 Goal：宿主加载 `orx-pbv` skill，按其 SKILL.md 走 Round 0（`orx init`/doctor/约束提取/编号对齐 reports/pbv 旧序列）→ `orx goal new` → `orx plan`；每轮 Build 前按授权策略处理否决点。
 - 中断恢复：`orx status --json` + 最近 round-N.md + `git log` 三步定位（详见 skills/orx-pbv/references/migration.md 与 StockMate docs/pbv-migration.md）。
 - 定期评估重跑：`uv run stockmate periodic-evaluate --output-dir reports/periodic`（窗口自 2026-10-08 积累；同输入幂等、新截止独立运行）。
+
+---
+
+# G004：重规划差异预检与成果引用（2026-10-05 起）
+
+Goal：新计划修订生效前，产出新旧任务对应关系与工作分类（已完成只需确认仍有效、
+新增工作、确实需要重做＋重做原因），成果按可追溯的对应关系引用而非按任务编号。
+
+硬约束（约束原文为据）：
+- 不做旧 passed 状态自动继承：R003 复盘中"12M token 浪费在重做"的证据不成立
+  （不同计划修订中的同号任务被误判为同一工作），不据此开发自动继承功能。
+- M0/M1/M1.2 不变量保持：exit codes 0/1/2、`--json` envelope、additive
+  integer-versioned migrations with backup-replace-restore。
+- 契约：`docs/replan-contract.md`（权威字段与结构/语义边界）。
+
+## 五阶段实施计划
+
+状态图例沿用：Not Started / In Progress / Done（以证据为准）。
+
+### 阶段 1：正式契约与纯校验 — Done（T001，R004）
+- [x] 行为测试先行（tests/test_plan_ir.py 新增 37 例：分类/来源/去向/重做原因/
+      当前验证/双向一致性/同号不自动对应/拆分合并部分对应/round-trip/提示词）。
+- [x] `records.py`：`ReplanClassification`（new|confirm|redo|continue）、
+      `SupersededDisposition`（confirmed|continued|redone|split|merged|dropped）。
+- [x] `plan.py`：`ReplanMapping`/`ReplanTaskMapping`/`ReplanSource`/`ReplanSuperseded`
+      模型；`validate_ir` 结构内检 + `validate_replan(ir, prior_tasks)` 纯外检；
+      `PLAN_IR_SCHEMA` 与 planner 提示词同步（首计划 `"replan": null`）。
+- [x] `docs/replan-contract.md`：字段、四种对应形态、旧任务去向、结构检查 vs
+      语义审查边界、R003 说法不作事实依据的声明。
+- [x] `to_dict()` exclude_none：首计划输出形状不变；历史 IR 照常可读。
+- 证据：`uv run pytest -q tests/test_plan_ir.py` 74 绿；全量 561 绿（524 存量 + 37 新增）。
+
+### 阶段 2：dispatch 接线 — Not Started
+- [ ] 重规划提交（存在先前修订）强制携带 `replan` 映射：`validate_replan` 以
+      `replan_snapshot` 的任务行调用；缺失/不一致按 PlanValidationError 拒绝。
+- [ ] 首次计划仍不要求映射；exit codes 0/1/2 与 `--json` envelope 不变量测试。
+
+### 阶段 3：持久化与呈现 — Not Started
+- [ ] 映射随修订落库（additive 整数版本迁移，backup-replace-restore 流程）。
+- [ ] `orx status` / 快照呈现新旧对应关系与分类。
+
+### 阶段 4：成果按对应关系引用 — Not Started
+- [ ] worker/verifier 提示词经 `artifacts` 边引用旧成果，不按任务编号。
+- [ ] 证据文件引用与对应关系挂钩的行为测试。
+
+### 阶段 5：端到端 dogfood 与终审 — Not Started
+- [ ] 真实重规划场景走通：确认/新增/重做/延续四类齐全，成果引用可追溯。
+- [ ] 全量回归 + 契约文档终审（结构/语义边界仍清晰）。
+
+## G004 轮次记录
+- 2026-10-05 R4 T001：阶段 1 完成并自验（见上证据行）。

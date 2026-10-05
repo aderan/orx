@@ -14,7 +14,15 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orx import records
-from orx.records import PlanDepth, PlanSyntaxError
+from orx.records import (
+    PlanDepth,
+    PlanSyntaxError,
+    ReplanClassification,
+    SupersededDisposition,
+    TaskStatus,
+    TERMINAL_TASK_STATUSES,
+    parse_enum,
+)
 
 TASK_ID_RE = re.compile(r"^T\d+$")
 
@@ -60,15 +68,75 @@ class PlanTask(BaseModel):
     routing: TaskRouting
 
 
+class ReplanSource(BaseModel):
+    """One prior-revision task a replan task corresponds to.
+
+    Identity is the (revision, task_id) pair — never the task number alone:
+    the same number in a different revision is different work. ``part=True``
+    says the replan task covers only part of the prior task's objective
+    (splits and partial correspondences).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    revision: int
+    task_id: str
+    part: bool = False
+
+
+class ReplanTaskMapping(BaseModel):
+    """Work classification of one task in a replan revision (G004 contract).
+
+    ``confirm`` (prior passed work relied on as-is) must list the CURRENT
+    verification requirements in ``confirm_verification`` — a prior passed
+    status is never a substitute. ``redo`` must carry ``redo_reason``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    task: str
+    classification: str
+    sources: list[ReplanSource] = Field(default_factory=list)
+    redo_reason: str = ""
+    confirm_verification: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class ReplanSuperseded(BaseModel):
+    """Declared destination of one prior-revision task (旧任务去向)."""
+
+    model_config = ConfigDict(extra="ignore")
+    revision: int
+    task_id: str
+    disposition: str
+    successors: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class ReplanMapping(BaseModel):
+    """The old<->new correspondence a replan revision must declare.
+
+    Absent (null) on a first plan and on historical IRs. Nothing in ORX
+    derives this mapping from task numbers, and no rule inherits a prior
+    passed status into the new plan.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+    prior_revision: int
+    tasks: list[ReplanTaskMapping] = Field(default_factory=list)
+    superseded: list[ReplanSuperseded] = Field(default_factory=list)
+
+
 class PlanIR(BaseModel):
     model_config = ConfigDict(extra="ignore")
     goal: str
     exploration: Exploration
     approach: Approach
     tasks: list[PlanTask]
+    replan: ReplanMapping | None = None
 
     def to_dict(self) -> dict:
-        return self.model_dump()
+        # exclude_none keeps first-plan output shaped exactly as before this
+        # field existed; a declared mapping round-trips losslessly.
+        return self.model_dump(exclude_none=True)
 
 
 @dataclass(frozen=True)
@@ -236,6 +304,9 @@ def validate_ir(
     if cycle:
         errors.append("dependency cycle: " + " -> ".join(cycle))
 
+    if ir.replan is not None:
+        errors.extend(_validate_replan_internal(ir))
+
     # Goal acceptance coverage: verbatim strings, no interpretation.
     task_acceptance: set[str] = set()
     for task in ir.tasks:
@@ -247,6 +318,328 @@ def validate_ir(
                 f" {criterion!r}"
             )
 
+    return errors
+
+
+CLASSIFICATION_VALUES = tuple(c.value for c in ReplanClassification)
+DISPOSITION_VALUES = tuple(d.value for d in SupersededDisposition)
+_SINGLE_SUCCESSOR_DISPOSITIONS = {
+    SupersededDisposition.CONFIRMED: ReplanClassification.CONFIRM.value,
+    SupersededDisposition.CONTINUED: ReplanClassification.CONTINUE.value,
+    SupersededDisposition.REDONE: ReplanClassification.REDO.value,
+}
+
+
+def _validate_replan_internal(ir: PlanIR) -> list[str]:
+    """Structural checks over the declared mapping itself — no recorded
+    history needed. Errors locate the offending task.
+
+    Whether a redo reason is *justified*, a confirm verification
+    *sufficient*, or a dropped note honest is semantic review
+    (docs/replan-contract.md) — decided by a verifier, never here. No rule
+    in this module inherits a prior passed status.
+    """
+    replan = ir.replan
+    errors: list[str] = []
+    task_ids = {t.id for t in ir.tasks}
+    tasks_by_id = {t.id: t for t in ir.tasks}
+
+    mapped: dict[str, ReplanTaskMapping] = {}
+    citations: dict[tuple[int, str], list[tuple[str, bool]]] = {}
+
+    for m in replan.tasks:
+        if m.task not in task_ids:
+            errors.append(f"replan mapping: task {m.task!r} is not a task in this plan")
+            continue
+        if m.task in mapped:
+            errors.append(f"task {m.task}: duplicate replan mapping entry")
+            continue
+        mapped[m.task] = m
+
+        classification = parse_enum(ReplanClassification, m.classification)
+        if classification is None:
+            errors.append(
+                f"task {m.task}: replan classification {m.classification!r} must be"
+                f" one of {' | '.join(CLASSIFICATION_VALUES)}"
+            )
+        else:
+            if classification is ReplanClassification.NEW and m.sources:
+                errors.append(
+                    f"task {m.task}: classification 'new' must declare no sources"
+                    f" (got {len(m.sources)}); new work has no prior correspondence"
+                )
+            if classification is not ReplanClassification.NEW and not m.sources:
+                errors.append(
+                    f"task {m.task}: classification {m.classification!r} must"
+                    " declare at least one source {revision, task_id}"
+                )
+            if classification is ReplanClassification.REDO and not m.redo_reason.strip():
+                errors.append(
+                    f"task {m.task}: classification 'redo' requires redo_reason"
+                    " stating why this work must be done again"
+                )
+            if classification is not ReplanClassification.REDO and m.redo_reason.strip():
+                errors.append(
+                    f"task {m.task}: redo_reason is only valid with classification"
+                    " 'redo'"
+                )
+            if classification is ReplanClassification.CONFIRM and not m.confirm_verification:
+                errors.append(
+                    f"task {m.task}: classification 'confirm' must list the current"
+                    " verification requirements in confirm_verification; a prior"
+                    " passed status is never a substitute"
+                )
+            if classification is not ReplanClassification.CONFIRM and m.confirm_verification:
+                errors.append(
+                    f"task {m.task}: confirm_verification is only valid with"
+                    " classification 'confirm'"
+                )
+            if classification is ReplanClassification.CONFIRM and m.confirm_verification:
+                task = tasks_by_id[m.task]
+                for entry in m.confirm_verification:
+                    try:
+                        parse_verification_entry(entry)
+                    except ValueError as exc:
+                        errors.append(f"task {m.task}: {exc}")
+                    if entry not in task.verification:
+                        errors.append(
+                            f"task {m.task}: confirm verification {entry!r} must"
+                            " appear verbatim in the task's verification list"
+                        )
+
+        for source in m.sources:
+            if not TASK_ID_RE.fullmatch(source.task_id):
+                errors.append(
+                    f"task {m.task}: source task id {source.task_id!r} must match"
+                    " T<digits>"
+                )
+            if source.revision < 1:
+                errors.append(
+                    f"task {m.task}: source revision {source.revision} must be >= 1"
+                )
+            citations.setdefault((source.revision, source.task_id), []).append(
+                (m.task, source.part)
+            )
+        for artifact in m.artifacts:
+            if not artifact.strip():
+                errors.append(
+                    f"task {m.task}: artifact references must be non-empty strings"
+                )
+
+    for task in ir.tasks:
+        if task.id not in mapped:
+            errors.append(
+                f"task {task.id}: replan classification missing; every task in a"
+                f" replan must declare one of {' | '.join(CLASSIFICATION_VALUES)}"
+            )
+
+    for key in sorted(citations):
+        cites = citations[key]
+        if len(cites) > 1:
+            for new_task, part in cites:
+                if not part:
+                    errors.append(
+                        f"task {new_task}: source {key[0]}:{key[1]} claims the whole"
+                        f" prior task but {len(cites)} tasks cite it; mark every"
+                        " citation part=true (a split) or merge the successors"
+                    )
+
+    seen: set[tuple[int, str]] = set()
+    for entry in replan.superseded:
+        key = (entry.revision, entry.task_id)
+        if not TASK_ID_RE.fullmatch(entry.task_id):
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: task id must match T<digits>"
+            )
+            continue
+        if entry.revision < 1:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: revision must be >= 1"
+            )
+            continue
+        if key in seen:
+            errors.append(f"prior task {key[0]}:{key[1]}: duplicate superseded entry")
+            continue
+        seen.add(key)
+        disposition = parse_enum(SupersededDisposition, entry.disposition)
+        if disposition is None:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: disposition {entry.disposition!r}"
+                f" must be one of {' | '.join(DISPOSITION_VALUES)}"
+            )
+        for successor in entry.successors:
+            if successor not in task_ids:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: successor {successor!r} is not"
+                    " a task in this plan"
+                )
+        if disposition is SupersededDisposition.SPLIT and len(entry.successors) < 2:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: disposition 'split' must list at"
+                " least two successors"
+            )
+        if disposition is SupersededDisposition.DROPPED:
+            if entry.successors:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition 'dropped' must"
+                    " list no successors"
+                )
+            if not entry.note.strip():
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition 'dropped' requires"
+                    " a note explaining why this work is abandoned"
+                )
+    return errors
+
+
+def validate_replan(ir: PlanIR, prior_tasks: list[dict]) -> list[str]:
+    """Cross-check the declared replan mapping against recorded prior tasks.
+
+    ``prior_tasks`` rows mirror the replan snapshot: ``revision``,
+    ``task_id``, ``status`` (a TaskStatus value). Pure — no store access,
+    no guessing; missing rows are reported, never inferred. Structural
+    checks only: semantic review (is a redo reason justified, is a confirm
+    verification sufficient, is a dropped note honest) lives outside this
+    module per docs/replan-contract.md, and no rule here inherits a prior
+    passed status into the new plan.
+    """
+    if ir.replan is None:
+        return [
+            "replan mapping missing: a replan revision must classify every task,"
+            " declare its sources, and give every prior-revision task a"
+            " disposition"
+        ]
+    replan = ir.replan
+    errors: list[str] = []
+    prior_revision = replan.prior_revision
+    if prior_revision < 1:
+        errors.append(f"replan: prior_revision {prior_revision} must be >= 1")
+
+    recorded: dict[tuple[int, str], str] = {}
+    for row in prior_tasks:
+        recorded[(int(row["revision"]), str(row["task_id"]))] = str(row["status"])
+
+    superseded_by_key = {(s.revision, s.task_id): s for s in replan.superseded}
+    citations: dict[tuple[int, str], set[str]] = {}
+    for m in replan.tasks:
+        for source in m.sources:
+            citations.setdefault((source.revision, source.task_id), set()).add(m.task)
+
+    terminal = {status.value for status in TERMINAL_TASK_STATUSES}
+
+    for m in replan.tasks:
+        classification = parse_enum(ReplanClassification, m.classification)
+        for source in m.sources:
+            key = (source.revision, source.task_id)
+            status = recorded.get(key)
+            if status is None:
+                errors.append(
+                    f"task {m.task}: source {key[0]}:{key[1]} names a prior task"
+                    " that is not recorded"
+                )
+                continue
+            if (
+                classification is ReplanClassification.CONFIRM
+                and status != TaskStatus.PASSED.value
+            ):
+                errors.append(
+                    f"task {m.task}: confirm source {key[0]}:{key[1]} is recorded"
+                    f" {status!r}, not passed; confirm applies to completed work"
+                    " only (classify the task redo or continue instead)"
+                )
+            if (
+                classification is ReplanClassification.CONTINUE
+                and status in terminal
+            ):
+                errors.append(
+                    f"task {m.task}: continue source {key[0]}:{key[1]} is recorded"
+                    f" {status!r}, a terminal status; continue applies to"
+                    " unfinished work only"
+                )
+
+    # Every task of the superseded revision needs an explicit destination.
+    for row in prior_tasks:
+        key = (int(row["revision"]), str(row["task_id"]))
+        if key[0] != prior_revision:
+            continue
+        if key not in superseded_by_key:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: destination missing; every task of"
+                f" the superseded revision must declare one of"
+                f" {' | '.join(DISPOSITION_VALUES)}"
+            )
+
+    for entry in replan.superseded:
+        key = (entry.revision, entry.task_id)
+        if key[0] != prior_revision:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: superseded entries must reference"
+                f" the superseded revision {prior_revision}"
+            )
+            continue
+        if key not in recorded:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: no such task is recorded in prior"
+                f" revision {prior_revision}"
+            )
+            continue
+        declared = set(entry.successors)
+        citing = citations.get(key, set())
+        if declared != citing:
+            errors.append(
+                f"prior task {key[0]}:{key[1]}: declared successors"
+                f" {sorted(declared)} do not match the tasks citing it as a"
+                f" source {sorted(citing)}"
+            )
+        disposition = parse_enum(SupersededDisposition, entry.disposition)
+        if disposition is None:
+            continue
+        classifications = {
+            m.classification
+            for m in replan.tasks
+            if m.task in citing
+            for source in m.sources
+            if (source.revision, source.task_id) == key
+        }
+        successor_prior_sources = {
+            (source.revision, source.task_id)
+            for m in replan.tasks
+            if m.task in citing
+            for source in m.sources
+            if source.revision == prior_revision
+        }
+        if disposition in _SINGLE_SUCCESSOR_DISPOSITIONS:
+            expected = _SINGLE_SUCCESSOR_DISPOSITIONS[disposition]
+            if len(citing) != 1:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition"
+                    f" {entry.disposition!r} requires exactly one citing task,"
+                    f" found {sorted(citing)}"
+                )
+            if classifications and classifications != {expected}:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition"
+                    f" {entry.disposition!r} but the successor classifies the"
+                    f" source as {sorted(classifications)}"
+                )
+            if len(successor_prior_sources) > 1:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition"
+                    f" {entry.disposition!r} but the successor combines several"
+                    " prior-revision tasks; declare 'merged' instead"
+                )
+        elif disposition is SupersededDisposition.SPLIT:
+            if len(citing) < 2:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition 'split' requires"
+                    f" at least two citing tasks, found {sorted(citing)}"
+                )
+        elif disposition is SupersededDisposition.MERGED:
+            if len(successor_prior_sources) < 2:
+                errors.append(
+                    f"prior task {key[0]}:{key[1]}: disposition 'merged' requires"
+                    " the successor to combine at least two prior-revision tasks"
+                )
     return errors
 
 
@@ -352,6 +745,32 @@ PLAN_IR_SCHEMA: dict = {
             "routing": {"complexity": "low | medium | high", "required_capabilities": ["coding"]},
         }
     ],
+    "replan": {
+        "prior_revision": 1,
+        "tasks": [
+            {
+                "task": "T101  (an id from this plan's tasks)",
+                "classification": "new | confirm | redo | continue",
+                "sources": [
+                    {"revision": 1, "task_id": "T001", "part": False},
+                ],
+                "redo_reason": "required iff classification is redo: why this work must be done again",
+                "confirm_verification": [
+                    "required iff classification is confirm: a current check that must also appear verbatim in the task's verification list",
+                ],
+                "artifacts": ["project-relative artifact/evidence path inherited via this correspondence"],
+            }
+        ],
+        "superseded": [
+            {
+                "revision": 1,
+                "task_id": "T001",
+                "disposition": "confirmed | continued | redone | split | merged | dropped",
+                "successors": ["T101"],
+                "note": "required iff disposition is dropped: why this work is abandoned",
+            }
+        ],
+    },
 }
 
 
@@ -444,6 +863,30 @@ def planner_prompt(goal, depth: PlanDepth, replan_facts: str = "", intent: str =
         "\n- the Execution Facts above are authoritative history. Treat every task"
         "\n  marked PASSED as done work; do not re-plan or redo it unless this"
         "\n  round's intent explicitly changes it."
+        "\n- task numbers never carry meaning across revisions: a task with the"
+        "\n  same number in a different revision is DIFFERENT work. Never link"
+        "\n  tasks by number — only the replan mapping you declare links them."
+        "\n- \"replan\" is required on this revision: classify EVERY task in this"
+        "\n  plan in \"replan\".\"tasks\" with a classification:"
+        "\n    new      = no prior correspondence (no sources allowed)."
+        "\n    confirm  = prior PASSED work relied on as-is; list the CURRENT"
+        "\n               verification that proves it still holds in"
+        "\n               confirm_verification (each entry must also appear"
+        "\n               verbatim in the task's verification list) — a prior"
+        "\n               passed status is never a substitute."
+        "\n    redo     = work done again; redo_reason is MANDATORY and must say"
+        "\n               why (what changed, what was wrong, what the new plan"
+        "\n               needs that the old result cannot provide)."
+        "\n    continue = prior unfinished work carried forward."
+        "\n- every source must identify prior work by revision AND task id"
+        "\n  ({\"revision\": 1, \"task_id\": \"T001\"}); set part=true when the task"
+        "\n  covers only part of a prior task (splits, partial correspondence)."
+        "\n- EVERY task of the prior revision must appear in"
+        "\n  \"replan\".\"superseded\" with a disposition — confirmed | continued |"
+        "\n  redone | split | merged | dropped (dropped needs a note) — and its"
+        "\n  successors must exactly match the tasks citing it as a source."
+        "\n- reference prior results and artifacts through this correspondence"
+        "\n  (\"artifacts\"), never by task number alone."
         "\n- ORX never auto-passes tasks: every task in the plan you emit starts"
         "\n  pending or runnable. A Goal acceptance criterion already satisfied by"
         "\n  passed work must still appear VERBATIM in some task's acceptance —"
@@ -485,5 +928,7 @@ Rules:
 - preread lists the project-relative files a worker must read before starting
   (code and tests; first entry may be a per-round plan document). Keep it
   small — it bounds the worker's exploration surface.
+- emit "replan": null on a first plan; on a replan revision "replan" is
+  required and must follow the replan rules below.
 - do not modify the Goal text.{replan_rules}
 """

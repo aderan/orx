@@ -101,6 +101,32 @@ class PlanDepth(str, Enum):
     DEEP = "deep"
 
 
+class ReplanClassification(str, Enum):
+    """How a task in a replan revision relates to prior-revision work (G004).
+
+    Task numbers never identify work across revisions — a same-numbered task
+    in a different revision is DIFFERENT work. The explicit replan mapping in
+    the plan IR is the only correspondence, and nothing ever inherits a prior
+    passed status into the new plan.
+    """
+
+    NEW = "new"            # no prior correspondence; sources must be empty
+    CONFIRM = "confirm"    # prior passed work relied on as-is; current verification mandatory
+    REDO = "redo"          # prior work done again; redo_reason mandatory
+    CONTINUE = "continue"  # prior unfinished work carried forward
+
+
+class SupersededDisposition(str, Enum):
+    """Where a prior-revision task's work goes in the new plan (G004)."""
+
+    CONFIRMED = "confirmed"    # carried intact; confirmed by a successor
+    CONTINUED = "continued"    # unfinished work continues in a successor
+    REDONE = "redone"          # done again by a successor (reason lives there)
+    SPLIT = "split"            # distributed over two or more successors
+    MERGED = "merged"          # combined with other prior tasks into one successor
+    DROPPED = "dropped"        # deliberately abandoned; note mandatory
+
+
 class GoalStatus(str, Enum):
     ACTIVE = "active"
     DONE = "done"
