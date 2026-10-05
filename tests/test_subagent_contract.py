@@ -437,6 +437,9 @@ def test_task_complete_actual_model_mismatch_visible(sub_planned, tmp_path):
     out = dispatch.run_slice(sub_planned)
     attempt_id = out["host_required"][0]["execution"]["attempt"]
     dispatch.task_claim(sub_planned, "T001")
+    # The delivery must be green for the reported model to be recorded: the
+    # gate refuses a red completion outright.
+    (sub_planned.root / "t1.marker").write_text("ok")
     result = dispatch.task_complete(
         sub_planned, "T001", str(write_evidence(tmp_path)),
         attempt_id=attempt_id, actual_model="GLM-5.3-Flash",

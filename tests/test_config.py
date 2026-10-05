@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from orx import dispatch
-from orx.config import load_config, load_effective, load_profiles, load_project_config
+from orx.config import (
+    config_entries,
+    load_config,
+    load_effective,
+    load_profiles,
+    load_project_config,
+)
 from orx.records import ConfigError
 
 from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, make_project
@@ -615,3 +621,75 @@ def test_doctor_profile_references_resolve_across_layers(tmp_path, monkeypatch):
     by_name = {c["name"]: c for c in result["checks"]}
     assert by_name["profile_references"]["state"] == "ok"
     assert result["ok"]
+
+
+# -- worker.max_check_rounds: same-session check budget (R002 follow-up) -----
+
+
+def test_check_rounds_budget_defaults_to_three(tmp_path):
+    """No layer sets the budget: the builtin default 3 applies everywhere —
+    both loaders and the `orx config list` surface report it as `default`."""
+    pc, pp = _project_files(tmp_path)
+    absent = tmp_path / "no-layer"
+    eff = load_effective(pc, pp, user_config=absent / "c.toml",
+                         user_profiles=absent / "p.toml")
+    assert eff.config.worker_max_check_rounds == 3
+    assert eff.origins["worker.max_check_rounds"] == "default"
+    entry = next(
+        row for row in config_entries(eff)
+        if row["key"] == "worker.max_check_rounds"
+    )
+    assert entry == {"key": "worker.max_check_rounds", "value": 3, "origin": "default"}
+    assert load_config(pc).worker_max_check_rounds == 3
+
+
+def test_check_rounds_budget_layers_project_over_user(tmp_path):
+    uc, up = _write_user_layer(
+        tmp_path,
+        config_toml='schema_version = 1\n[worker]\nmax_check_rounds = 2\n',
+    )
+    pc, pp = _project_files(tmp_path)
+    (pc).write_text((pc).read_text() + "[worker]\nmax_check_rounds = 5\n")
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.worker_max_check_rounds == 5
+    assert eff.origins["worker.max_check_rounds"] == "project"
+
+    # project silent about the budget -> the user layer fills it
+    (pc).write_text('schema_version = 1\n[controller]\nprofile = "host-planner"\n')
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.worker_max_check_rounds == 2
+    assert eff.origins["worker.max_check_rounds"] == "user"
+
+
+def test_check_rounds_budget_rejects_invalid_values(tmp_path):
+    pc, pp = _project_files(tmp_path)
+    absent = tmp_path / "no-layer"
+    for bad in ("0", '"3"', "true"):
+        (pc).write_text(
+            'schema_version = 1\n[controller]\nprofile = "host-planner"\n'
+            f"[worker]\nmax_check_rounds = {bad}\n"
+        )
+        with pytest.raises(ConfigError) as excinfo:
+            load_effective(pc, pp, user_config=absent / "c.toml",
+                           user_profiles=absent / "p.toml")
+        assert "max_check_rounds" in str(excinfo.value)
+        with pytest.raises(ConfigError):
+            load_config(pc)
+
+
+def test_set_check_rounds_budget_validates_and_writes(tmp_path):
+    import tomllib
+
+    from orx.config import set_config_value
+
+    path = tmp_path / "config.toml"
+    path.write_text("schema_version = 1\n")
+    result = set_config_value(path, "worker.max_check_rounds", "5", create=True)
+    assert result["value"] == 5
+    assert tomllib.loads(path.read_text())["worker"]["max_check_rounds"] == 5
+
+    before = path.read_bytes()
+    for bad in ("0", "-1", "many"):
+        with pytest.raises(ConfigError):
+            set_config_value(path, "worker.max_check_rounds", bad, create=True)
+    assert path.read_bytes() == before  # refused before any write

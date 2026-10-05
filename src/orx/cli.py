@@ -21,6 +21,7 @@ from orx import skills as skills_mod
 from orx import sources as sources_mod
 from orx import update as update_mod
 from orx.records import ConfigError, NotFoundError, ORXError
+from orx.verify import DeliveryRejected
 
 app = typer.Typer(
     name="orx",
@@ -811,11 +812,143 @@ def task_claim(
         typer.echo(f"task {result['task']} claimed by host; status running")
 
 
+@task_app.command("check")
+@handle_errors
+def task_check(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Run the task's command checks immediately (same-session self-check).
+
+    Executes every `shell ...` verification entry of the task now, from the
+    project root, with the same denylist and timeout as `orx verify`, and
+    appends one verification row per entry bound to the current worker
+    attempt. Each result reports the command, exit code, passed flag, the
+    earliest failing output line, and the log path, with summary counts.
+
+    Check rounds accumulate on that attempt across calls: the check_rounds
+    field (and the human "check rounds" line) reports rounds used vs the
+    configured worker.max_check_rounds budget, this run included. When the
+    budget is spent and red checks remain, the output says so: the worker
+    contract is to submit the structured failed/blocked delivery result and
+    hand the task back to the controller, not to keep iterating.
+
+    This is a worker self-check, not a verdict: the task's status never
+    changes, agent verification entries are not run, and a green check does
+    not replace the independent verification at `orx task complete`. A
+    denied (denylist) entry records exit_code null and passed false, like
+    verify. Exit 0 after running the checks (failing entries included);
+    exit 1 when the task or the plan revision does not exist.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_check(project, task_id)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        if result.get("note"):
+            typer.echo(f"task {result['task']}: {result['note']}")
+        for item in result["results"]:
+            if item["denied"]:
+                typer.echo(
+                    f"  denied  {item['command']} (denylist: {item['denial_reason']})"
+                )
+            elif item["passed"]:
+                typer.echo(f"  ok      {item['command']}")
+            else:
+                exit_note = "timeout" if item["timed_out"] else f"exit {item['exit_code']}"
+                typer.echo(f"  FAIL    {item['command']} ({exit_note})")
+            if item.get("error_summary"):
+                typer.echo(f"          {item['error_summary']}")
+            if item.get("log_path"):
+                typer.echo(f"          log: {item['log_path']}")
+        summary = result["summary"]
+        line = (
+            f"task {result['task']} [{result['status']}]: {summary['total']}"
+            f" command check(s): {summary['passed']} passed,"
+            f" {summary['failed']} failed, {summary['denied']} denied"
+        )
+        if result["agent_entries_not_run"]:
+            line += (
+                f"; {result['agent_entries_not_run']} agent entries not run"
+                " (check covers command entries only)"
+            )
+        typer.echo(line)
+        rounds = result.get("check_rounds")
+        if rounds is not None:
+            where = (
+                f"attempt {rounds['attempt']}" if rounds["attempt"] is not None
+                else "no worker attempt bound (counts against no budget)"
+            )
+            typer.echo(
+                f"  check rounds: {rounds['used']}/{rounds['budget']} used ({where};"
+                " budget: worker.max_check_rounds)"
+            )
+            red = summary["failed"] or summary["denied"]
+            if rounds["exceeded"]:
+                typer.echo(
+                    "  check budget EXCEEDED: stop here — submit the structured"
+                    " failed/blocked delivery result and hand the task back to"
+                    " the controller; do not run further rounds"
+                )
+            elif rounds["remaining"] == 0 and red:
+                typer.echo(
+                    "  check budget exhausted with red checks: do not iterate"
+                    " further — submit the structured failed/blocked delivery"
+                    " result and hand the task back to the controller"
+                )
+        typer.echo(
+            "  self-check only: status unchanged; `orx task complete` still verifies"
+        )
+
+
+def _render_delivery_rejected(exc: DeliveryRejected, json_out: bool) -> None:
+    """A refused delivery: full structured detail on both surfaces.
+
+    The task keeps its prior status and the attempt stays open, so the
+    worker can fix and complete again — the output must carry everything
+    needed for that: each missing evidence field, or each red check's
+    command, exit code, error summary, and log path.
+    """
+    if json_out:
+        payload = {"ok": False, "error": str(exc)}
+        if exc.fields:
+            payload["evidence_errors"] = list(exc.fields)
+        if exc.report is not None:
+            payload["gate"] = exc.report
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        for field_error in exc.fields:
+            typer.echo(f"  - {field_error}", err=True)
+        if exc.report is not None:
+            for row in exc.report["failures"]:
+                if row.get("denied"):
+                    exit_note = f"denied: {row['denial_reason']}"
+                elif row.get("timed_out"):
+                    exit_note = "timeout"
+                else:
+                    exit_note = f"exit {row['exit_code']}"
+                typer.echo(f"  FAIL {row['command']} ({exit_note})", err=True)
+                if row.get("error_summary"):
+                    typer.echo(f"        {row['error_summary']}", err=True)
+                if row.get("log_path"):
+                    typer.echo(f"        log: {row['log_path']}", err=True)
+
+
 @task_app.command("complete")
 @handle_errors
 def task_complete(
     task_id: str = typer.Argument(...),
-    evidence: Path = typer.Option(..., "--evidence", help="Evidence file produced by the worker."),
+    evidence: Path = typer.Option(
+        ..., "--evidence",
+        help=(
+            "Structured delivery result JSON: status=passed|failed|blocked,"
+            " checks[] (each command/exit_code/log), artifacts[], summary."
+            " Missing or malformed fields are rejected by name."
+        ),
+    ),
     attempt: Optional[int] = typer.Option(
         None, "--attempt", help="Attempt id this completion answers (from `task claim` / the park payload)."
     ),
@@ -825,19 +958,46 @@ def task_complete(
     ),
     json_out: bool = JsonOpt,
 ) -> None:
-    """Execution finished. This is NOT success: verification decides passed/failed."""
+    """Execution finished. This is NOT success: verification decides passed/failed.
+
+    The evidence file is the structured delivery result. status=passed runs
+    the delivery gate first: every command verification entry is re-run
+    fresh (a prior self-check is not an exemption) and any red row rejects
+    the completion — the task keeps its current status, the attempt stays
+    open, and the response lists each failure's command, exit code, error
+    summary, and log path. status=failed/blocked records a non-delivery
+    and fails the task with a reason that says which kind it was. Agent
+    verification entries are never run here and never gate the completion.
+    """
     project = dispatch.open_project()
-    result = dispatch.task_complete(
-        project, task_id, str(evidence),
-        attempt_id=attempt, actual_model=actual_model,
-    )
+    try:
+        result = dispatch.task_complete(
+            project, task_id, str(evidence),
+            attempt_id=attempt, actual_model=actual_model,
+        )
+    except DeliveryRejected as exc:
+        _render_delivery_rejected(exc, json_out)
+        raise typer.Exit(1) from None
+    finally:
+        project.close()
     _ok(json_out, **result)
     if not json_out:
-        typer.echo(f"task {result['task']}: status {result['status']} (verdict {result['verdict']})")
-        v = result["verification"]
-        typer.echo(
-            f"  verification: {v['passed']} passed / {v['failed']} failed / {v['awaiting_agent']} awaiting agent"
-        )
+        verdict = result.get("verdict")
+        line = f"task {result['task']}: status {result['status']}"
+        if verdict:
+            line += f" (verdict {verdict})"
+        typer.echo(line)
+        delivery = result.get("delivery")
+        if delivery:
+            line = f"  delivery: {delivery['status']}"
+            if delivery.get("reason"):
+                line += f" — {delivery['reason']}"
+            typer.echo(line)
+        v = result.get("verification")
+        if v:
+            typer.echo(
+                f"  verification: {v['passed']} passed / {v['failed']} failed / {v['awaiting_agent']} awaiting agent"
+            )
         if result.get("model_mismatch"):
             m = result["model_mismatch"]
             typer.echo(

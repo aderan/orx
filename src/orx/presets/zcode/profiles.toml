@@ -3,6 +3,13 @@ schema_version = 1
 # ZCode preset profiles (phase C). The host session is the Controller;
 # worker and verifiers are its native subagents (agents/ definitions).
 # Install: `orx preset install zcode` (user layer only).
+#
+# host_context (host-exclusive, see src/orx/routing.py): every host-driver
+# profile here declares it, so a task whose plan routing declares
+# required_capabilities = ["host_context"] parks for host execution at
+# `orx run` — global acceptance checks, cross-task read-only report
+# generation, anything needing main-session context — and never burns a
+# CLI worker attempt on it.
 
 [profiles.zcode-controller]
 driver = "host"
@@ -10,7 +17,7 @@ harness = "zcode"
 model = "account:bigmodel-individual-coding-plan/GLM-5.3"
 class = "strong"
 effort = "high"
-capabilities = ["coding", "vision"]
+capabilities = ["coding", "vision", "host_context"]
 
 [profiles.zcode-worker]
 driver = "host"
@@ -20,7 +27,7 @@ class = "strong"
 effort = "max"
 host_mode = "subagent"
 agent_ref = "orx-worker"
-capabilities = ["coding"]
+capabilities = ["coding", "host_context"]
 
 [profiles.zcode-verifier-flash]
 driver = "host"
@@ -30,7 +37,7 @@ class = "economy"
 effort = "max"
 host_mode = "subagent"
 agent_ref = "orx-verifier"
-capabilities = ["coding", "vision"]
+capabilities = ["coding", "vision", "host_context"]
 
 [profiles.zcode-verifier-strong]
 driver = "host"
@@ -40,4 +47,4 @@ class = "strong"
 effort = "max"
 host_mode = "subagent"
 agent_ref = "orx-verifier-strong"
-capabilities = ["coding", "vision"]
+capabilities = ["coding", "vision", "host_context"]

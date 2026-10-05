@@ -7,9 +7,27 @@ import os
 import subprocess
 import sys
 
-from orx import dispatch
+import pytest
 
-from conftest import ir_for, task_spec, write_evidence
+from orx import dispatch, verify
+from orx.verify import DeliveryRejected
+
+from conftest import active_task, ir_for, task_spec
+
+
+def write_evidence(tmp_path, name: str = "evidence.json", *, status: str = "passed",
+                   checks=None, artifacts=(), summary: str = "work finished"):
+    """A structured delivery result (the `task complete` evidence contract):
+    status/checks/artifacts/summary. The delivery gate re-runs the command
+    entries itself, so an empty checks list is a legal success claim."""
+    path = tmp_path / name
+    path.write_text(json.dumps({
+        "status": status,
+        "summary": summary,
+        "checks": list(checks or []),
+        "artifacts": list(artifacts),
+    }))
+    return path
 
 
 def _drive_goal_to_plan(project, goal):
@@ -145,4 +163,484 @@ def test_status_in_a_separate_process_sees_same_state(project, goal, tmp_path):
     assert payload["run"]["status"] == "running"
     statuses = {t["id"]: t["status"] for t in payload["tasks"]}
     assert statuses == {"T001": "running", "T002": "pending", "T003": "pending"}
+
+
+def test_worker_contract_and_preflight_are_static(project, goal):
+    """The delivery contract rides the parked assignment, and the preflight
+    is static: nothing is executed, no verification row appears, and the
+    state machine is untouched until the host acts. A blocked preflight row
+    is visible in the prompt instead of being discovered after a wasted
+    attempt."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker",
+                                "orx-lifecycle-no-such-tool-3 --version"]),
+    ]))
+    out = dispatch.run_slice(project)
+    entry = out["host_required"][0]
+
+    text = (project.root / entry["prompt_file"]).read_text()
+    assert entry["prompt"] == text
+    assert "orx task check T001" in text
+    assert "[preflight:ok] command 'test -f t1.marker'" in text
+    assert "[preflight:blocked] command 'orx-lifecycle-no-such-tool-3 --version'" in text
+    assert "BLOCKED EXIT" in text and "DELIVERY GATE" in text
+
+    row = active_task(project, "T001")
+    assert row.status == "waiting_host"
+    assert project.store.verifications_for(row.revision_id, "T001") == []
+
+
+def test_delivery_contract_leaves_completion_semantics_unchanged(project, goal, tmp_path):
+    """The contract is prompt discipline only: completion still runs the
+    prescribed checks independently, and a workspace that satisfies them
+    passes exactly as before the contract existed."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    row = active_task(project, "T001")  # captured before the goal goes done
+    (project.root / "t1.marker").write_text("done")
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert result["status"] == "passed"
+
+    recorded = project.store.verifications_for(row.revision_id, "T001")
+    assert [v.passed for v in recorded] == [True]  # complete-time check ran
+    assert dispatch.status_data(project)["run"]["status"] == "done"
+
+
+# -- delivery gate + structured delivery result (R002 follow-up) ------------
+
+
+def _claimed_marker_task(project, goal, verification):
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=verification),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    return active_task(project, "T001")
+
+
+def test_complete_rejects_legacy_evidence_naming_missing_fields(project, goal, tmp_path):
+    """A plain {summary, commands, artifacts} file is not a delivery result:
+    the completion is refused, every missing field is named, and nothing
+    changes — task, attempt, and events all stay as they were."""
+    row = _claimed_marker_task(project, goal, ["true"])
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps({"summary": "done", "commands": [], "artifacts": []}))
+
+    with pytest.raises(DeliveryRejected) as excinfo:
+        dispatch.task_complete(project, "T001", str(legacy))
+    assert excinfo.value.kind == "evidence"
+    joined = "; ".join(excinfo.value.fields)
+    assert "'status'" in joined and "'checks'" in joined
+    assert excinfo.value.fields  # one entry per missing field
+
+    assert active_task(project, "T001").status == "running"
+    attempt = project.store.attempt_latest_for_task(row.revision_id, "T001")
+    assert attempt.ended_at is None  # the attempt was not closed
+    assert not [
+        e for e in project.store.evidence_for_task(row.revision_id, "T001")
+        if e[0] == "completion"
+    ]
+
+
+def test_complete_rejects_malformed_evidence_fields(project, goal, tmp_path):
+    """Present-but-wrong fields are named too: a bad status value and check
+    items missing exit_code/log are rejected before any state is written."""
+    _claimed_marker_task(project, goal, ["true"])
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({
+        "status": "green", "summary": "  ",
+        "checks": [{"command": "pytest"}], "artifacts": "none",
+    }))
+    with pytest.raises(DeliveryRejected) as excinfo:
+        dispatch.task_complete(project, "T001", str(bad))
+    fields = "; ".join(excinfo.value.fields)
+    for fragment in ("'status'", "'summary'", "checks[0].exit_code", "'artifacts'"):
+        assert fragment in fields
+
+    not_json = tmp_path / "not.json"
+    not_json.write_text("the work is done, trust me")
+    with pytest.raises(DeliveryRejected, match="not valid JSON"):
+        dispatch.task_complete(project, "T001", str(not_json))
+
+
+def test_gate_rejects_red_delivery_then_recovery_completes_same_attempt(project, goal, tmp_path):
+    """The R002 core failure made impossible: a red command check cannot be
+    completed past. The rejection keeps the task in its original state with
+    the attempt open (no new attempt, no completion record), carries the
+    per-failure command/exit code/error summary/log path, and a fixed
+    workspace completes green through the normal verify path."""
+    row = _claimed_marker_task(project, goal, ["ls t1.marker", "true"])
+
+    with pytest.raises(DeliveryRejected) as excinfo:
+        dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert excinfo.value.kind == "gate"
+    report = excinfo.value.report
+    assert report["task"] == "T001"
+    assert report["task_status"] == "running"  # original state kept
+    assert report["summary"]["total"] == 2
+    failure = report["failures"][0]
+    assert failure["command"] == "ls t1.marker"
+    assert failure["exit_code"] != 0
+    assert failure["error_summary"]  # the earliest failing output line
+    assert failure["log_path"].startswith(".orx/runs/R001/check/T001/")
+    assert (project.root / failure["log_path"]).exists()
+
+    # Attempt stays open; no completion event was recorded.
+    attempt = project.store.attempt_latest_for_task(row.revision_id, "T001")
+    assert attempt.ended_at is None and attempt.result is None
+    assert not [
+        e for e in project.store.task_events(row.revision_id, "T001")
+        if e.event == "complete"
+    ]
+
+    # Fix in the same session and complete again: all green, same attempt.
+    (project.root / "t1.marker").write_text("done")
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path, "e2.json")))
+    assert result["status"] == "passed"
+    assert result["attempt"] == attempt.id  # no new attempt was opened
+    assert result["delivery"] == {"status": "passed", "checks_run": 2}
+    assert dispatch.status_data(project)["run"]["status"] == "done"
+
+
+def test_gate_reruns_checks_even_after_green_self_check(project, goal, tmp_path):
+    """A green `task check` earlier in the session is not an exemption: the
+    gate re-runs the command entries at completion, and a workspace that
+    regressed between self-check and delivery is rejected."""
+    _claimed_marker_task(project, goal, ["test -f t1.marker"])
+    (project.root / "t1.marker").write_text("done")
+    check = dispatch.task_check(project, "T001")
+    assert check["summary"]["passed"] == 1
+
+    (project.root / "t1.marker").unlink()  # regressed after the self-check
+    with pytest.raises(DeliveryRejected, match="delivery gate rejected"):
+        dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+
+
+def test_blocked_delivery_is_an_independent_recorded_result(project, goal, tmp_path):
+    """status=blocked fails the task as an environment/tool block — a
+    distinct recorded outcome, distinguishable in the failure reason and on
+    the attempt from a worker-reported code failure."""
+    row = _claimed_marker_task(project, goal, ["true"])
+
+    blocked = write_evidence(
+        tmp_path, status="blocked", summary="sandbox denies all shell execution",
+        checks=[{"command": "true", "exit_code": None, "log": None}],
+    )
+    result = dispatch.task_complete(project, "T001", str(blocked))
+    assert result["status"] == "failed"
+    assert result["delivery"]["status"] == "blocked"
+    reason = result["delivery"]["reason"]
+    assert reason.startswith("delivery blocked (environment/tool blocked):")
+    assert "true (not run)" in reason  # the worker-reported not-run check
+    task_row = active_task(project, "T001")
+    assert task_row.status == "failed" and task_row.failure_reason == reason
+    attempt = project.store.attempt_latest_for_task(row.revision_id, "T001")
+    assert attempt.result == "blocked"  # independent delivery result
+    assert attempt.failure_reason == reason
+    fail_events = [
+        e for e in project.store.task_events(row.revision_id, "T001")
+        if e.event == "fail"
+    ]
+    assert fail_events and fail_events[-1].reason == reason
+
+    # Contrast: a worker-reported code failure is a different, named kind.
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    failed = write_evidence(
+        tmp_path, "e-failed.json", status="failed", summary="pytest still red",
+        checks=[{"command": "pytest -q", "exit_code": 1,
+                 "log": ".orx/runs/R001/check/T001/01-0000-command.log"}],
+    )
+    result = dispatch.task_complete(project, "T001", str(failed))
+    assert result["delivery"]["status"] == "failed"
+    code_reason = result["delivery"]["reason"]
+    assert code_reason.startswith("delivery failed (worker-reported failure):")
+    assert "environment/tool" not in code_reason
+    assert active_task(project, "T001").failure_reason == code_reason
+
+
+def test_gate_never_judges_agent_entries(project, goal, tmp_path):
+    """The gate covers command entries only: an agent-only task completes
+    without anything being executed for it, and a task with a green command
+    entry plus a pending agent entry still lands in verifying — the
+    independent verifier decides, a green gate never replaces it."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker", "agent: the work is honest"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    row = active_task(project, "T001")
+    (project.root / "t1.marker").write_text("done")
+
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert result["status"] == "verifying"  # agent verdict outstanding
+    kinds = [v.kind for v in project.store.verifications_for(row.revision_id, "T001")]
+    assert kinds == ["command"]  # the gate ran the command entry only
+
+    verdict = dispatch.verify_submit(project, "T001", "pass", None, None)
+    assert verdict["status"] == "passed"
+
+
+# -- retry feedback from per-attempt verification history (R002 follow-up) ---
+
+
+def test_retry_prompt_quotes_retained_failure_evidence(project, goal, tmp_path):
+    """A retried worker goes straight at the recorded failure: the new
+    assignment quotes the failed attempt's surviving verification rows —
+    command, exit code, error summary, log path (the delivery-gate refusal
+    row shape) — sourced from the per-attempt history, never re-executed
+    here. A check that went green later in the same attempt is not quoted:
+    the latest row per check is the state that failed."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["ls t1.marker", "true"]),
+    ]))
+    first = dispatch.run_slice(project)["host_required"][0]
+    assert "A previous attempt" not in first["prompt"]  # no history yet
+
+    dispatch.task_claim(project, "T001")
+    check = dispatch.task_check(project, "T001")  # marker missing -> one red row
+    assert check["summary"]["failed"] == 1
+    failed_attempt = check["attempt"]
+    dispatch.task_fail(project, "T001", "could not make the check green")
+    dispatch.task_retry(project, "T001")
+
+    entry = dispatch.run_slice(project)["host_required"][0]
+    prompt = entry["prompt"]
+    assert (project.root / entry["prompt_file"]).read_text() == prompt
+
+    assert "A previous attempt at this task FAILED with:" in prompt
+    assert "could not make the check green" in prompt
+    assert f"(attempt {failed_attempt}; latest row per check)" in prompt
+    # The gate-refusal row shape: command / exit code / error summary / log.
+    assert "  - command: ls t1.marker" in prompt
+    assert "    exit code: 1" in prompt
+    assert "    error summary: ls: t1.marker: No such file or directory" in prompt
+    assert "    log: .orx/runs/R001/check/T001/01-0000-command.log" in prompt
+    log_line = next(
+        line.strip() for line in prompt.splitlines() if line.strip().startswith("log:")
+    )
+    assert (project.root / log_line[len("log: "):]).exists()
+    assert "  - command: true" not in prompt  # the green check is not quoted
+
+    # Same attempt, check -> fix -> check: the entry's latest row is green,
+    # so a later failure of that attempt no longer quotes the stale red row.
+    dispatch.task_claim(project, "T001")
+    (project.root / "t1.marker").write_text("done")
+    green = dispatch.task_check(project, "T001")
+    assert green["summary"]["passed"] == 2
+    dispatch.task_fail(project, "T001", "abandoned for an unrelated reason")
+    dispatch.task_retry(project, "T001")
+    stale = dispatch.run_slice(project)["host_required"][0]["prompt"]
+    assert "abandoned for an unrelated reason" in stale
+    assert "Verification evidence retained" not in stale
+
+
+def test_retry_guidance_classifies_blocked_vs_code_failures(project, goal, tmp_path):
+    """An environment/tool block and a worker-reported code failure carry
+    DIFFERENT repair guidance in the retried assignment: the block says fix
+    the environment or report that routing must change; the code failure
+    says go directly at the failing checks. Both quote the same retained
+    evidence rows — only the classified guidance differs."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["orx-retry-no-such-tool --version"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    assert dispatch.task_check(project, "T001")["summary"]["failed"] == 1
+
+    blocked = write_evidence(
+        tmp_path, status="blocked", summary="tool missing from sandbox",
+        checks=[{"command": "orx-retry-no-such-tool --version",
+                 "exit_code": 127, "log": None}],
+    )
+    result = dispatch.task_complete(project, "T001", str(blocked))
+    assert result["delivery"]["status"] == "blocked"
+    dispatch.task_retry(project, "T001")
+    blocked_prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+
+    assert "delivery blocked (environment/tool blocked): tool missing from sandbox" \
+        in blocked_prompt
+    assert "environment/tool block, not a code defect" in blocked_prompt
+    assert "routing needs to change" in blocked_prompt
+    assert "go directly to the failing" not in blocked_prompt
+    # The retained row is quoted for both classes.
+    assert "  - command: orx-retry-no-such-tool --version" in blocked_prompt
+
+    dispatch.task_claim(project, "T001")
+    dispatch.task_check(project, "T001")  # still red
+    failed = write_evidence(
+        tmp_path, "e-code.json", status="failed", summary="check still red",
+        checks=[{"command": "orx-retry-no-such-tool --version",
+                 "exit_code": 127, "log": None}],
+    )
+    result = dispatch.task_complete(project, "T001", str(failed))
+    assert result["delivery"]["status"] == "failed"
+    dispatch.task_retry(project, "T001")
+    code_prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+
+    assert "delivery failed (worker-reported failure): check still red" in code_prompt
+    assert "go directly to the failing check(s) listed above" in code_prompt
+    assert "environment/tool block, not a code defect" not in code_prompt
+    assert "routing needs to change" not in code_prompt
+
+    # The two classes never render the same guidance text.
+    blocked_slice = blocked_prompt.split("FAILED with:")[1]
+    code_slice = code_prompt.split("FAILED with:")[1]
+    assert blocked_slice != code_slice
+
+
+def test_retry_prompt_without_retained_history_matches_legacy_form(project, goal):
+    """A failure with no surviving verification rows behaves exactly as
+    before per-attempt history existed: the retry assignment carries the
+    failure reason line only — byte-compatible legacy block, no evidence
+    section, no classified guidance."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    dispatch.task_fail(project, "T001", "cannot proceed further")
+    dispatch.task_retry(project, "T001")
+    prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+
+    legacy_block = (
+        "\nA previous attempt at this task FAILED with:\n"
+        "  cannot proceed further\n"
+        "Fix that specific problem; do not redo the task blindly.\n"
+    )
+    assert legacy_block in prompt  # byte-compatible with the pre-history form
+    assert "Verification evidence retained" not in prompt
+    assert "environment/tool block" not in prompt
+    assert "go directly to the failing" not in prompt
+
+
+# -- same-session check-fix loop budget (R002 follow-up) ----------------------
+
+
+def test_task_check_accumulates_rounds_on_the_attempt(project, goal):
+    """`orx task check` rounds accumulate on the worker attempt: every run
+    reports rounds used vs the configured budget (this run included), the
+    count grows across calls on the same attempt, task list exposes it
+    without running anything, and a retry's fresh attempt starts from zero."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    row = active_task(project, "T001")
+    attempt = project.store.attempt_latest_for_task(row.revision_id, "T001")
+
+    first = dispatch.task_check(project, "T001")
+    assert first["check_rounds"] == {
+        "attempt": attempt.id, "used": 1, "budget": 3,
+        "remaining": 2, "exceeded": False,
+    }
+    second = dispatch.task_check(project, "T001")
+    assert second["check_rounds"]["attempt"] == attempt.id
+    assert second["check_rounds"]["used"] == 2
+
+    listed = next(t for t in dispatch.task_list(project) if t["id"] == "T001")
+    assert listed["check_rounds"] == {"used": 2, "budget": 3}
+
+    # A retry routes a fresh attempt: the budget is per-attempt, not per-task.
+    dispatch.task_fail(project, "T001", "budget exhausted, red checks remain")
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)
+    fresh_row = active_task(project, "T001")
+    fresh_attempt = project.store.attempt_latest_for_task(fresh_row.revision_id, "T001")
+    assert fresh_attempt.id != attempt.id
+    restarted = dispatch.task_check(project, "T001")
+    assert restarted["check_rounds"] == {
+        "attempt": fresh_attempt.id, "used": 1, "budget": 3,
+        "remaining": 2, "exceeded": False,
+    }
+
+
+def test_check_budget_configurable_exhaustion_and_gate_report(tmp_path, monkeypatch):
+    """worker.max_check_rounds bounds what `orx task check` reports and what
+    the worker prompt prescribes: with a budget of 1 the first round leaves
+    zero remaining, the second is flagged exceeded, and a delivery-gate
+    rejection carries the same rounds view (gate run included) so an
+    exhausted budget routes to a structured exit instead of another loop."""
+    from conftest import HOST_CONFIG_TOML, make_project
+
+    root = tmp_path / "tight"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    project = make_project(root, config_toml=HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker", "host-external"]\nmax_check_rounds = 1',
+    ))
+    try:
+        goal = dispatch.create_goal(project, "tight budget", ["criterion"], [], "")[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=["criterion"],
+                      verification=["test -f t1.marker"]),
+        ]))
+        prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+        assert "CHECK-FIX LOOP (budget: 1 check round(s) on this attempt)" in prompt
+
+        dispatch.task_claim(project, "T001")
+        row = active_task(project, "T001")
+        attempt = project.store.attempt_latest_for_task(row.revision_id, "T001")
+        first = dispatch.task_check(project, "T001")
+        assert first["check_rounds"] == {
+            "attempt": attempt.id, "used": 1, "budget": 1,
+            "remaining": 0, "exceeded": False,
+        }
+        second = dispatch.task_check(project, "T001")
+        assert second["check_rounds"]["used"] == 2
+        assert second["check_rounds"]["exceeded"] is True
+        assert second["check_rounds"]["remaining"] == 0
+
+        # A passed-claim completion on a red workspace is gate-rejected, and
+        # the rejection report shows where the gate round left the budget.
+        with pytest.raises(DeliveryRejected) as excinfo:
+            dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+        assert excinfo.value.kind == "gate"
+        assert excinfo.value.report["check_rounds"] == {
+            "attempt": attempt.id, "used": 3, "budget": 1,
+            "remaining": 0, "exceeded": True,
+        }
+    finally:
+        project.close()
+
+
+def test_worker_prompt_carries_check_fix_budget_rules(project, goal):
+    """The assignment prescribes the loop contract: repair in-session within
+    the configured budget by check -> fix -> check, expected-red (TDD)
+    checks never justify a restart, full checks run at stage boundaries —
+    not after every edit — and an exhausted budget with red checks exits
+    structured failed/blocked back to the Controller."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["test -f t1.marker"]),
+    ]))
+    prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+
+    assert "CHECK-FIX LOOP (budget: 3 check round(s) on this attempt)" in prompt
+    assert "orx task check T001" in prompt
+    assert "check_rounds" in prompt  # the observability the loop reads
+    assert "check -> fix -> check" in prompt  # same-session repair
+    assert "TDD" in prompt
+    assert "do not\n   restart the task" in prompt
+    assert "stage boundaries" in prompt
+    assert "not after every edit" in prompt
+    assert "structured failed/blocked delivery result" in prompt
+    assert "Controller decides the next round" in prompt
+    # Integrated into the delivery contract: after BLOCKED EXIT, before the
+    # delivery gate — an extension of the same contract, not a second one.
+    assert (
+        prompt.index("BLOCKED EXIT")
+        < prompt.index("CHECK-FIX LOOP")
+        < prompt.index("DELIVERY GATE")
+    )
 

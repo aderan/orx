@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from orx import dispatch
+import pytest
+
+from orx import dispatch, verify
 from conftest import ir_for, make_project, task_spec, write_evidence, active_task
 
 
@@ -90,7 +92,7 @@ def test_pbv_normal_two_slice_loop_to_done(tmp_path, monkeypatch):
     assert [t["id"] for t in status["tasks"] if t["status"] == "passed"] == ["T001", "T002"]
 
 
-def test_pbv_command_gate_failure_fails_without_review(tmp_path, monkeypatch):
+def test_pbv_command_gate_failure_refused_without_review(tmp_path, monkeypatch):
     project = _pbv_project(tmp_path, monkeypatch)
     goal = _pbv_goal(project)
     ir = _two_slice_plan(goal)
@@ -99,19 +101,35 @@ def test_pbv_command_gate_failure_fails_without_review(tmp_path, monkeypatch):
 
     dispatch.run_slice(project)
     dispatch.task_claim(project, "T001")
-    complete = dispatch.task_complete(project, "T001", str(write_evidence(Path.cwd())))
-
-    # The kernel fails the task on the nonzero gate; no agent verdict needed.
-    assert complete["status"] == "failed"
-    assert "verification failed" in (active_task(project, "T001").failure_reason or "")
+    # A red command gate cannot be completed past: the delivery is refused
+    # (nothing accepted, task back to running, attempt open), and no agent
+    # verdict is dispatched for a round that never delivered.
+    with pytest.raises(verify.DeliveryRejected) as excinfo:
+        dispatch.task_complete(project, "T001", str(write_evidence(Path.cwd())))
+    assert excinfo.value.kind == "gate"
+    assert active_task(project, "T001").status == "running"
     vout = dispatch.verify_dispatch(project)
     assert not [e for e in vout["agent_required"] if e["task"] == "T001"]
-    assert active_task(project, "T002").status == "blocked"  # failed dependency blocks it
+    assert active_task(project, "T002").status == "pending"  # untouched
 
-    # Retry: the next build prompt carries the gate failure.
+    # The worker reports the red gate as its delivery result instead: the
+    # task fails with the worker-reported kind, blocking the dependent slice.
+    failed = write_evidence(
+        Path.cwd(), "evidence-failed.json", status="failed",
+        summary="command gate red",
+        checks=[{"command": "false", "exit_code": 1, "log": None}],
+    )
+    result = dispatch.task_complete(project, "T001", str(failed))
+    assert result["status"] == "failed"
+    assert "delivery failed (worker-reported failure)" in (
+        active_task(project, "T001").failure_reason or ""
+    )
+    assert active_task(project, "T002").status == "blocked"  # failed dependency
+
+    # Retry: the next build prompt carries the failed delivery.
     dispatch.task_retry(project, "T001")
     out = dispatch.run_slice(project)
-    assert "verification failed" in out["host_required"][0]["prompt"]
+    assert "delivery failed (worker-reported failure)" in out["host_required"][0]["prompt"]
 
 
 def test_pbv_review_fail_then_fix_passes_incrementally(tmp_path, monkeypatch):

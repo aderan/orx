@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from typer.testing import CliRunner
 
-from orx import dispatch
+from orx import dispatch, verify
 from orx.cli import app
 from orx.records import NotFoundError
 
@@ -85,13 +85,30 @@ def test_timeline_orders_filters_and_envelope(project, tmp_path, monkeypatch):
     )
     dispatch.run_slice(project)
     dispatch.task_claim(project, "T001")
-    failed = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
-    assert failed["status"] == "failed"
+    # Red-complete contract: the marker is missing, so the completion is
+    # REFUSED — but the refused gate already recorded its red rows, and the
+    # timeline sees them while the task stays running.
+    with pytest.raises(verify.DeliveryRejected):
+        dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert any(entry["event"] == "verify.fail" for entry in dispatch.timeline(project)["entries"])
     midway = dispatch.timeline(project)
     assert any(entry["event"] == "verify.fail" for entry in midway["entries"])
-
-    dispatch.task_retry(project, "T001")
     (tmp_path / "ready.txt").write_text("ok\n")
+    completed = dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "e1.json"))
+    )
+    assert completed["status"] == "verifying"
+    # The round's agent verdict fails: the task lands failed via verify_fail.
+    verdict = dispatch.verify_submit(
+        project,
+        "T001",
+        "fail",
+        "agent: confirm the marker",
+        str(write_evidence(tmp_path, "v.json")),
+        reason="marker unreadable",
+    )
+    assert verdict["status"] == "failed"
+    dispatch.task_retry(project, "T001")
     dispatch.run_slice(project)
     dispatch.task_claim(project, "T001")
     completed = dispatch.task_complete(
@@ -103,7 +120,7 @@ def test_timeline_orders_filters_and_envelope(project, tmp_path, monkeypatch):
         "T001",
         "pass",
         "agent: confirm the marker",
-        str(write_evidence(tmp_path, "v.json")),
+        str(write_evidence(tmp_path, "v2.json")),
     )
     assert verdict["status"] == "passed"
 

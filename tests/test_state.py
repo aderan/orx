@@ -175,6 +175,72 @@ def test_foreign_keys_enforced(project, goal):
         )
 
 
+def test_verifications_current_window_and_per_attempt_history(project, goal):
+    """Store-level contract for per-attempt history: rows are append-only,
+    `verifications_for_attempt` returns each round's rows, and
+    `verifications_current` keeps only the latest worker attempt's window —
+    its own rows, later verifier attempts' rows, and unbound rows; never an
+    older attempt's rows."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    store = project.store
+    goal_row = store.goal_active()
+    revision = store.revision_active(store.run_for_goal(goal_row.id).id)
+
+    def worker():
+        return store.attempt_create(
+            revision_row_id=revision.id, role="worker", profile="host-worker",
+            driver="host", harness="zcode", model_id="m-worker",
+            requested_effort="medium", task_id="T001",
+        )
+
+    def verifier():
+        return store.attempt_create(
+            revision_row_id=revision.id, role="verifier", profile="host-verifier",
+            driver="host", harness="zcode", model_id="m-verifier",
+            requested_effort="medium", task_id="T001",
+        )
+
+    # Round 1: an unbound row (no attempt existed yet), the worker's red
+    # row, and a verifier row on top of it.
+    store.verification_add(revision.id, "T001", "command", "true", passed=False)
+    first = worker()
+    store.verification_add(revision.id, "T001", "command", "true",
+                           passed=False, attempt_id=first.id)
+    first_verifier = verifier()
+    store.verification_add(revision.id, "T001", "agent", "agent: looks fine",
+                           passed=False, attempt_id=first_verifier.id)
+    # Everything is current while round 1 is the latest round.
+    assert [v.attempt_id for v in store.verifications_current(revision.id, "T001")] == [
+        None, first.id, first_verifier.id,
+    ]
+
+    # Round 2 (the retry routes a fresh worker attempt): history stays...
+    second = worker()
+    store.verification_add(revision.id, "T001", "command", "true",
+                           passed=True, attempt_id=second.id)
+    assert len(store.verifications_for(revision.id, "T001")) == 4
+    assert store.verifications_for_attempt(first.id) == [
+        v for v in store.verifications_for(revision.id, "T001")
+        if v.attempt_id == first.id
+    ]
+    assert store.verifications_for_attempt(first_verifier.id)[0].kind == "agent"
+    # ...but the current view is the new window only: both bound rows of
+    # round 1 are history. The unbound row has no attempt to be superseded
+    # by, so it stays in the window — and always loses to the fresh row of
+    # the same entry under latest-row-per-entry judgment.
+    assert [v.attempt_id for v in store.verifications_current(revision.id, "T001")] == [
+        None, second.id,
+    ]
+    assert all(
+        v.attempt_id not in (first.id, first_verifier.id)
+        for v in store.verifications_current(revision.id, "T001")
+    )
+    assert store.attempt_current_worker_for_task(revision.id, "T001").id == second.id
+
+
 def test_wal_mode_enabled(project):
     mode = project.store.conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"

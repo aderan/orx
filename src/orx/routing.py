@@ -19,10 +19,23 @@ from orx.records import (
     LAST_RESORT_RESOURCE_STATUS,
     NON_ROUTABLE_RESOURCE_STATUSES,
     PREFERRED_RESOURCE_STATUSES,
+    Driver,
     ResourceStatus,
     Role,
 )
 from orx.state import Store
+
+# Host-exclusive capabilities (R002 follow-up): capabilities that only a
+# host-driver profile may satisfy. A task whose `routing.required_capabilities`
+# names one of these is a host task by declaration — `orx run` parks it as a
+# host assignment (waiting_host) and a CLI worker is never started for it.
+# route() enforces the exclusivity structurally: a non-host profile that
+# claims the capability is still rejected (`driver_not_host`), so the
+# guarantee does not depend on profiles.toml being well-configured. Register
+# the capability on host-driver profiles (the zcode preset does) — that also
+# puts it in the known-capability set plan validation accepts.
+HOST_CONTEXT_CAPABILITY = "host_context"
+HOST_EXCLUSIVE_CAPABILITIES: frozenset[str] = frozenset({HOST_CONTEXT_CAPABILITY})
 
 
 @dataclass(frozen=True)
@@ -121,6 +134,15 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             missing = sorted(set(req.required_capabilities) - set(profile.capabilities))
             if missing:
                 reject = "missing_capability:" + ",".join(missing)
+            else:
+                # Host-exclusive capabilities gate on the driver, not just the
+                # declaration: a profile that is not host can never satisfy
+                # them, so a host-declared task cannot land on a CLI worker.
+                host_only = sorted(
+                    set(req.required_capabilities) & HOST_EXCLUSIVE_CAPABILITIES
+                )
+                if host_only and profile.driver is not Driver.HOST:
+                    reject = "driver_not_host:" + ",".join(host_only)
         result.candidates.append(
             Candidate(
                 profile=name,

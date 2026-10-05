@@ -79,6 +79,43 @@ proceed as entry A: establish or continue the Goal and run the loop.
 - Capability matching uses profile-declared capabilities against the plan's
   `required_capabilities`; a declaration is a routing fact, not proof the
   tool can do it.
+- `host_context` is a **host-exclusive** capability (routing enforces the
+  driver, not just the declaration). A task whose plan routing declares
+  `required_capabilities: ["host_context"]` parks as a host assignment at
+  `orx run` — a CLI worker is never started for it.
+
+## Host-only task classes — declare `host_context` at plan stage
+
+When you write or review a Plan IR, tag a task with
+`routing.required_capabilities = ["host_context"]` when it is one of:
+
+- **Global acceptance** — judging the whole run against the Goal
+  (`orx status --json` arbitration, cross-cutting acceptance criteria),
+  not one task's diff.
+- **Report generation from cross-task read-only snapshots** — deliverables
+  assembled from run state, verification history, and transcripts across
+  many tasks (read-only, no write scope of their own).
+- **Tasks needing main-session context** — work whose real input is your
+  session context (handovers, consulting syntheses, decisions resting on
+  conversation history rather than repo files).
+
+These task classes fail expensively on CLI workers (R002: the report task
+burned two CLI rounds before a host attempt passed). Declaring the
+capability moves the decision to plan time: `orx run` parks the task for
+host execution; run it yourself or hand the self-contained prompt to a
+subagent with the context it names in `preread`.
+
+Rules:
+
+- Ordinary build/verify tasks never declare it — anything a CLI worker can
+  do from its prompt alone stays on the worker ladder. Tasks without the
+  declaration route exactly as before.
+- If `orx run` reports a routing error for such a task (no host profile in
+  the ladder declares `host_context`), fix profiles.toml or the ladder —
+  never delete the declaration to force the task onto a CLI worker.
+- Host profiles must declare the capability for plan validation to accept
+  it (the zcode preset registers it on all host profiles;
+  docs/routing-strategy.md § "Host-exclusive capability routing").
 
 ## Local exploration, retry, replan, or ask — pick the right move
 
@@ -86,7 +123,12 @@ proceed as entry A: establish or continue the Goal and run the loop.
   state: reading `orx status --json`, repo files, a diff, a log. Use it to
   prepare intake, judge a failure, or write replan context. Deeper
   exploration belongs inside planning assignments (Plan IR `exploration`)
-  or a scoped task — not in ever-growing host-side reading.
+  or a scoped task — not in ever-growing host-side reading. The command
+  `orx task check <id>` belongs to the worker's same-session
+  check -> fix -> check loop: its `check_rounds` output reports rounds
+  used vs the `worker.max_check_rounds` budget, it never changes a task's
+  status, and it is never a verdict — but you may run it to see where a
+  workspace stands.
 - **Retry** (`orx task retry <id>`) is for a failed attempt of a correct
   task: test failures, crashes, incomplete implementations. Same plan, next
   attempt; the recorded failure reason feeds the next prompt automatically.
@@ -96,6 +138,15 @@ proceed as entry A: establish or continue the Goal and run the loop.
   acceptance, or authorization never given. Bring options, don't guess.
 
 ## The loop
+
+Worker assignments carry ORX's delivery contract in the prompt itself
+(pass it through unchanged): START GATE (the worker proves the prescribed
+checks can run before implementing), BLOCKED EXIT (the worker delivers
+`status: "blocked"` when they cannot — never implements against checks it
+cannot run), CHECK-FIX LOOP (red checks are repaired in the same session
+within the `check_rounds` budget), and DELIVERY GATE (completion only
+when every command check is green). The outcomes you act on are the
+structured delivery statuses and the reason prefixes in steps 6–8.
 
 1. Read `orx status --json` before acting. It is the only source of truth.
 2. Treat `mode = "host_required"` from `orx plan` (or an entry in
@@ -116,13 +167,33 @@ proceed as entry A: establish or continue the Goal and run the loop.
    attempt you answered: `orx task complete <id> --evidence evidence.json
    --attempt <id from claim>`. A submission for an attempt that is closed or
    no longer the latest is rejected as stale — that is correct; do not fight it.
-6. When the work is done, write an evidence file and
-   `orx task complete <id> --evidence evidence.json`. Completion means
-   "execution finished", NOT "passed" — verification decides.
-7. When the work failed, `orx task fail <id> --reason "<why>"`. The reason is
-   recorded and injected into the next attempt's prompt — make it concrete.
+6. When the work is done, the worker submits the structured delivery
+   result: `orx task complete <id> --evidence evidence.json`. The file is
+   JSON — `status` (`passed` | `failed` | `blocked`), `summary`, `checks[]`
+   (each `{command, exit_code, log}`), `artifacts[]`; a legacy-shaped file
+   is rejected by name and nothing is recorded. A `passed` claim runs the
+   delivery gate: every command verification entry is re-run fresh, and a
+   red row REJECTS the completion (exit 1) while the task keeps its status
+   and the attempt stays open. A gate rejection is not a failure — send
+   the worker back to fix and complete again on the SAME attempt (no
+   retry, no new dispatch). Completion means "execution finished", NOT
+   "passed" — verification decides.
+7. When the work failed, `orx task fail <id> --reason "<why>"`, or accept
+   the worker's structured `status: "failed"` / `"blocked"` delivery. The
+   recorded reason distinguishes the kinds: `delivery blocked
+   (environment/tool blocked)` means the checks could not run at all — fix
+   the environment or the routing, not the code; `delivery failed
+   (worker-reported failure)` is a code failure. The reason is recorded and
+   injected into the next attempt's prompt — make it concrete.
 8. Retry (`orx task retry <id>`) for test failures, process crashes, or
-   incomplete implementations. Retry keeps the same plan.
+   incomplete implementations. Retry keeps the same plan and deletes
+   nothing: the failed attempt's verification rows stay queryable per
+   attempt, and the next assignment automatically quotes them (command,
+   exit code, error summary, log path) plus repair guidance classified
+   from the recorded delivery result — an environment/tool block says fix
+   the environment or change routing; a code failure says go directly at
+   the failing checks. You do not need to reconstruct the failure context
+   yourself.
 9. Replan (`orx replan`) only when an assumption or the dependency graph is
    wrong. Replan is rejected while tasks are running or verifying. When you
    replan mid-Goal, write a context file first and pass
@@ -169,11 +240,35 @@ attempt that survived a session break. That attempt still owns the task.
    ORX enforces this (late completions of the old attempt are rejected as
    stale); do not try to work around it.
 
-## Evidence file
+## Evidence file (structured delivery result)
+
+`orx task complete --evidence` accepts exactly this shape; anything else
+is rejected by name and nothing is recorded:
 
 ```json
-{ "summary": "", "commands": [], "artifacts": [] }
+{
+  "status": "passed",
+  "summary": "what was delivered, or why it was not",
+  "checks": [
+    {
+      "command": "uv run pytest -q",
+      "exit_code": 0,
+      "log": ".orx/runs/<run>/check/<task>/01-0000-command.log"
+    }
+  ],
+  "artifacts": ["path/to/produced/file"]
+}
 ```
+
+`status` (`passed` | `failed` | `blocked`), `checks` (one
+`{command, exit_code, log}` object per command check the worker ran;
+`exit_code`/`log` null when the check could not run), `artifacts`, and
+`summary` are all required. For a `passed` claim the delivery gate re-runs
+the command entries itself, so reported exit codes never substitute for
+it; `failed`/`blocked` deliveries quote the red or not-run checks in the
+recorded failure reason, and the kind prefix (`delivery blocked
+(environment/tool blocked)` vs `delivery failed (worker-reported
+failure)`) is what classifies the retry guidance.
 
 ## Escalation & acceptance (convention: docs/routing-strategy.md)
 

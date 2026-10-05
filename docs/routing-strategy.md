@@ -75,7 +75,10 @@ the defaults
 
 A project that should burn Cursor first flips the two entries in its own
 `.orx/config.toml`. The historical ladder below remains valid for projects
-that keep the pre-preset order:
+that keep the pre-preset order. Every preset host profile also declares the
+`host_context` capability (next section), so a task that declares it parks
+for host even in a Cursor-first ladder — a CLI rung cannot satisfy a
+host-exclusive capability.
 
     cursor-strong (strong+medium) → cursor-strong-high (strong+high)
     → orx-host (strong, host) → cursor-frontier / codex-frontier (frontier+high)
@@ -88,6 +91,56 @@ retry. Triggers, from the controller contract:
 - same acceptance criterion fails twice → pin the next rung up;
 - plan/verification disagreement, scope drift, wrong dependency graph →
   `orx replan` (frontier pool), never another blind retry.
+
+## Host-exclusive capability routing (`host_context`) — 2026-10-04
+
+R002 lesson: the report/global-acceptance task (T005) burned two CLI worker
+rounds (~21 min) on the same failing check before a host attempt passed in
+18 min. That task class never belonged on a CLI worker — the decision belongs
+at **plan time**, not at retry time.
+
+**Mechanism.** `routing.required_capabilities` may name `host_context`
+(`HOST_CONTEXT_CAPABILITY` in `src/orx/routing.py`). Host-driver profiles
+declare the capability in profiles.toml — the zcode preset registers it on
+all four host profiles (`zcode-controller`, `zcode-worker`,
+`zcode-verifier-flash`, `zcode-verifier-strong`). When `orx run` routes a
+task that declares it:
+
+- only host-driver profiles that declare the capability are kept; the task is
+  parked as a host assignment (`waiting_host`, `orx task claim …`) — **a CLI
+  worker is never started for it**;
+- the exclusivity is structural, not a convention: a non-host profile that
+  claims `host_context` is still rejected (`driver_not_host`), so a
+  misconfigured profiles.toml cannot silently land the task on a CLI worker;
+- if no profile in the role's ladder can serve it, routing fails loudly
+  (`missing_capability`) and the task stays runnable — it is never silently
+  delegated to a CLI fallback.
+
+A task that does **not** declare the capability routes exactly as before:
+same ladder, same order, same filters. The declaration is the only switch.
+
+**When to declare it at plan stage** (planner/controller judgment criteria —
+also in `skills/orx-controller`):
+
+- **Global acceptance** — checks that judge the whole run against the Goal
+  (`orx status --json` arbitration, cross-cutting acceptance criteria), not
+  one task's diff.
+- **Report generation from cross-task read-only snapshots** — deliverables
+  assembled from run state, verification history, and transcripts across many
+  tasks (read-only, no scope of their own).
+- **Tasks needing main-session context** — work whose real input is the
+  Controller's session context (handovers, consulting syntheses, decisions
+  that depend on conversation history rather than repo files).
+
+Ordinary build/verify tasks never declare it; a task that a CLI worker can
+do from its prompt alone stays on the ladder.
+
+**Why capability matching and not a new `prefer_driver` flag:** the existing
+`required_capabilities` filter already expresses "must run in the host" once
+host profiles declare the capability — the driver gate in `route()` closes
+the only gap (a non-host profile claiming it). A separate driver hint would
+be a second way to say the same thing; the additive allowance for
+`prefer_driver` was not needed and was not added.
 
 ## Validation layers (V0–V3)
 

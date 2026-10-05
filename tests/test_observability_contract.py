@@ -1,4 +1,4 @@
-"""Execute the v7 read contract against the observability fixture.
+"""Execute the observability read contract against the observability fixture.
 
 The SQL is taken from docs/observability-contract.md. Nothing here opens
 Store or migrates a database.
@@ -18,6 +18,9 @@ SEED = ROOT / "tests" / "fixtures" / "observability" / "seed.sql"
 QUERIES = (
     "schema_gate",
     "linkage",
+    "delivery_failure_kind",
+    "verification_history",
+    "verification_current",
     "manual_ledger_dedupe",
     "delivery_quality",
     "consumption",
@@ -317,3 +320,49 @@ def test_contract_points_readers_away_from_store_and_an_in_repo_analyzer():
     assert "from orx" not in text
     assert "orx-analytics" in text
     assert "tests/fixtures/observability/seed.sql" in text
+
+
+def test_verification_history_and_current_window_split_rounds():
+    """Per-attempt history vs the current view: retry keeps every round's
+    rows (grouped by attempt), and the current read drops rows bound to
+    attempts older than the task's latest worker attempt."""
+    queries = load_queries()
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SEED.read_text())
+    try:
+        history = run(conn, queries["verification_history"])
+        rev1_t001 = [
+            (row["attempt_id"], row["attempt_role"],
+             row["verification_rows"], row["passed_rows"])
+            for row in history
+            if row["revision_id"] == 1 and row["task_id"] == "T001"
+        ]
+        assert rev1_t001 == [
+            (4, "worker", 1, 0),    # the failed round's red gate row
+            (5, "worker", 1, 1),    # the retried round ran the same command green
+            (6, "verifier", 1, 0),  # the agent verdict that failed the round
+        ]
+        # one group per attempt; nothing was deleted anywhere
+        assert sum(row["verification_rows"] for row in history) == 10
+
+        current = run(conn, queries["verification_current"])
+        rev1_t001_now = [
+            (row["verification_row_id"], row["attempt_id"], row["passed"])
+            for row in current
+            if row["revision_id"] == 1 and row["task_id"] == "T001"
+        ]
+        assert rev1_t001_now == [(1, 6, 0), (10, 5, 1)]  # row 9 is history
+        assert {(row["revision_id"], row["task_id"]) for row in current} == {
+            (1, "T001"), (1, "T002"), (1, "T003"), (1, "T004"), (2, "T001"),
+        }
+        assert all(row["verification_row_id"] != 9 for row in current)
+        # single-round tasks keep all of their rows in the current view
+        rev1_t003 = [
+            row["verification_row_id"]
+            for row in current
+            if row["revision_id"] == 1 and row["task_id"] == "T003"
+        ]
+        assert rev1_t003 == [4, 5]
+    finally:
+        conn.close()

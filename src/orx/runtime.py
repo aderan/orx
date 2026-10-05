@@ -9,6 +9,8 @@ subprocess themselves.
 from __future__ import annotations
 
 import re
+import shlex
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -57,6 +59,118 @@ def forbidden_command(command: str) -> str | None:
         if pattern.search(command):
             return label
     return None
+
+
+# ---------------------------------------------------------------------------
+# Static command preflight (R002 follow-up). Before a worker invests in a
+# task, ORX checks each command verification entry WITHOUT executing it: the
+# shared denylist above plus a PATH probe of the command's first token. This
+# removes one measured R002 failure class — workers whose shell could not run
+# the checks but implemented anyway and reported success. It does not prevent
+# red tests or model mistakes, and it never judges the work.
+
+# /bin/sh builtins: runnable even though no PATH entry matches them, so a
+# PATH probe must not report them missing.
+SHELL_BUILTINS: frozenset[str] = frozenset({
+    ":", ".", "[", "break", "case", "cd", "command", "continue", "echo",
+    "eval", "exec", "exit", "export", "false", "getopts", "hash", "pwd",
+    "read", "readonly", "return", "set", "shift", "test", "times", "trap",
+    "true", "type", "ulimit", "umask", "unset", "wait",
+})
+
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_GROUPING_TOKENS = frozenset({"(", ")", "{", "}", "!"})
+_SEPARATOR_WORDS = frozenset({"&&", "||", ";", "|", "&", ";;", "\n"})
+_SEPARATOR_SUBSTRINGS = ("&&", "||", ";", "|", "&", "\n")
+
+
+def _cut_at_separator(word: str) -> str:
+    """Trim a shell separator glued onto a word without spaces (``a&&b``)."""
+    cut = len(word)
+    for sep in _SEPARATOR_SUBSTRINGS:
+        pos = word.find(sep)
+        if pos != -1 and pos < cut:
+            cut = pos
+    return word[:cut]
+
+
+def first_command_token(command: str) -> str | None:
+    """The first command word of a shell command line, or None when the line
+    has no plain command word.
+
+    This is the PATH-probe target: the program /bin/sh would exec first.
+    Leading variable assignments (``FOO=bar cmd``) and grouping tokens
+    (``(``, ``{``, ``!``) are skipped; the scan stops at the first separator
+    (``&&``, ``||``, ``;``, ``|``, ``&``). Conservative by design: a line
+    that does not tokenize to a plain word yields None and the caller
+    reports an undetermined probe instead of guessing.
+    """
+    text = (command or "").strip()
+    if not text:
+        return None
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        # Unbalanced quotes: whitespace-split rather than fail outright.
+        words = text.split()
+    for word in words:
+        word = _cut_at_separator(word)
+        if not word or _ENV_ASSIGNMENT.match(word):
+            continue
+        if word in _GROUPING_TOKENS:
+            continue
+        if word in _SEPARATOR_WORDS:
+            break
+        return word
+    return None
+
+
+def probe_path_token(token: str) -> tuple[str, str | None]:
+    """(status, resolved path or None) for one command token.
+
+    ``builtin`` — a /bin/sh builtin, runnable regardless of PATH.
+    ``found`` / ``missing`` — the shutil.which resolution; tokens carrying a
+    directory component are checked directly, matching shell lookup rules.
+    """
+    if token in SHELL_BUILTINS:
+        return "builtin", None
+    resolved = shutil.which(token)
+    if resolved is not None:
+        return "found", resolved
+    return "missing", None
+
+
+def static_command_probe(command: str) -> dict:
+    """Denylist + first-token PATH probe for one command string. Nothing is
+    executed: this is the assignment-time preflight shared by every launch
+    path, so a check that can never run as written is visible before a
+    worker starts.
+
+    ``blocked`` is true only for a denied command or a bare first token that
+    is absent from PATH (and not a shell builtin) — tasks never install into
+    PATH directories, so a bare missing name really cannot run. A path-like
+    token (``./scripts/x.sh``, ``tools/bin/y``) may be a file the task
+    itself creates, so a static miss downgrades to ``undetermined`` rather
+    than a false ``blocked``; the worker's own start gate still decides by
+    actually running the check.
+    """
+    denial = forbidden_command(command)
+    token = first_command_token(command)
+    if token is None:
+        status, resolved = "undetermined", None
+    else:
+        status, resolved = probe_path_token(token)
+        if status == "missing" and ("/" in token or "\\" in token):
+            status, resolved = "undetermined", None
+    return {
+        "command": command,
+        "denial": denial,
+        "token": token,
+        "token_status": status,
+        "token_path": resolved,
+        "runnable": denial is None and status in ("found", "builtin"),
+        "blocked": denial is not None or status == "missing",
+    }
 
 
 @dataclass(frozen=True)

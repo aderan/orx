@@ -166,9 +166,23 @@ def task_spec(tid, objective="do the thing", deps=(), acceptance=(), verificatio
     }
 
 
-def write_evidence(tmp_path: Path, name: str = "evidence.json") -> Path:
+def write_evidence(tmp_path: Path, name: str = "evidence.json", *, status: str = "passed",
+                   checks=(), artifacts=(), summary: str = "work finished") -> Path:
+    """A structured delivery result — the evidence shape `orx task complete`
+    validates: status/checks/artifacts/summary. The delivery gate re-runs the
+    command entries itself, so an empty checks list is a legal success claim.
+    The legacy {summary, commands, artifacts} keys stay legal alongside the
+    new ones; tests that need a failed/blocked delivery pass status=
+    (and report the red checks they saw)."""
     path = tmp_path / name
-    path.write_text(json.dumps({"summary": "work finished", "commands": [], "artifacts": []}))
+    path.write_text(json.dumps({
+        "status": status,
+        "summary": summary,
+        "checks": list(checks),
+        "artifacts": list(artifacts),
+        # legacy shape keys: still accepted by the evidence schema
+        "commands": [],
+    }))
     return path
 
 

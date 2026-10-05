@@ -1544,14 +1544,57 @@ class Store:
         ).fetchall()
         return [_verification(r) for r in rows]
 
-    def verifications_clear(self, revision_row_id: int, task_id: str) -> None:
-        """Retry semantics: verification rows are per-attempt state. A retry
-        starts a fresh verification context (history lives in task_events)."""
-        with self.tx():
-            self.conn.execute(
-                "DELETE FROM verifications WHERE revision_id = ? AND task_id = ?",
-                (revision_row_id, task_id),
-            )
+    def attempt_current_worker_for_task(
+        self, revision_row_id: int, task_id: str
+    ) -> Attempt | None:
+        """The latest worker attempt for a task — the boundary between the
+        task's current verification window and its per-attempt history.
+
+        A retry routes a fresh worker attempt, so that attempt plus everything
+        created after it (the verifier attempts dispatched on top of it) is
+        the current round; earlier attempts are history."""
+        r = self.conn.execute(
+            "SELECT * FROM attempts WHERE revision_id = ? AND task_id = ?"
+            " AND role = 'worker' ORDER BY id DESC LIMIT 1",
+            (revision_row_id, task_id),
+        ).fetchone()
+        return _attempt(r) if r else None
+
+    def verifications_for_attempt(self, attempt_id: int) -> list[Verification]:
+        """Every verification row recorded for one attempt — the per-attempt
+        history read. Rows with no attempt binding (attempt_id NULL) belong
+        to no attempt's list and are only reachable through the task reads."""
+        rows = self.conn.execute(
+            "SELECT * FROM verifications WHERE attempt_id = ? ORDER BY id",
+            (attempt_id,),
+        ).fetchall()
+        return [_verification(r) for r in rows]
+
+    def verifications_current(
+        self, revision_row_id: int, task_id: str
+    ) -> list[Verification]:
+        """The task's CURRENT verification rows: everything recorded in the
+        current attempt window.
+
+        Verification history is append-only per attempt — a retry deletes
+        nothing — so "current" is a window over the rows, not the whole
+        table: rows bound to the latest worker attempt, rows bound to
+        attempts created after it (the verifier attempts dispatched for that
+        round), and unbound rows (attempt_id NULL). Rows bound to older
+        attempts are history: still queryable (`verifications_for_attempt`,
+        `verifications_for`), never read as the task's current result. With
+        no worker attempt at all, nothing was superseded and every row is
+        current."""
+        current = self.attempt_current_worker_for_task(revision_row_id, task_id)
+        boundary = current.id if current is not None else 0
+        rows = self.conn.execute(
+            "SELECT * FROM verifications"
+            " WHERE revision_id = ? AND task_id = ?"
+            " AND (attempt_id IS NULL OR attempt_id >= ?)"
+            " ORDER BY id",
+            (revision_row_id, task_id, boundary),
+        ).fetchall()
+        return [_verification(r) for r in rows]
 
     # -- routing decisions ---------------------------------------------------------
 

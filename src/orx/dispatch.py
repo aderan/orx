@@ -35,7 +35,16 @@ from orx.records import (
     TaskStatus,
     UNFINISHED_TASK_STATUSES,
 )
-from orx.state import Assignment, Goal, Run, Revision, Store, TaskRow, now as db_now
+from orx.state import (
+    Assignment,
+    Goal,
+    Run,
+    Revision,
+    Store,
+    TaskRow,
+    Verification,
+    now as db_now,
+)
 
 DEFAULT_CONFIG_TOML = """\
 schema_version = 1
@@ -62,6 +71,12 @@ profiles = ["orx-host"]
 
 [worker]
 profiles = ["orx-host"]
+# Same-session check-fix loop budget: how many `orx task check` rounds one
+# worker attempt may use before the worker must exit structured
+# failed/blocked back to the controller. Advisory contract (ORX never
+# kills a session); it bounds what the worker prompt prescribes and what
+# `orx task check` reports as check_rounds.
+max_check_rounds = 3
 
 [verify]
 profiles = ["orx-host"]
@@ -414,6 +429,7 @@ def replan_snapshot(store: Store, goal: Goal, run: Run) -> dict:
                     ],
                     "verifications": [
                         {
+                            "attempt_id": v.attempt_id,
                             "kind": v.kind,
                             "command": v.command,
                             "passed": v.passed,
@@ -975,6 +991,9 @@ def run_slice(project: Project) -> dict:
                 str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None
             ),
             "preread": list(task.preread),
+            # Re-computed static preflight of the same verification entries
+            # the parked prompt file already carries; pure, no execution.
+            "preflight": preflight_task_checks(task),
             "execution": (
                 _execution_spec(project, project.profiles.get(attempt.profile), attempt)
                 if attempt else None
@@ -1047,7 +1066,10 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     store = project.store
     prompt = worker_prompt(
         goal, task,
-        prior_failure=_prior_failure_context(store, revision_row_id, task.task_id),
+        prior_failure=_prior_failure_context(
+            store, revision_row_id, task.task_id, project.root
+        ),
+        check_budget=project.config.worker_max_check_rounds,
     )
     attempt = store.attempt_create(
         revision_row_id=revision_row_id,
@@ -1079,6 +1101,9 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         "profile": profile.name,
         "prompt": prompt,
         "prompt_file": _write_task_assignment_file(project, run.id, task.task_id, prompt),
+        # Structured static preflight (denylist + first-token PATH probe) for
+        # the same rows the prompt text renders; nothing was executed.
+        "preflight": preflight_task_checks(task),
         "preread": list(task.preread),
         "execution": _execution_spec(project, profile, attempt),
     }
@@ -1099,14 +1124,24 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     probe = adapter.probe()
 
     scratch = _launch_dir(project, run.id, f"worker-{task.task_id}")
+    prompt = worker_prompt(
+        goal, task,
+        prior_failure=_prior_failure_context(
+            store, revision.id, task.task_id, project.root
+        ),
+        check_budget=project.config.worker_max_check_rounds,
+    )
+    # Same contract as the host/external park path: the preflight-bearing
+    # prompt is archived as the assignment file even though ORX itself
+    # launched the worker, so both launch paths leave the identical audit
+    # artifact (prompt text with the static preflight baked in).
+    prompt_file = _write_task_assignment_file(project, run.id, task.task_id, prompt)
+    preflight = preflight_task_checks(task)
     launch = adapter.build_worker_launch(
         root=project.root,
         scratch=scratch,
         profile=profile,
-        prompt=worker_prompt(
-            goal, task,
-            prior_failure=_prior_failure_context(store, revision.id, task.task_id),
-        ),
+        prompt=prompt,
         timeout=project.config.command_timeout_sec,
     )
     attempt = store.attempt_create(
@@ -1139,7 +1174,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
                              failure_reason=reason)
         machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
                            reason=reason, failure_reason=reason)
-        return {"task": task.task_id, "profile": profile.name, "status": "failed", "reason": reason}
+        return {"task": task.task_id, "profile": profile.name, "status": "failed",
+                "reason": reason, "prompt_file": prompt_file}
 
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
@@ -1163,46 +1199,323 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
                            reason=reason, failure_reason=reason)
         return {"task": task.task_id, "profile": profile.name, "status": "failed",
-                "reason": reason, "log": log}
+                "reason": reason, "log": log, "prompt_file": prompt_file}
 
-    machine.transition(store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
-                       reason="cli execution finished; verification starting")
-    verify.run_command_verifications(
+    # Delivery gate, shared with `orx task complete`: every command entry
+    # runs fresh through the same `task check` runner, bound to this
+    # attempt — execution finished is not a green delivery. A red gate
+    # follows the current FAILED flow (complete -> verify_fail) with the
+    # full per-check detail in the task event; agent entries are not run
+    # and stay with the independent verifier.
+    gate = verify.run_task_check(
         store, project.root, run.id, revision.id,
         store.task_get(revision.id, task.task_id),
         timeout=project.config.command_timeout_sec,
         attempt_id=attempt.id,
     )
-    verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
+    machine.transition(store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
+                       reason="cli execution finished; verification starting")
+    # The gate rows above are the latest row per command entry, so the
+    # verdict judges exactly what the gate just ran.
+    verdict = verify.apply_verdict(
+        store, revision.id, store.task_get(revision.id, task.task_id),
+        failure_hint=verify.gate_failure_reason(gate),
+    )
     refresh(store, goal, run)
-    return {
+    result = {
         "task": task.task_id,
         "profile": profile.name,
         "status": store.task_get(revision.id, task.task_id).status,
         "verdict": verdict,
+        "gate": gate,
         "log": log,
         "attempt": attempt.id,
+        "prompt_file": prompt_file,
+        "preflight": preflight,
         "actual_effort": effort.actual,
         "effort_source": effort.source,
     }
+    if verdict == "failed":
+        result["reason"] = store.task_get(revision.id, task.task_id).failure_reason
+    return result
 
 
-def _prior_failure_context(store: Store, revision_id: int, task_id: str) -> str:
+# How many retained failed checks a retry prompt spells out before folding
+# the rest into a "+N more" line (same cap style as gate_failure_reason).
+_RETRY_EVIDENCE_LIMIT = 5
+
+# Repair guidance for the retrying worker, classified from the recorded
+# delivery result. 'blocked' and 'failed' carry the delivery-result prefixes
+# landed with the structured delivery result; the gate's red rows read as a
+# code failure; anything else (operator `task fail`, unmarked reasons) falls
+# back to the generic text — which is also where a scope/plan problem lands:
+# such a failure is not fixable by redoing, and the worker must say so.
+_RETRY_GUIDANCE = {
+    "blocked": (
+        "That failure was an environment/tool block, not a code defect: first"
+        " make the checks runnable in your environment (install the missing"
+        " tool, unblock the command) or report blocked explaining that routing"
+        " needs to change (a different profile or harness); do not blindly"
+        " redo the task."
+    ),
+    "code": (
+        "That failure was a code/check failure: go directly to the failing"
+        " check(s) listed above — open each log path, reproduce the failure,"
+        " and fix that specific problem; do not redo the task blindly or"
+        " re-explore unrelated work."
+    ),
+    "other": (
+        "Fix that specific problem; do not redo the task blindly. If the"
+        " failure means the assignment itself is wrong (scope too narrow,"
+        " dependencies or plan incorrect), report blocked explaining that"
+        " the assignment needs adjustment instead of forcing a redo."
+    ),
+}
+
+
+def _classify_prior_failure(reason: str, attempt) -> str:
+    """'blocked' | 'code' | 'other', from the failure markers ORX recorded:
+    the attempt's independent delivery result, the delivery-result prefixes
+    on the failure reason, and the delivery gate's red-row signature."""
+    if attempt is not None and attempt.result == "blocked":
+        return "blocked"
+    if reason.startswith("delivery blocked"):
+        return "blocked"
+    if reason.startswith("delivery failed") or "delivery gate:" in reason:
+        return "code"
+    return "other"
+
+
+def _retained_failure_rows(store: Store, revision_id: int, task_id: str):
+    """(attempt, failed_rows): the failed command checks retained on the
+    task's last worker attempt — the per-attempt history a retry prompt
+    quotes. Prompt composition happens before the retry's new attempt is
+    created, so the task's latest worker attempt IS the failed round's.
+
+    Rows are the latest row per check entry inside that attempt (a
+    same-session check -> fix -> check loop shows the fresh state, never a
+    stale red row). Agent rows never qualify: the command gate does not
+    judge them and the independent verifier is unchanged."""
+    attempt = store.attempt_current_worker_for_task(revision_id, task_id)
+    if attempt is None:
+        return None, []
+    latest: dict[str, Verification] = {}
+    for v in store.verifications_for_attempt(attempt.id):
+        if v.kind == "command":
+            latest[v.command] = v  # id order: the last write wins
+    return attempt, [v for v in latest.values() if not v.passed]
+
+
+def _retained_check_detail(project_root: Path | None, row: Verification):
+    """(error_summary, exit_note) for one retained verification row, parsed
+    from its recorded log — the per-row fields a delivery-gate refusal
+    carries. A missing or unreadable log degrades to None; nothing is
+    invented."""
+    text: str | None = None
+    if project_root is not None and row.output_path:
+        try:
+            text = (project_root / row.output_path).read_text()
+        except OSError:
+            text = None
+    if text is not None and text.startswith("denied by verification denylist:"):
+        return text.splitlines()[0].strip(), "none (denied by the verification denylist)"
+    timed_out = False
+    stdout_part = text if text is not None else ""
+    stderr_part = ""
+    if text is not None:
+        lines = text.split("\n")
+        if lines and lines[0].startswith("$ "):
+            timed_out = len(lines) > 1 and lines[1].startswith("[exit timeout")
+            stdout_part = "\n".join(lines[2:])
+        if "\n[stderr]\n" in stdout_part:
+            stdout_part, stderr_part = stdout_part.split("\n[stderr]\n", 1)
+    summary = verify.error_summary(stdout_part, stderr_part) if text is not None else None
+    if row.exit_code is not None:
+        exit_note = f"{row.exit_code}"
+    elif timed_out:
+        exit_note = "none (timed out)"
+    elif text is None and row.output_path is None:
+        exit_note = "none (not recorded)"
+    else:
+        exit_note = "none (not recorded; log unavailable)"
+    return summary, exit_note
+
+
+def _prior_failure_context(store: Store, revision_id: int, task_id: str,
+                           project_root: Path | None = None) -> str:
     """The most recent recorded failure for a task, for retry prompts. The
     task row itself clears failure_reason on retry, so history is the
-    source. Empty string for a first attempt."""
-    events = store.task_events(revision_id, task_id)
-    for event in reversed(events):
+    source. Empty string for a first attempt.
+
+    With retained verification history the block is enriched: the failure
+    reason line plus every failed command check that survived on the failed
+    attempt (command, exit code, error summary, log path — the same row
+    shape a delivery-gate refusal reports), plus repair guidance classified
+    from the recorded delivery result (environment/tool blocked vs code
+    failure vs unmarked). Without retained rows the block is byte-compatible
+    with the reason-line-only form that predates per-attempt history."""
+    reason: str | None = None
+    for event in reversed(store.task_events(revision_id, task_id)):
         if event.to_status == "failed" and (event.reason or ""):
-            return (
-                f"\nA previous attempt at this task FAILED with:\n"
-                f"  {event.reason}\n"
-                f"Fix that specific problem; do not redo the task blindly.\n"
+            reason = event.reason
+            break
+    if reason is None:
+        return ""
+    attempt, failed_rows = _retained_failure_rows(store, revision_id, task_id)
+    if not failed_rows:
+        return (
+            f"\nA previous attempt at this task FAILED with:\n"
+            f"  {reason}\n"
+            f"Fix that specific problem; do not redo the task blindly.\n"
+        )
+    lines = [
+        "\nA previous attempt at this task FAILED with:",
+        f"  {reason}",
+        "Verification evidence retained from that failed attempt"
+        f" (attempt {attempt.id}; latest row per check):",
+    ]
+    for row in failed_rows[:_RETRY_EVIDENCE_LIMIT]:
+        summary, exit_note = _retained_check_detail(project_root, row)
+        lines.append(f"  - command: {row.command}")
+        lines.append(f"    exit code: {exit_note}")
+        lines.append(
+            "    error summary: "
+            + (summary if summary else "(not retained; open the log)")
+        )
+        lines.append(
+            "    log: " + (row.output_path if row.output_path else "(none recorded)")
+        )
+    hidden = len(failed_rows) - _RETRY_EVIDENCE_LIMIT
+    if hidden > 0:
+        lines.append(f"  (+{hidden} more failed check(s) not listed)")
+    lines.append("")
+    lines.append(_RETRY_GUIDANCE[_classify_prior_failure(reason, attempt)])
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Assignment-time static preflight (R002 follow-up).
+#
+# The delivery contract in worker_prompt only helps if the worker can
+# actually run its prescribed checks. At assignment assembly ORX therefore
+# preflights every command verification entry statically: the shared
+# denylist (runtime.forbidden_command — the same one verification applies at
+# completion) plus a PATH probe of the command's first token. The result is
+# written into the worker prompt and the assignment file on BOTH launch
+# paths (CLI execution and host/external park). This targets one measured
+# R002 failure class only: workers that could not run their checks yet
+# implemented, finished, and reported success (T003/T005 logs). It executes
+# nothing, touches no state, judges nothing, and never covers agent entries:
+# those stay with the independent verifier.
+
+
+def preflight_task_checks(task: TaskRow) -> list[dict]:
+    """Static preflight rows for every verification entry of a task.
+
+    Command rows carry the denylist verdict, the first command token, its
+    PATH status, and a ``blocked`` flag (true only for a denied command or a
+    token missing from PATH). Agent rows are reported as not preflighted —
+    the command gate never judges them.
+    """
+    rows: list[dict] = []
+    for item in verify.entries_for(task):
+        if item.kind != "command":
+            rows.append({
+                "kind": "agent",
+                "raw": item.raw,
+                "command": None,
+                "denial": None,
+                "token": None,
+                "token_status": None,
+                "token_path": None,
+                "blocked": False,
+                "reason": (
+                    "agent entries are judged by an independent verifier; "
+                    "not part of the command gate"
+                ),
+            })
+            continue
+        probe = runtime.static_command_probe(item.spec)
+        blocked = probe["blocked"]
+        if probe["denial"] is not None:
+            reason = f"denylist DENIED ({probe['denial']})"
+        elif probe["token_status"] == "missing":
+            reason = f"denylist allowed; first token {probe['token']!r} not on PATH"
+        elif probe["token_status"] == "builtin":
+            reason = f"denylist allowed; first token {probe['token']!r} is a shell builtin"
+        elif probe["token_status"] == "found":
+            reason = (
+                f"denylist allowed; first token {probe['token']!r} found on PATH"
+                f" ({probe['token_path']})"
             )
-    return ""
+        else:
+            reason = "denylist allowed; first token not statically determinable"
+        rows.append({
+            "kind": "command",
+            "raw": item.raw,
+            "command": item.spec,
+            "denial": probe["denial"],
+            "token": probe["token"],
+            "token_status": probe["token_status"],
+            "token_path": probe["token_path"],
+            "blocked": blocked,
+            "reason": reason,
+        })
+    return rows
 
 
-def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "") -> str:
+def _preflight_block(task: TaskRow) -> str:
+    """The preflight section of the worker prompt: one tagged line per
+    verification entry plus a summary. Tags are stable for tooling:
+    [preflight:ok], [preflight:blocked], [preflight:not-run]."""
+    rows = preflight_task_checks(task)
+    lines: list[str] = []
+    command_total = 0
+    blocked = 0
+    agent_total = 0
+    for row in rows:
+        if row["kind"] == "agent":
+            agent_total += 1
+            lines.append(f"  - [preflight:not-run] agent {row['raw']!r} -> {row['reason']}")
+            continue
+        command_total += 1
+        if row["blocked"]:
+            blocked += 1
+            if row["denial"] is not None:
+                # The completion-time gate applies the same denylist, so a
+                # denied entry is definitive: it can never pass.
+                lines.append(
+                    f"  - [preflight:blocked] command {row['raw']!r} -> {row['reason']};"
+                    " the verification denylist denies this check too:"
+                    " report blocked, do not implement"
+                )
+            else:
+                lines.append(
+                    f"  - [preflight:blocked] command {row['raw']!r} -> {row['reason']};"
+                    " ORX cannot confirm this check runs in your environment:"
+                    " verify it via the START GATE before implementing, and"
+                    " report blocked immediately if it cannot run"
+                )
+        else:
+            lines.append(f"  - [preflight:ok] command {row['raw']!r} -> {row['reason']}")
+    if not lines:
+        lines = ["  (none)"]
+    summary = (
+        f"Pre-flight summary: {command_total} command check(s): "
+        f"{command_total - blocked} ok, {blocked} blocked; "
+        f"{agent_total} agent check(s) not preflighted."
+    )
+    return (
+        "Pre-flight of the prescribed checks (static; assembled by ORX at\n"
+        "assignment time, nothing was executed. The START GATE below\n"
+        "re-verifies it for real in your environment):\n"
+        + "\n".join(lines) + "\n" + summary + "\n\n"
+    )
+
+
+def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
+                  check_budget: int = 3) -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
@@ -1231,14 +1544,48 @@ files you yourself create or modify (project-relative):
 Acceptance (your work is verified against these, verbatim):
 {acceptance}
 {prior_failure}
-How your work will be checked:
+How your work will be checked (the prescribed checks):
 {verification}
+
+{_preflight_block(task)}Delivery contract (binding, in order):
+1. START GATE: before any implementation work, prove the checks can run in
+   your environment. Run `orx task check {task.task_id}` (or trial-run each
+   prescribed check command yourself) and confirm the tools exist, the
+   commands are permitted, and the test baseline executes. Do not write any
+   task code before this gate is green or you know exactly why it cannot be.
+2. BLOCKED EXIT: if the start gate shows the environment cannot run the
+   checks (tool missing, command rejected by the sandbox, baseline not
+   executable), stop immediately: leave the workspace unchanged, exit
+   non-zero, and report `blocked: <why the checks cannot run>` in your
+   output. Do NOT invest in implementation first — discovering this only
+   after finishing the work is exactly the failure this contract prevents.
+3. CHECK-FIX LOOP (budget: {check_budget} check round(s) on this attempt):
+   when a check is red, repair it in THIS session — check -> fix -> check
+   again — while budget remains. `orx task check {task.task_id}` reports
+   check_rounds (rounds used vs budget) for your attempt after every run.
+   Red checks that are EXPECTED at this stage of development are part of
+   the work, not failures (TDD: a test written before its implementation
+   is deliberately red): keep implementing in the same session — do not
+   restart the task or request a new attempt merely because a check is
+   temporarily red. Run the full check set at stage boundaries only — when
+   a new behavior is complete, when a module modification is complete, and
+   when you are ready to deliver — not after every edit. When the budget is
+   exhausted and checks are still red, stop iterating: submit the
+   structured failed/blocked delivery result (`orx task complete
+   {task.task_id} --evidence <file>`) or `orx task fail {task.task_id}
+   --reason <why>` so the Controller decides the next round. Do not keep
+   working past the budget.
+4. DELIVERY GATE: every prescribed command check above must pass (exit 0)
+   before you may exit 0 or submit `orx task complete {task.task_id}
+   --evidence <file>`. A green self-check is necessary, not sufficient: it
+   never replaces the independent verifier — agent checks and independent
+   acceptance still judge the work afterwards.
 
 Rules:
 - do not modify the Goal text or other tasks' scope
 - if you are blocked, leave the workspace unchanged and exit non-zero with the
   blocker in your output; do not widen scope
-- exit 0 when the task is done
+- exit 0 only when the task is done AND the delivery gate is green
 """
 
 
@@ -1283,10 +1630,20 @@ after printing both lines.
 
 
 def _gate_summary(store: Store, revision_id: int, task: TaskRow) -> str:
-    """Recorded command-check results for a task, for verifier context."""
-    rows = [v for v in store.verifications_for(revision_id, task.task_id) if v.kind == "command"]
-    lines = []
+    """Current command-check results for a task, for verifier context: the
+    latest row per entry from the current attempt window only. A
+    same-session check -> fix -> check loop shows the fresh row; rows from
+    earlier attempts are history and are not handed to the verifier as if
+    they were this round's result."""
+    rows = [
+        v for v in store.verifications_current(revision_id, task.task_id)
+        if v.kind == "command"
+    ]
+    latest: dict[str, Verification] = {}
     for v in rows:
+        latest[v.command] = v  # id order: the last write wins
+    lines = []
+    for v in latest.values():
         exit_note = "denied" if v.exit_code is None else f"exit {v.exit_code}"
         lines.append(f"  - {v.command} -> {exit_note} ({'passed' if v.passed else 'FAILED'})")
     return "\n".join(lines)
@@ -1301,7 +1658,9 @@ def _evidence_lines(store: Store, revision_id: int, task_id: str) -> str:
 
 def _prior_issues(store: Store, revision_id: int, task_id: str) -> str:
     """Issues from earlier failed attempts/verifications, for re-verification.
-    Verification rows are cleared on retry, so history lives in task_events."""
+    Verification rows survive retries as per-attempt history; task_events
+    remains the cross-attempt failure narrative, so a re-dispatched verifier
+    still sees what earlier rounds rejected."""
     seen: list[str] = []
     for event in store.task_events(revision_id, task_id):
         if event.to_status == "failed" and event.reason and event.reason not in seen:
@@ -1342,6 +1701,19 @@ def task_list(project: Project) -> list[dict]:
                 "blocked_by": blocked_by,
                 "failure_reason": task.failure_reason,
                 "session_ref": attempt.session_ref if attempt else None,
+                # Check-budget observability without running anything:
+                # rounds the task's latest attempt has already consumed vs
+                # the configured budget (see attempt_check_rounds).
+                "check_rounds": (
+                    {
+                        "used": attempt_check_rounds(
+                            project.store, attempt.id, task
+                        ),
+                        "budget": project.config.worker_max_check_rounds,
+                    }
+                    if attempt
+                    else None
+                ),
             }
         )
     return rows
@@ -1384,8 +1756,22 @@ def task_complete(
     project: Project, task_id: str, evidence: str,
     attempt_id: int | None = None, actual_model: str | None = None,
 ) -> dict:
-    """Record evidence and enter verification. Completion is NOT success:
-    the task passes only when every verification entry passes.
+    """Record a structured delivery and enter verification. Completion is
+    NOT success: the task passes only when every verification entry passes.
+
+    The delivery contract (R002 follow-up): the evidence file must be the
+    structured delivery result (status passed|failed|blocked, checks[],
+    artifacts[], summary — verified.load_delivery_evidence validates and
+    names every missing field). status=passed additionally passes the
+    delivery gate: every command entry is re-run fresh through the
+    `task check` runner for the completing attempt — a prior self-check
+    never exempts the delivery — and any red row rejects the completion
+    with the structured per-check detail while the task keeps its prior
+    status and the attempt stays open (fix and complete again). status=
+    failed/blocked records a non-delivery: the task fails with a reason
+    that distinguishes a worker-reported code failure from an
+    environment/tool block. Agent entries are never run here and never
+    gate the completion; the independent verifier is unchanged.
 
     Phase B: a completion may quote the attempt id it answers (`task claim`
     returned it). A quoted attempt that is closed, foreign, or no longer the
@@ -1404,6 +1790,19 @@ def task_complete(
         evidence_path = (Path.cwd() / evidence_path).resolve()
     if not evidence_path.exists():
         raise NotFoundError(f"evidence file not found: {evidence}")
+
+    # The structured delivery result is validated before anything is
+    # written: a non-structured or malformed document names its missing
+    # fields and changes no state.
+    delivery, evidence_errors = verify.load_delivery_evidence(evidence_path)
+    if evidence_errors:
+        raise verify.DeliveryRejected(
+            f"evidence rejected for task {task_id}: the delivery result must"
+            " be structured JSON (status, checks, artifacts, summary) — "
+            + "; ".join(evidence_errors),
+            kind="evidence",
+            fields=evidence_errors,
+        )
 
     if attempt_id is not None:
         attempt = store.attempt_get(attempt_id)
@@ -1445,6 +1844,52 @@ def task_complete(
                 run_id=run.id,
             )
     mismatch = _record_reported_model(store, attempt.id, attempt.model, actual_model)
+
+    if delivery["status"] in ("failed", "blocked"):
+        return _record_failed_delivery(
+            project, store, goal, run, revision, task, attempt,
+            delivery, evidence_path, mismatch,
+        )
+
+    # status == "passed": the delivery gate. Force every command entry to
+    # run fresh through the same runner `orx task check` uses, bound to the
+    # completing attempt — a green self-check earlier in the session is not
+    # an exemption. Agent entries are not executed and never gate the
+    # completion (the independent verifier still judges them).
+    gate = verify.run_task_check(
+        store, project.root, run.id, revision.id, task,
+        timeout=project.config.command_timeout_sec,
+        attempt_id=attempt.id,
+    )
+    failures = verify.gate_failures(gate)
+    if failures:
+        # Rejected: nothing below this line runs. No completion evidence is
+        # attached, the attempt stays open, and the task keeps the status it
+        # had (running / waiting_external), so the worker can fix the red
+        # checks and complete again on the same attempt.
+        raise verify.DeliveryRejected(
+            f"delivery gate rejected completion for task {task_id}: "
+            f"{len(failures)} of {gate['summary']['total']} command check(s)"
+            f" not green; task stays {task.status} and attempt {attempt.id}"
+            " stays open — fix the failures and complete again",
+            kind="gate",
+            report={
+                "task": task.task_id,
+                "task_status": task.status,
+                "attempt": attempt.id,
+                "summary": gate["summary"],
+                "failures": failures,
+                "agent_entries_not_run": gate["agent_entries_not_run"],
+                # The gate run just consumed a round; show the worker where
+                # that leaves the attempt's check budget so an exhausted
+                # budget routes to a structured exit instead of another loop.
+                "check_rounds": _check_rounds_payload(
+                    store, attempt.id, task,
+                    project.config.worker_max_check_rounds,
+                ),
+            },
+        )
+
     store.evidence_add(attempt.id, "completion", str(evidence_path))
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
     machine.transition(
@@ -1452,6 +1897,9 @@ def task_complete(
         reason="completion claimed; verification starting",
     )
 
+    # The gate above already recorded a fresh row for every command entry,
+    # so this only covers entries with no row at all (there are none today);
+    # apply_verdict then judges each entry by its latest row — the gate's.
     verify.run_command_verifications(
         store,
         project.root,
@@ -1470,6 +1918,46 @@ def task_complete(
         "verdict": verdict,
         "verification": counts,
         "attempt": attempt.id,
+        "delivery": {"status": "passed", "checks_run": gate["summary"]["total"]},
+    }
+    if mismatch is not None:
+        result["model_mismatch"] = mismatch
+    return result
+
+
+def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run,
+                            revision: Revision, task: TaskRow, attempt,
+                            delivery: dict, evidence_path: Path,
+                            mismatch: dict | None) -> dict:
+    """Record a worker-reported failed or blocked delivery and fail the task.
+
+    There is no success claim to gate, so the command checks are not re-run:
+    the worker's reported red/not-run checks are quoted in the failure
+    reason instead. blocked is an independent delivery result — the attempt
+    closes with result 'blocked' — and the recorded failure reason carries
+    the kind, so retries and analytics can tell an environment/tool block
+    apart from a code failure."""
+    status = delivery["status"]
+    kind = "environment/tool blocked" if status == "blocked" else "worker-reported failure"
+    reason = f"delivery {status} ({kind}): {delivery['summary'].strip()}"
+    detail = verify.reported_check_detail(delivery)
+    if detail:
+        reason += f"; {detail}"
+    store.evidence_add(attempt.id, "completion", str(evidence_path))
+    store.attempt_update(
+        attempt.id, ended_at=db_now(), result=status, failure_reason=reason,
+    )
+    machine.transition(
+        store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+        reason=reason, failure_reason=reason,
+    )
+    refresh(store, goal, run)
+    result = {
+        "task": task.task_id,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "delivery": {"status": status, "reason": reason},
+        "attempt": attempt.id,
+        "verification": _verification_counts(store, revision),
     }
     if mismatch is not None:
         result["model_mismatch"] = mismatch
@@ -1501,13 +1989,17 @@ def task_fail(project: Project, task_id: str, reason: str) -> dict:
 
 
 def task_retry(project: Project, task_id: str) -> dict:
-    """Retry a failed task on the same plan: failed -> runnable. Not a replan."""
+    """Retry a failed task on the same plan: failed -> runnable. Not a replan.
+
+    Verification history is retained: rows from earlier attempts stay in the
+    table and stay queryable per attempt. The retry routes a fresh worker
+    attempt, which opens a new current window — verdicts and 'current
+    result' views read that window, never the superseded rows."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
     if TaskStatus(task.status) is not TaskStatus.FAILED:
         raise ConflictError(f"task {task_id} is {task.status}; `task retry` requires failed")
-    store.verifications_clear(revision.id, task.task_id)
     machine.transition(
         store, revision.id, task.task_id, "retry", TaskStatus.RUNNABLE,
         reason="operator requested retry; new attempt will be routed by `orx run`",
@@ -1516,10 +2008,110 @@ def task_retry(project: Project, task_id: str) -> dict:
     return {"task": task.task_id, "status": "runnable"}
 
 
+# ---------------------------------------------------------------------------
+# Same-session check-fix loop budget (R002 follow-up).
+#
+# `worker.max_check_rounds` bounds how many check rounds one worker attempt
+# may consume: check -> fix -> check again in the same session, then exit
+# structured failed/blocked when the budget is exhausted and checks are still
+# red. The budget is an advisory contract — ORX never kills a session — so
+# the rounds are OBSERVED, not enforced: every check round (`orx task check`,
+# or the delivery gate at `task complete`) appends exactly one command
+# verification row per command entry, bound to the attempt. The count is
+# derived from those attempt-bound rows (rows/entries, ceiling for an
+# interrupted partial round): additive, no schema change, and rows recorded
+# without an attempt (attempt_id NULL) never count against a worker's budget.
+
+
+def _command_entry_count(task: TaskRow) -> int:
+    return sum(1 for item in verify.entries_for(task) if item.kind == "command")
+
+
+def attempt_check_rounds(store: Store, attempt_id: int | None, task: TaskRow) -> int:
+    """Check rounds accumulated on one attempt (see the block above)."""
+    entries = _command_entry_count(task)
+    if attempt_id is None or entries <= 0:
+        return 0
+    rows = sum(
+        1 for v in store.verifications_for_attempt(attempt_id) if v.kind == "command"
+    )
+    return (rows + entries - 1) // entries
+
+
+def _check_rounds_payload(
+    store: Store, attempt_id: int | None, task: TaskRow, budget: int
+) -> dict:
+    """The observability surface for the check budget: rounds used vs
+    configured budget on the bound attempt. `exceeded` is the honest signal
+    that the worker went past the budget (ORX does not prevent it);
+    `remaining == 0` is the worker's cue to stop iterating and exit
+    structured failed/blocked if checks are still red."""
+    used = attempt_check_rounds(store, attempt_id, task)
+    return {
+        "attempt": attempt_id,
+        "used": used,
+        "budget": budget,
+        "remaining": max(budget - used, 0),
+        "exceeded": used > budget,
+    }
+
+
+def task_check(project: Project, task_id: str) -> dict:
+    """Worker self-check: run the task's command verification entries NOW.
+
+    Executes every command entry immediately (same denylist and timeout as
+    verification) and appends one verification row per entry, bound to the
+    task's current worker attempt — the latest worker attempt for the task,
+    which is the attempt a claimed task runs under. Rounds accumulate on
+    that attempt across calls: the report's check_rounds field carries
+    rounds used vs the configured worker.max_check_rounds budget (this run
+    included), so a worker in a check -> fix -> check loop can see how much
+    budget remains. This never transitions the task's status and never
+    closes the attempt: a green self-check is not a verdict, agent entries
+    are not run, and `task complete` still verifies independently. Works on
+    a task in any status so a Controller can also re-check finished work;
+    without a worker attempt the rows are recorded unbound (attempt_id
+    NULL), never attributed to a verifier, and count against no budget.
+    """
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    attempt_id = (
+        attempt.id
+        if attempt is not None and attempt.role == Role.WORKER.value
+        else None
+    )
+    report = verify.run_task_check(
+        store, project.root, run.id, revision.id, task,
+        timeout=project.config.command_timeout_sec,
+        attempt_id=attempt_id,
+    )
+    # This round is included: the payload is computed after the rows were
+    # appended, so `used` counts the check that just ran.
+    report["check_rounds"] = _check_rounds_payload(
+        store, attempt_id, task, project.config.worker_max_check_rounds
+    )
+    if report["summary"]["total"] == 0:
+        report["note"] = (
+            f"task {task_id} has no executable command verification entries; "
+            "nothing was run"
+        )
+    # Status is reported, not changed: this is the same status read before
+    # and after the check, proving the self-check left the machine alone.
+    report["status"] = store.task_get(revision.id, task.task_id).status
+    report["attempt"] = attempt_id
+    return report
+
+
 def _verification_counts(store: Store, revision: Revision) -> dict:
+    """Current-view verification counts: each task contributes only the rows
+    in its current attempt window (`verifications_current`), so per-attempt
+    history retained across retries is not double-counted as pending or
+    resolved checks."""
     rows = []
     for task in store.tasks_all(revision.id):
-        rows.extend(store.verifications_for(revision.id, task.task_id))
+        rows.extend(store.verifications_current(revision.id, task.task_id))
     pending = 0
     for task in store.tasks_all(revision.id):
         if TaskStatus(task.status) is TaskStatus.VERIFYING:
@@ -1547,9 +2139,14 @@ def verify_dispatch(project: Project) -> dict:
     for task in store.tasks_all(revision.id):
         if TaskStatus(task.status) is not TaskStatus.VERIFYING:
             continue
+        # Rows the dispatch fills in bind to the task's latest attempt (the
+        # completing worker attempt on a first dispatch) so verification
+        # history stays queryable per attempt.
+        bound = store.attempt_latest_for_task(revision.id, task.task_id)
         verify.run_command_verifications(
             store, project.root, run.id, revision.id, task,
             timeout=project.config.command_timeout_sec,
+            attempt_id=bound.id if bound else None,
         )
         verdict = verify.apply_verdict(store, revision.id, task)
         out["checked"].append({"task": task.task_id, "verdict": verdict})

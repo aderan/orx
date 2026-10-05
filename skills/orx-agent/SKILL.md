@@ -1,6 +1,6 @@
 ---
 name: orx-agent
-description: Work one ORX assignment (plan, task, or verification) exactly as specified, inside scope, and report results through ORX's contracts.
+description: Work one ORX assignment (plan, task, or verification) exactly as specified, inside scope, and report results through ORX's contracts — the structured delivery result and the two-line verdict.
 ---
 
 # ORX Agent
@@ -52,16 +52,69 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 - Do the objective only. Do not modify the Goal text.
 - Stay inside `scope.allowed`. If you cannot finish inside scope, say so and
   stop — never widen scope silently.
-- Run the checks you were asked to run.
-- When you finish, write the evidence file you were asked for:
+- Work the delivery contract in order (your assignment prompt carries the
+  same contract plus a static pre-flight of your prescribed checks):
+  1. **START GATE** — before any implementation work, prove the checks can
+     run in your environment: run `orx task check <task-id>` (or trial-run
+     each prescribed check command yourself). The pre-flight section of the
+     assignment already flags statically-detected problems; a
+     `[preflight:blocked]` row means confirm it for real before writing
+     any task code.
+  2. **BLOCKED EXIT** — when the start gate shows the environment cannot
+     run the checks (tool missing, command rejected, baseline not
+     executable), stop immediately: leave the workspace unchanged and
+     deliver `status: "blocked"` (the structured delivery result below).
+     Do NOT implement first — work you cannot verify is the waste this
+     contract prevents.
+  3. **CHECK-FIX LOOP** — when a check is red, repair it in THIS session:
+     check -> fix -> check again. `orx task check <task-id>` reports
+     `check_rounds` (rounds used vs the `worker.max_check_rounds` budget,
+     the run that just executed included). Red checks that are EXPECTED at
+     this stage (TDD) are part of the work — do not restart the task or
+     ask for a new attempt merely because a check is temporarily red.
+     When the budget is exhausted and checks are still red, stop
+     iterating and deliver `status: "failed"` or `"blocked"` so the
+     Controller decides the next round.
+  4. **DELIVERY GATE** — exit 0 / `orx task complete` only when every
+     prescribed command check is green. ORX re-runs the command entries
+     itself at completion: a red row rejects the delivery (the task keeps
+     its status and your attempt stays open — fix and complete again on
+     the same attempt). A green gate is necessary, never sufficient: it
+     never replaces the independent verifier or the agent checks.
+- When you finish or stop, write the structured delivery result and submit
+  it with `orx task complete <task-id> --evidence <file>`:
 
 ```json
-{ "summary": "", "commands": [], "artifacts": [] }
+{
+  "status": "passed",
+  "summary": "what was delivered, or why it was not",
+  "checks": [
+    {
+      "command": "uv run pytest -q",
+      "exit_code": 0,
+      "log": ".orx/runs/<run>/check/<task>/01-0000-command.log"
+    }
+  ],
+  "artifacts": ["path/to/produced/file"]
+}
 ```
 
-- Exit non-zero with the blocker in your output if you are blocked; make
-  the blocker concrete (see Boundaries) — it becomes the recorded failure
-  reason and the next attempt's feedback.
+  - `status` (required): the delivery result — `passed` (the command
+    checks are green; the gate verifies this itself), `failed` (a code
+    failure you could not fix), or `blocked` (an environment/tool block —
+    the checks cannot run at all).
+  - `checks` (required): one `{command, exit_code, log}` object per
+    command check you ran — `exit_code` an integer, `null` when the check
+    could not run; `log` the output log path, `null` when none exists.
+    `[]` when nothing could run.
+  - `artifacts` (required): the file paths you produced; `[]` when none.
+  - `summary` (required): a non-empty string.
+  - The legacy `{ "summary", "commands", "artifacts" }` shape is REJECTED:
+    `orx task complete` names every missing field and records nothing.
+- Exit non-zero with the blocker in your output if you are blocked with no
+  deliverable at all (`orx task fail`); make the blocker concrete (see
+  Boundaries) — it becomes the recorded failure reason and the next
+  attempt's feedback.
 
 ## If the assignment is a VERIFICATION
 

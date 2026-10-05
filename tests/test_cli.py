@@ -178,7 +178,9 @@ def test_cli_fake_lifecycle_goal_to_done(cli_project):
     assert payload(result)["status"] == "running"
 
     (cli_project / "done.marker").write_text("ok")
-    (cli_project / "ev1.json").write_text('{"summary": "done"}')
+    (cli_project / "ev1.json").write_text(
+        json.dumps({"status": "passed", "summary": "done", "checks": [], "artifacts": []})
+    )
     result = invoke("task", "complete", "--json", "T001", "--evidence", "ev1.json")
     assert payload(result)["status"] == "passed"
 
@@ -227,6 +229,214 @@ def test_task_fail_and_retry_via_cli(cli_project):
     assert payload(result)["ok"] is False
 
 
+def _check_project(cli_project, verification):
+    """Goal + plan + run + claim for one task, returning the claimed task id."""
+    invoke("goal", "new", "--json", "--objective", "ship it",
+           "--acceptance", "marker exists")
+    invoke("plan", "--json")
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["marker exists"], verification=verification),
+    ])
+    (cli_project / "plan.json").write_text(json.dumps(plan))
+    invoke("plan", "submit", "--json", "--file", str(cli_project / "plan.json"))
+    invoke("run", "--json")
+    invoke("task", "claim", "--json", "T001")
+
+
+def test_task_check_envelope_reports_each_command_result(cli_project):
+    _check_project(cli_project, ["test -f done.marker", "true"])
+
+    result = invoke("task", "check", "--json", "T001")
+    assert result.exit_code == 0
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["task"] == "T001"
+    assert body["status"] == "running"  # unchanged by the self-check
+    assert body["attempt"] is not None
+    first, second = body["results"]
+    assert first["command"] == "test -f done.marker"
+    assert first["exit_code"] == 1
+    assert first["passed"] is False
+    assert first["log_path"].startswith(".orx/runs/R001/check/T001/")
+    assert (cli_project / first["log_path"]).exists()
+    assert second["command"] == "true"
+    assert second["passed"] is True
+    assert second["error_summary"] is None
+    assert body["summary"] == {"total": 2, "passed": 1, "failed": 1, "denied": 0}
+
+    # Human output names the failure and stays explicit about semantics.
+    result = invoke("task", "check", "T001")
+    assert result.exit_code == 0
+    assert "FAIL" in result.stdout
+    assert "test -f done.marker" in result.stdout
+    assert "self-check only" in result.stdout
+
+    # check -> fix -> check -> complete: a green loop still completes green.
+    (cli_project / "done.marker").write_text("ok")
+    result = invoke("task", "check", "--json", "T001")
+    assert payload(result)["summary"]["passed"] == 2
+    (cli_project / "ev.json").write_text(
+        json.dumps({"status": "passed", "summary": "done", "checks": [], "artifacts": []})
+    )
+    result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert payload(result)["status"] == "passed"
+
+
+def test_task_check_denied_entry_envelope(cli_project):
+    _check_project(cli_project, ["sudo rm /tmp/x"])
+
+    result = invoke("task", "check", "--json", "T001")
+    assert result.exit_code == 0
+    item = payload(result)["results"][0]
+    assert item["denied"] is True
+    assert item["exit_code"] is None
+    assert item["passed"] is False
+    assert payload(result)["summary"]["denied"] == 1
+
+    result = invoke("task", "check", "T001")
+    assert "denied" in result.stdout
+    assert "sudo" in result.stdout
+
+
+def test_task_check_without_command_entries_is_clear_not_exception(cli_project):
+    _check_project(cli_project, ["agent: reads well"])
+
+    result = invoke("task", "check", "--json", "T001")
+    assert result.exit_code == 0
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["results"] == []
+    assert body["agent_entries_not_run"] == 1
+    assert "no executable command verification entries" in body["note"]
+
+    result = invoke("task", "check", "T001")
+    assert result.exit_code == 0
+    assert "nothing was run" in result.stdout
+
+
+def test_task_check_unknown_task_envelope(cli_project):
+    _check_project(cli_project, ["true"])
+
+    result = invoke("task", "check", "--json", "T999")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    assert "T999" in body["error"]
+
+
+def test_task_check_usage_error_exits_2(cli_project):
+    result = invoke("task", "check")
+    assert result.exit_code == 2
+
+
+# -- task complete: structured delivery result + delivery gate --------------
+
+
+def _structured_evidence(cli_project, name="ev.json", **overrides):
+    body = {"status": "passed", "summary": "done", "checks": [], "artifacts": []}
+    body.update(overrides)
+    (cli_project / name).write_text(json.dumps(body))
+    return name
+
+
+def test_task_complete_rejects_plain_evidence_with_field_names(cli_project):
+    _check_project(cli_project, ["true"])
+    (cli_project / "ev.json").write_text(
+        json.dumps({"summary": "done", "commands": [], "artifacts": []})
+    )
+
+    result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    joined = "; ".join(body["evidence_errors"])
+    assert "'status'" in joined and "'checks'" in joined
+
+    # Human output names the missing fields too, and nothing changed.
+    result = invoke("task", "complete", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 1
+    assert "status" in result.output and "checks" in result.output
+    assert invoke("task", "list", "--json").stdout and (
+        payload(invoke("task", "list", "--json"))["tasks"][0]["status"] == "running"
+    )
+
+
+def test_task_complete_gate_rejection_envelope_and_recovery(cli_project):
+    _check_project(cli_project, ["ls done.marker"])
+    _structured_evidence(cli_project)
+
+    # Red gate: rejected with the structured per-failure detail.
+    result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False
+    gate = body["gate"]
+    assert gate["task"] == "T001"
+    assert gate["task_status"] == "running"  # kept the re-completable state
+    assert gate["attempt"] is not None
+    assert gate["summary"]["total"] == 1 and gate["summary"]["passed"] == 0
+    failure = gate["failures"][0]
+    for key in ("command", "exit_code", "error_summary", "log_path"):
+        assert key in failure
+    assert failure["command"] == "ls done.marker"
+    assert failure["exit_code"] != 0
+    assert failure["log_path"].startswith(".orx/runs/R001/check/T001/")
+
+    # Human output shows the failure and its log path.
+    result = invoke("task", "complete", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 1
+    assert "FAIL" in result.output and "log:" in result.output
+
+    # Task still running, same attempt: fix and complete again -> passed.
+    assert payload(invoke("task", "list", "--json"))["tasks"][0]["status"] == "running"
+    (cli_project / "done.marker").write_text("ok")
+    result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 0
+    body = payload(result)
+    assert body["status"] == "passed"
+    assert body["attempt"] == gate["attempt"]  # recovery reused the open attempt
+
+
+def test_task_complete_human_success_path_renders_delivery(cli_project):
+    """The accepted-success human output (delivery passed, no reason key)
+    must render cleanly — a post-transition rendering crash would exit 1
+    after the task already passed."""
+    _check_project(cli_project, ["test -f done.marker"])
+    _structured_evidence(cli_project)
+    (cli_project / "done.marker").write_text("ok")
+    result = invoke("task", "complete", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 0
+    assert "status passed" in result.stdout
+    assert "delivery: passed" in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_task_complete_blocked_delivery_envelope(cli_project):
+    _check_project(cli_project, ["true"])
+    _structured_evidence(
+        cli_project, status="blocked", summary="sandbox denies shell execution",
+        checks=[{"command": "true", "exit_code": None, "log": None}],
+    )
+
+    result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
+    assert result.exit_code == 0  # the delivery was recorded, not accepted as success
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["status"] == "failed"
+    assert body["delivery"]["status"] == "blocked"
+    assert body["delivery"]["reason"].startswith("delivery blocked (environment/tool blocked):")
+
+    # The task failed with the distinguishable reason, and can be retried.
+    row = payload(invoke("task", "list", "--json"))["tasks"][0]
+    assert row["status"] == "failed"
+    assert row["failure_reason"].startswith("delivery blocked (environment/tool blocked):")
+
+
+def test_task_complete_usage_error_exits_2(cli_project):
+    result = invoke("task", "complete")
+    assert result.exit_code == 2
+
+
 def test_verify_submit_envelope(cli_project):
     invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "a1")
     invoke("plan", "--json")
@@ -237,7 +447,9 @@ def test_verify_submit_envelope(cli_project):
     invoke("plan", "submit", "--json", "--file", str(cli_project / "plan.json"))
     invoke("run", "--json")
     invoke("task", "claim", "--json", "T001")
-    (cli_project / "ev.json").write_text('{"summary": "done"}')
+    (cli_project / "ev.json").write_text(
+        json.dumps({"status": "passed", "summary": "done", "checks": [], "artifacts": []})
+    )
     result = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
     assert payload(result)["status"] == "verifying"
 
@@ -1189,7 +1401,9 @@ def test_session_flag_precedes_env_on_host_paths(cli_project, monkeypatch):
     worker = next(a for a in _open_attempts() if a.role == "worker")
     assert worker.session_ref == "from-claim"
 
-    (cli_project / "ev.json").write_text('{"summary": "done"}')
+    (cli_project / "ev.json").write_text(
+        json.dumps({"status": "passed", "summary": "done", "checks": [], "artifacts": []})
+    )
     finished = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json")
     assert payload(finished)["status"] == "verifying"
 

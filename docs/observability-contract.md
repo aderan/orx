@@ -269,7 +269,10 @@ Used to explain planner attempts that have no revision yet.
 
 ### `task_events`
 
-History survives `verifications` being deleted on retry.
+Every transition, including retries (`to_status = 'runnable'`, event
+`retry`). Verification rows are also retained per attempt (see the
+per-attempt history section below); `task_events` remains the cross-attempt
+narrative of what failed and when.
 
 | Column | Null | Meaning |
 |---|---|---|
@@ -302,7 +305,7 @@ History survives `verifications` being deleted on retry.
 | `routing_reason` | yes | routing explanation |
 | `started_at` | yes | span start; NULL if never stamped |
 | `ended_at` | yes | span end; NULL if still open or never stamped |
-| `result` | yes | completion result |
+| `result` | yes | completion result: `completed`, `failed`, `pass`, `fail`, or `blocked` (a delivery that reported an environment/tool block) |
 | `failure_reason` | yes | attempt failure text |
 | `isolation` | yes | isolation the launch claimed |
 | `session_ref` | yes | opaque session reference |
@@ -336,20 +339,191 @@ same join. There is no fee column and no normalized token column.
 | `id` | no | verification row id |
 | `revision_id` | no | revision row id |
 | `task_id` | no | short id; pair with `revision_id` |
-| `attempt_id` | yes | verifier or worker attempt when one was recorded |
+| `attempt_id` | yes | the attempt the row was recorded for: the worker attempt for command rows (a `task check` self-check or a completion-time gate), the verifier attempt for agent rows; NULL when no attempt was bound |
 | `kind` | no | `command` or `agent` |
 | `command` | no | the check text |
 | `required_capabilities_json` | no | capability list |
-| `exit_code` | yes | command exit; NULL when the check was not a process |
+| `exit_code` | yes | command exit; NULL when the check was not a process (denied or agent) |
 | `passed` | no | 1 or 0 |
 | `output_path` | yes | captured output path |
 | `created_at` | no | insert time |
 
-A retry deletes verification rows for that revision and task. The failed
-transition remains in `task_events`. First-pass math has to look at both.
+Verification rows are append-only per attempt: a retry deletes nothing. The
+same entry run in two rounds of one task is two rows (two `attempt_id`
+values, two log files). "Current" is a window over the rows, not the whole
+table — the "Per-attempt verification history and the current view" section
+below gives the exact rule and the queries.
 
 Other tables (`goals`, `evidence`, `routing_decisions`, `resource_status`,
 inbox) are real and are not required for the six readings below.
+
+## Delivery contract rows (R002 follow-up)
+
+`orx task complete` is a gated delivery, and the database is where the
+gate's decisions live. No new columns were added for this; the contract
+is readable from rows this document already names.
+
+**Evidence.** The `evidence` row with `kind = 'completion'` for a worker
+attempt points at a JSON file that is the structured delivery result:
+`status` (`passed` | `failed` | `blocked`), `checks[]` (each
+`command`/`exit_code`/`log`, as the worker ran them), `artifacts[]`, and
+`summary`. A rejected completion writes no such row — a rejection leaves
+the task status, the attempt span, and the event log untouched.
+
+**Completion-time command rows.** When a completion claiming
+`status = 'passed'` is accepted, every `command` verification entry was
+re-run fresh through the `orx task check` runner for the completing
+attempt (`verifications.attempt_id` names it; the `output_path` rows live
+under `.orx/runs/<run>/check/<task>/`). Judgment is per entry by the
+latest row in the task's current attempt window (see the per-attempt
+history section), so a same-session check → fix → check loop is visible as
+several rows per entry with the newest deciding, and a red row from an
+earlier attempt never fails a retried task. The same gate runs on
+the CLI worker path (`_execute_cli_task`); there a red gate follows the
+existing `complete` → `verify_fail` flow, with the full per-check detail
+(command, exit code or timeout/denial, earliest failing output line, log
+path) in the `task_events.reason` text. On the host/external path a red
+gate refuses the completion outright: the task keeps its prior status, the
+attempt stays open, and no row of the delivery contract (evidence, complete
+event) is written — only the gate's red verification rows exist.
+
+**Distinguishing failure kinds.** `task_events` / `tasks.failure_reason`
+reasons are prefixed by origin:
+
+| Prefix in the reason text | Meaning |
+|---|---|
+| `delivery blocked (environment/tool blocked): …` | worker reported `status = 'blocked'`; `attempts.result` is `blocked` |
+| `delivery failed (worker-reported failure): …` | worker reported `status = 'failed'` (a code failure) |
+| `verification failed: …` | ORX's own checks or an agent verifier judged the work |
+
+A SQL reader separates environment/tool blocks from code failures with:
+
+```sql
+-- query: delivery_failure_kind
+SELECT
+  :project_id AS project_id,
+  pr.run_id,
+  pr.revision,
+  e.task_id,
+  e.reason,
+  CASE
+    WHEN e.reason LIKE 'delivery blocked%' THEN 'environment_or_tool'
+    WHEN e.reason LIKE 'delivery failed%' THEN 'code_failure_reported'
+    ELSE 'verification'
+  END AS failure_kind
+FROM task_events e
+JOIN plan_revisions pr ON pr.id = e.revision_id
+WHERE e.to_status = 'failed'
+ORDER BY e.id;
+```
+
+The gate covers `command` entries only. `agent` rows and the independent
+verifier verdicts are unchanged by it: an agent-only task still completes
+into `verifying` and passes or fails on the submitted verdict.
+
+## Per-attempt verification history and the current view
+
+Verification rows are retained per attempt (`verifications.attempt_id`
+names the round they belong to). A retry deletes nothing, so the table
+holds the full failure history of a task — the row an earlier attempt
+recorded, and the row the latest attempt recorded for the same entry, sit
+side by side with different log files. Two readings follow from that:
+
+**History** is everything, grouped by attempt. This is the read for
+"what did each round actually run, and what did it produce". NULL
+`attempt_id` rows (written before attempt binding existed, or by callers
+that had no attempt to name) form their own group.
+
+```sql
+-- query: verification_history
+SELECT
+  :project_id AS project_id,
+  v.revision_id,
+  v.task_id,
+  v.attempt_id,
+  a.role AS attempt_role,
+  COUNT(*) AS verification_rows,
+  SUM(CASE WHEN v.passed = 1 THEN 1 ELSE 0 END) AS passed_rows
+FROM verifications v
+LEFT JOIN attempts a ON a.id = v.attempt_id
+GROUP BY v.revision_id, v.task_id, v.attempt_id, a.role
+ORDER BY v.revision_id, v.task_id, v.attempt_id IS NULL, v.attempt_id;
+```
+
+**Current** is a window, not the whole table. The current round of a task
+is the latest `worker` attempt for that `(revision_id, task_id)` and
+everything created after it: its own rows, the `verifier` attempts
+dispatched on top of it, and unbound (`attempt_id` NULL) rows. Rows bound
+to older attempts are history — they never fail a retried task. With no
+worker attempt at all, nothing was superseded and every row is current.
+This is the read behind ORX's own verdicts ("the task's current pass/fail
+judgment reads only this window") and the one a report should use for
+"where does this task stand right now".
+
+```sql
+-- query: verification_current
+WITH current_worker AS (
+  SELECT revision_id, task_id, MAX(id) AS current_attempt
+  FROM attempts
+  WHERE role = 'worker' AND revision_id IS NOT NULL AND task_id IS NOT NULL
+  GROUP BY revision_id, task_id
+)
+SELECT
+  :project_id AS project_id,
+  v.revision_id,
+  v.task_id,
+  v.id AS verification_row_id,
+  v.kind,
+  v.command,
+  v.attempt_id,
+  v.passed
+FROM verifications v
+LEFT JOIN current_worker cw
+  ON cw.revision_id = v.revision_id AND cw.task_id = v.task_id
+WHERE cw.current_attempt IS NULL
+   OR v.attempt_id IS NULL
+   OR v.attempt_id >= cw.current_attempt
+ORDER BY v.revision_id, v.task_id, v.id;
+```
+
+On the fixture, revision 1 `T001` demonstrates both: attempt 4's round ran
+`pytest tests/ -q` red (row 9), the retry's attempt 5 ran the same command
+green (row 10), and the agent verifier then failed the round (row 1). The
+history read shows one row per attempt (4, 5, 6); the current read shows
+rows 10 and 1 only — attempt 4's red row is history and does not make the
+retried task red. Within the window, a same-session check → fix → check
+loop appears as several rows for one entry; the newest row by
+`verifications.id` is the entry's current state, exactly how ORX judges.
+
+Log files follow the same rule. `output_path` for completion-time gate
+rows lives under `.orx/runs/<run>/check/<task>/` with a per-run sequence
+number, and recorded verify rows live under
+`.orx/runs/<run>/verify/<task>/` with the attempt number in the filename
+(`<index>-a<attempt>-<kind>.log`), so two rounds' logs for the same entry
+coexist and never overwrite each other. `a000` marks a row no attempt was
+bound to.
+
+## Check-round budget observability (R002 follow-up)
+
+The same-session check → fix → check loop is bounded by an advisory
+budget (`worker.max_check_rounds`, default 3). ORX observes rounds, it
+never enforces them: every check round — an `orx task check` run or the
+delivery gate at `orx task complete` — appends exactly one `command`
+verification row per command entry, bound to the attempt. Rounds used are
+derived from those rows (`dispatch.attempt_check_rounds`: command rows on
+the attempt divided by command entries, rounded up), so no table carries
+them. Two JSON surfaces report the derivation:
+
+| Surface | Field | Shape |
+|---|---|---|
+| `orx task check <id> --json` | `check_rounds` | `{attempt, used, budget, remaining, exceeded}` — the run that just executed included; `attempt` is null when no worker attempt is bound (such rows count against no budget) |
+| `orx task list --json` rows | `check_rounds` | `{used, budget}` — the task's latest attempt, read without running anything |
+
+`exceeded: true` is the honest signal that the worker went past the
+budget; `remaining: 0` is the worker's cue to stop iterating and exit
+structured failed/blocked. A retry's fresh attempt starts from zero — the
+count reads only that attempt's rows, exactly the per-attempt history
+view above.
 
 ## Timestamps, lifecycle, sessions, spans
 
@@ -781,16 +955,19 @@ ORDER BY a.id;
 
 ### First acceptance pass rate
 
-Denominator: tasks that have at least one remaining verification row,
+Denominator: tasks that have at least one verification row,
 identified by `(revision_id, task_id)`, not by `task_id` alone.
-Numerator: the earliest remaining verification (`created_at`, then
+Numerator: the earliest verification (`created_at`, then
 `verifications.id`) has `passed = 1`, and `task_events` has no
 `to_status = 'failed'` for that same pair.
 
-The event clause is required because retry deletes verification rows.
-A later pass with a surviving failed event is not a first pass. Command
-and agent rows both count. A task that never reached verification is
-outside the rate, not a failure.
+Verification rows survive retries as per-attempt history, so the earliest
+row really is the first recorded result. The event clause is still
+required: a round may pass its command gate and fail a later row (an agent
+verdict), leaving a green earliest row under a failed round. A later round
+that passes does not rewrite that history. Command and agent rows both
+count. A task that never reached verification is outside the rate, not a
+failure.
 
 ```sql
 -- query: first_acceptance

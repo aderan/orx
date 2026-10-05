@@ -13,6 +13,12 @@
 -- Attempt 4 has cached_input_tokens NULL.
 -- Attempts 4 and 5 overlap in time. Run R001's updated_at is later than
 -- completed_at. R002 never started. R003 started and was reopened.
+-- Revision 1 T001 is a retry story: worker attempt 4's round failed its
+-- command gate (verification row 9, red, bound to attempt 4), the retry
+-- routed worker attempt 5 whose round ran the same command green (row 10),
+-- and the agent verifier (attempt 6, row 1) then failed the round. Rows 9
+-- and 10 are the per-attempt history the pre-R002 semantics deleted on
+-- retry; they stay, and only attempt 5's window is the current result.
 
 PRAGMA foreign_keys = ON;
 
@@ -287,7 +293,14 @@ INSERT INTO verifications(
   (7, 2, 'T001', 9, 'command', 'true', 1,
    '2026-10-04T02:40:00.000000+00:00'),
   (8, 2, 'T001', 10, 'agent', 'agent: the summary is honest', 1,
-   '2026-10-04T02:50:00.000000+00:00');
+   '2026-10-04T02:50:00.000000+00:00'),
+  -- Retry history for revision 1 T001 (kept per attempt, not deleted):
+  -- attempt 4's round ran the gate red, the retry's attempt 5 ran the same
+  -- command green. Same command, two attempts, two rows, two log files.
+  (9, 1, 'T001', 4, 'command', 'pytest tests/ -q', 0,
+   '2026-10-04T01:40:00.000000+00:00'),
+  (10, 1, 'T001', 5, 'command', 'pytest tests/ -q', 1,
+   '2026-10-04T02:00:00.000000+00:00');
 
 INSERT INTO usage_observations(
   id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
