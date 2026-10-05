@@ -25,6 +25,7 @@ contract they teach is the one the gate actually enforces.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -396,3 +397,175 @@ def test_orx_controller_skill_matches_complete_and_retry_semantics():
     assert "orx task check" in text
     assert "check_rounds" in text
     assert "--attempt" in text  # completions quote the attempt they answer
+
+
+# ---------------------------------------------------------------------------
+# G004 T004: the reference chain across revisions, end to end.
+#
+# One continuous story: revision 1 delivers passed work with evidence; a
+# replan revision 2 confirms it citing the evidence as an artifact; the
+# accepted delivery records provenance (the SOURCE task's own attempt and
+# evidence identity) plus a delivery snapshot bound to the completing
+# attempt; revision 3 reuses the SAME task number and — resolving only
+# through the declared correspondence — shows the chain with an UNCHANGED
+# digest verdict, flags the artifact CHANGED/MISSING honestly once the file
+# moves (never assuming it valid), and its own delivery writes a second
+# snapshot that does not overwrite the first. No old passed record ever
+# becomes a new task's verification result: every revision's task starts
+# runnable with an empty current window and passes only its own gate.
+
+def test_replan_reference_chain_end_to_end(project, goal, tmp_path):
+    # --- revision 1: T001 passes with recorded completion evidence E1.
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    revision1 = active_task(project, "T001").revision_id
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    e1 = write_evidence(tmp_path, "round1.json")
+    dispatch.task_complete(project, "T001", str(e1))
+    # (The Run reaches done here; the Goal reopens when revision 2 lands.)
+    assert project.store.task_get(revision1, "T001").status == "passed"
+
+    # --- revision 2: T101 confirms 1:T001, citing E1 through the mapping.
+    ir2 = ir_for(goal, [
+        task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+    ])
+    ir2["replan"] = {
+        "prior_revision": 1,
+        "tasks": [{
+            "task": "T101", "classification": "confirm",
+            "sources": [{"revision": 1, "task_id": "T001"}],
+            "confirm_verification": ["true"],
+            "artifacts": [str(e1)],
+        }],
+        "superseded": [{
+            "revision": 1, "task_id": "T001", "disposition": "confirmed",
+            "successors": ["T101"],
+        }],
+    }
+    dispatch.submit_plan(project, ir2)
+    revision2 = active_task(project, "T101").revision_id
+    # The confirming task starts fresh: runnable, empty verification window,
+    # nothing inherited from the passed source.
+    assert active_task(project, "T101").status == "runnable"
+    assert project.store.verifications_current(revision2, "T101") == []
+
+    park2 = dispatch.run_slice(project)["host_required"][0]
+    assert "1:T001 (revision 1, task T001, part=false) — recorded status: passed" in park2["prompt"]
+    assert f"  - {e1} -> resolves to recorded source evidence: 1:T001 (source attempt " in park2["prompt"]
+    assert "no delivery snapshot recorded yet — nothing to compare" in park2["prompt"]
+
+    dispatch.task_claim(project, "T101")
+    e2 = write_evidence(tmp_path, "round2.json")
+    delivered2 = dispatch.task_complete(project, "T101", str(e2))
+    assert delivered2["verdict"] == "passed"
+    snapshot2 = project.root / delivered2["replan_delivery"]["snapshot"]
+    assert snapshot2.name.startswith("T101-r02-a")
+    assert snapshot2.exists()
+    [provenance2] = project.store.replan_artifact_sources_for_task(
+        revision2, "T101")
+    assert (provenance2.source_revision, provenance2.source_task_id) == (1, "T001")
+    # Provenance names the SOURCE task's own evidence row for E1.
+    [e1_row] = [
+        r for r in project.store.evidence_rows_for_task(revision1, "T001")
+        if r.kind == "completion"
+    ]
+    assert provenance2.evidence_id == e1_row.id
+    assert provenance2.attempt_id == e1_row.attempt_id
+
+    # --- revision 3: the SAME task number T101, different work; sources
+    # cite BOTH the immediate predecessor (2:T101) and the original (1:T001)
+    # so E1 still binds through a declared edge — numbers alone prove nothing.
+    ir3 = ir_for(goal, [
+        task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+    ])
+    ir3["replan"] = {
+        "prior_revision": 2,
+        "tasks": [{
+            "task": "T101", "classification": "confirm",
+            "sources": [{"revision": 2, "task_id": "T101"},
+                        {"revision": 1, "task_id": "T001"}],
+            "confirm_verification": ["true"],
+            "artifacts": [str(e1)],
+        }],
+        "superseded": [{
+            "revision": 2, "task_id": "T101", "disposition": "confirmed",
+            "successors": ["T101"],
+        }],
+    }
+    dispatch.submit_plan(project, ir3)
+    revision3 = active_task(project, "T101").revision_id
+    # Same number, fresh work: runnable, empty window; revision 2's rows are
+    # untouched history the new revision never reads as its own results.
+    assert active_task(project, "T101").status == "runnable"
+    assert project.store.verifications_current(revision3, "T101") == []
+    assert project.store.verifications_for(revision2, "T101")  # history kept
+
+    park3 = dispatch.run_slice(project)["host_required"][0]
+    prompt3 = park3["prompt"]
+    assert "2:T101 (revision 2, task T101, part=false) — recorded status: passed" in prompt3
+    assert "1:T001 (revision 1, task T001, part=false) — recorded status: passed" in prompt3
+    # The delivery snapshot is the baseline: E1 is untouched, so UNCHANGED —
+    # with its full traceable provenance.
+    assert ("state: file present, UNCHANGED since the delivery snapshot"
+            " (revision 2, task T101, attempt") in prompt3
+
+    # --- the referenced file changes: the next composition says CHANGED,
+    # never assumes validity, and keeps the historical provenance.
+    e1.write_text('{"status": "failed", "tampered": true}')
+    goal_row = project.store.goal_active()
+    task3 = active_task(project, "T101")
+    recomposed = dispatch.worker_prompt(
+        goal_row, task3,
+        replan_context=dispatch._replan_reference_context(
+            project.store, project.root, revision3, "T101", audience="worker",
+        ),
+    )
+    assert "file present but CHANGED since the delivery snapshot" in recomposed
+    assert "not assumed valid" in recomposed
+    assert "re-verify what you rely on" in recomposed
+    assert "(revision 2, task T101, attempt" in recomposed  # provenance kept
+
+    # --- the referenced file disappears: MISSING since the snapshot, still
+    # with the traceable historical origin.
+    e1.unlink()
+    recomposed_missing = dispatch.worker_prompt(
+        goal_row, task3,
+        replan_context=dispatch._replan_reference_context(
+            project.store, project.root, revision3, "T101", audience="worker",
+        ),
+    )
+    assert "file MISSING since the delivery snapshot" in recomposed_missing
+    assert "not assumed valid" in recomposed_missing
+    assert "(revision 2, task T101, attempt" in recomposed_missing
+
+    # --- the reference is supporting material, never a gate: revision 3's
+    # own delivery passes ITS check ('true') regardless of E1's state, and
+    # writes a SECOND snapshot that does not overwrite revision 2's.
+    dispatch.task_claim(project, "T101")
+    e3 = write_evidence(tmp_path, "round3.json")
+    delivered3 = dispatch.task_complete(project, "T101", str(e3))
+    assert delivered3["verdict"] == "passed"
+    snapshot3 = project.root / delivered3["replan_delivery"]["snapshot"]
+    assert snapshot3.name.startswith("T101-r03-a")
+    assert snapshot3 != snapshot2
+    assert snapshot2.exists() and snapshot3.exists()
+    # The new snapshot records the honest state of the changed reference.
+    doc3 = json.loads(snapshot3.read_text())
+    [row3] = doc3["artifacts"]
+    assert row3["artifact"] == str(e1)
+    assert row3["resolved_to_recorded_evidence"] is True  # evidence rows persist
+    assert row3["exists_at_delivery"] is False
+    assert row3["digest_at_delivery"] is None
+
+    # The database still finds BOTH revisions' snapshots and history.
+    snapshots = {
+        (r.attempt_id, r.path)
+        for rev in (revision2, revision3)
+        for r in project.store.evidence_rows_for_task(rev, "T101")
+        if r.kind == "delivery_snapshot"
+    }
+    assert len(snapshots) == 2
+    for _attempt_id, path in snapshots:
+        assert (project.root / path).exists()

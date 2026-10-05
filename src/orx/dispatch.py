@@ -424,9 +424,18 @@ def replan_snapshot(store: Store, goal: Goal, run: Run) -> dict:
                     "status": task.status,
                     "dependencies": list(store.deps_for(rev.id, task.task_id)),
                     "failure_reason": task.failure_reason,
+                    # Evidence with row identity (evidence row id + producing
+                    # attempt id): the planner facts quote these so a replan
+                    # can cite prior results by their traceable identity, not
+                    # by task number (G004 T004).
                     "evidence": [
-                        {"kind": kind, "path": path}
-                        for kind, path in store.evidence_for_task(rev.id, task.task_id)
+                        {
+                            "kind": row.kind,
+                            "path": row.path,
+                            "id": row.id,
+                            "attempt_id": row.attempt_id,
+                        }
+                        for row in store.evidence_rows_for_task(rev.id, task.task_id)
                     ],
                     "verifications": [
                         {
@@ -1490,6 +1499,9 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
             store, revision_row_id, task.task_id, project.root
         ),
         check_budget=project.config.worker_max_check_rounds,
+        replan_context=_replan_reference_context(
+            store, project.root, revision_row_id, task.task_id, audience="worker"
+        ),
     )
     attempt = store.attempt_create(
         revision_row_id=revision_row_id,
@@ -1550,6 +1562,9 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
             store, revision.id, task.task_id, project.root
         ),
         check_budget=project.config.worker_max_check_rounds,
+        replan_context=_replan_reference_context(
+            store, project.root, revision.id, task.task_id, audience="worker"
+        ),
     )
     # Same contract as the host/external park path: the preflight-bearing
     # prompt is archived as the assignment file even though ORX itself
@@ -1633,6 +1648,16 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         timeout=project.config.command_timeout_sec,
         attempt_id=attempt.id,
     )
+    # An accepted CLI delivery (green command gate) persists the replan
+    # reference chain bound to this attempt — provenance rows plus the
+    # delivery snapshot. Agent entries are still outstanding: nothing here
+    # is a verdict and no verification result is inherited or substituted.
+    replan_delivery = None
+    if not verify.gate_failures(gate):
+        replan_delivery = _record_replan_delivery(
+            project, run, revision, store.task_get(revision.id, task.task_id),
+            attempt, delivered_evidence=log,
+        )
     machine.transition(store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
                        reason="cli execution finished; verification starting")
     # The gate rows above are the latest row per command entry, so the
@@ -1657,6 +1682,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     }
     if verdict == "failed":
         result["reason"] = store.task_get(revision.id, task.task_id).failure_reason
+    if replan_delivery is not None:
+        result["replan_delivery"] = replan_delivery
     return result
 
 
@@ -1815,6 +1842,380 @@ def _prior_failure_context(store: Store, revision_id: int, task_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Replan reference chain (G004 T004): resolve a replan task's declared
+# artifact references through the RECORDED correspondence and show the chain
+# — source revision + task, the source's own attempt/evidence row identity,
+# and each referenced artifact's existence/change state — in the worker and
+# verifier prompts. At an accepted delivery the chain is persisted bound to
+# the completing attempt: one traceable provenance row per resolved
+# (task <-> source) edge plus a delivery snapshot (existence + digest of every
+# declared reference at delivery time) recorded as evidence on the attempt.
+#
+# Identity is always the (revision, task) pair plus attempt/evidence rows —
+# never a bare task number. Nothing here writes verification rows, inherits a
+# prior passed status, or turns a reference into a verdict: a referenced
+# result is supporting material, and a missing or changed reference is never
+# assumed valid by default (its traceable provenance is still shown).
+
+DELIVERY_SNAPSHOT_KIND = "delivery_snapshot"
+
+
+def _file_digest(path: Path) -> str | None:
+    """sha256 of a file's bytes, or None when unreadable. Never invented."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _artifact_fs_path(project_root: Path | None, artifact: str) -> Path | None:
+    """Where an artifact reference lives on disk: absolute references are
+    taken as-is (recorded evidence paths are absolute); project-relative
+    references resolve under the project root. None when there is no root."""
+    if project_root is None:
+        return None
+    candidate = Path(artifact).expanduser()
+    return candidate if candidate.is_absolute() else project_root / candidate
+
+
+def _artifact_source_evidence(
+    store: Store, sources: list, artifact: str
+) -> list[tuple[str, "object"]]:
+    """Declared-source evidence rows an artifact reference names (full
+    identity match, same rule as the precheck binding check): tuples of
+    (source label "R:T", EvidenceRow). Resolution goes through the declared
+    correspondence only — a same-numbered task in another revision never
+    matches."""
+    matches: list[tuple[str, object]] = []
+    for source in sources:
+        src_task = store.task_get_by_row_id(source.source_task_row_id)
+        label = f"{source.source_revision}:{source.source_task_id}"
+        for row in store.evidence_rows_for_task(src_task.revision_id, src_task.task_id):
+            if _artifact_matches(artifact, row.path):
+                matches.append((label, row))
+    return matches
+
+
+def _delivery_snapshot_baselines(
+    store: Store, project_root: Path | None, revision_id: int, task_id: str,
+    sources: list,
+) -> dict[str, dict]:
+    """artifact -> the newest recorded delivery snapshot entry for it, read
+    from the evidence rows of THIS task and of its declared sources (the
+    reference chain, oldest snapshot first so the latest delivery wins).
+    An unreadable or corrupt snapshot provides no baseline; missing stays
+    missing — nothing is guessed."""
+    rows = list(store.evidence_rows_for_task(revision_id, task_id))
+    for source in sources:
+        src_task = store.task_get_by_row_id(source.source_task_row_id)
+        rows.extend(
+            store.evidence_rows_for_task(src_task.revision_id, src_task.task_id)
+        )
+    baselines: dict[str, dict] = {}
+    for row in sorted(rows, key=lambda r: r.id):
+        if row.kind != DELIVERY_SNAPSHOT_KIND:
+            continue
+        path = Path(row.path)
+        if project_root is not None and not path.is_absolute():
+            path = project_root / path
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        for entry in doc.get("artifacts", []):
+            if not isinstance(entry, dict):
+                continue
+            artifact = entry.get("artifact")
+            if not isinstance(artifact, str) or not artifact:
+                continue
+            baselines[artifact] = {
+                "digest": entry.get("digest_at_delivery"),
+                "existed": bool(entry.get("exists_at_delivery")),
+                "revision": doc.get("revision"),
+                "task_id": doc.get("task_id"),
+                "attempt": doc.get("attempt"),
+                "snapshot_row": row.id,
+            }
+    return baselines
+
+
+def _artifact_state_line(
+    project_root: Path | None, artifact: str, baseline: dict | None
+) -> str:
+    """Existence/change sentence for one artifact reference, judged against
+    the delivery-snapshot baseline when one exists. Missing or changed is
+    reported as such — never assumed valid."""
+    fs = _artifact_fs_path(project_root, artifact)
+    present = fs is not None and fs.is_file()
+    if baseline is None:
+        if present:
+            return "file present (no delivery snapshot recorded yet — nothing to compare)"
+        return "file MISSING on disk and no delivery snapshot recorded — the reference cannot be confirmed"
+    where = (
+        f"delivery snapshot (revision {baseline['revision']}, task"
+        f" {baseline['task_id']}, attempt {baseline['attempt']}, evidence row"
+        f" {baseline['snapshot_row']})"
+    )
+    if present:
+        digest = _file_digest(fs)
+        if baseline["existed"] and baseline["digest"] and digest == baseline["digest"]:
+            return f"file present, UNCHANGED since the {where}"
+        return (
+            f"file present but CHANGED since the {where} — not assumed valid;"
+            " re-verify what you rely on"
+        )
+    if baseline["existed"]:
+        return f"file MISSING since the {where} — not assumed valid"
+    return f"file still missing (absent at the {where} too)"
+
+
+def _replan_reference_context(
+    store: Store, project_root: Path | None, revision_id: int, task_id: str,
+    *, audience: str,
+) -> str:
+    """The replan correspondence context block for one task's prompt: the
+    declared classification, every source's full identity and recorded
+    status, and each declared artifact reference resolved through the
+    correspondence (provenance rows, source attempt/evidence identity,
+    existence/change state). Empty string when the task has no declared
+    sources — first plans and unmapped tasks get the unchanged prompt.
+
+    The block is supporting material only: it never writes or substitutes a
+    verification result, and both audiences get an explicit statement of
+    that boundary."""
+    mapping = store.replan_mapping_for(revision_id)
+    if mapping is None:
+        return ""
+    entry = next((t for t in mapping.tasks if t.task_id == task_id), None)
+    if entry is None or not entry.sources:
+        return ""
+    sources = store.replan_sources_for_task(revision_id, task_id)
+    provenance = store.replan_artifact_sources_for_task(revision_id, task_id)
+    prov_by_artifact: dict[str, list] = {}
+    for row in provenance:
+        prov_by_artifact.setdefault(row.artifact, []).append(row)
+    baselines = (
+        _delivery_snapshot_baselines(store, project_root, revision_id, task_id, sources)
+        if entry.artifacts else {}
+    )
+
+    meaning = {
+        "confirm": "prior passed work this task relies on AS-IS",
+        "redo": "this work must be DONE AGAIN (implementation task)",
+        "continue": "prior unfinished work this task carries forward",
+    }.get(entry.classification, "declared correspondence with prior work")
+    lines = [
+        "Replan correspondence for this task (declared in this revision's"
+        " replan mapping; a task number alone never implies correspondence —"
+        " identity is the (revision, task) pair):",
+        f"- classification: {entry.classification} — {meaning}.",
+        "- sources (recorded history this task references):",
+    ]
+    for source in sources:
+        src_task = store.task_get_by_row_id(source.source_task_row_id)
+        lines.append(
+            f"  - {source.source_revision}:{source.source_task_id}"
+            f" (revision {source.source_revision}, task {source.source_task_id},"
+            f" part={'true' if source.part else 'false'}) — recorded status:"
+            f" {src_task.status}"
+        )
+        evidence_rows = store.evidence_rows_for_task(
+            src_task.revision_id, src_task.task_id
+        )
+        if evidence_rows:
+            for row in evidence_rows[-3:]:
+                lines.append(
+                    f"      evidence: [{row.kind}] {row.path}"
+                    f" (evidence row {row.id}, attempt {row.attempt_id})"
+                )
+        else:
+            lines.append("      evidence: (none recorded)")
+
+    if entry.artifacts:
+        lines.append(
+            "- artifact references (resolved through the correspondence above,"
+            " never by task number; existence and change state checked now):"
+        )
+        for artifact in entry.artifacts:
+            matches = _artifact_source_evidence(store, sources, artifact)
+            prov_rows = prov_by_artifact.get(artifact, [])
+            if matches or prov_rows:
+                identities = sorted(
+                    {
+                        f"{label} (source attempt {row.attempt_id},"
+                        f" evidence row {row.id})"
+                        for label, row in matches
+                    }
+                    | {
+                        f"{r.source_revision}:{r.source_task_id}"
+                        f" (source attempt {r.attempt_id}, evidence row {r.evidence_id})"
+                        for r in prov_rows
+                    }
+                )
+                provenance_note = (
+                    "provenance recorded at delivery" if prov_rows
+                    else "resolves to recorded source evidence"
+                )
+                lines.append(
+                    f"  - {artifact} -> {provenance_note}: " + "; ".join(identities)
+                )
+            else:
+                lines.append(
+                    f"  - {artifact} -> names no recorded evidence of the declared"
+                    " sources; whether it points at the right prior result is"
+                    " semantic review"
+                )
+            lines.append(
+                "      state: " + _artifact_state_line(
+                    project_root, artifact, baselines.get(artifact)
+                )
+            )
+        lines.append(
+            "  A missing or changed reference is never assumed valid by"
+            " default: verify what you rely on or report the problem — ORX"
+            " never turns a reference into a pass."
+        )
+
+    if audience == "worker":
+        if entry.classification == "confirm":
+            lines.append(
+                "Your job is ONLY to confirm this work still applies and to run"
+                " the necessary regression checks below; do NOT redo the work."
+                " A prior pass is supporting material, never this task's"
+                " current verification — this task passes only through its own"
+                " prescribed checks."
+            )
+            if entry.confirm_verification:
+                lines.append(
+                    "Current verification requirements for this confirmation"
+                    " (they are this task's verification entries; a prior pass"
+                    " never substitutes):"
+                )
+                lines.extend(f"  * {item!r}" for item in entry.confirm_verification)
+        elif entry.classification == "redo":
+            lines.append(
+                "Redo reason (why this work must be done again, from the"
+                f" replan declaration): {entry.redo_reason}"
+            )
+            allowed = ", ".join(
+                store.task_get(revision_id, task_id).scope.get("allowed", [])
+            )
+            lines.append(f"Scope of the redo (the only paths this task may write): {allowed}")
+        else:  # continue
+            lines.append(
+                "The sources' recorded statuses above are history, not results"
+                " for this task: finish the work and pass this task's own"
+                " prescribed checks."
+            )
+    else:  # verifier audience
+        lines.append(
+            "The correspondence, provenance, and source statuses above are"
+            " recorded HISTORY this task references. They are NOT this task's"
+            " verification results: judge only the check below against the"
+            " current workspace — a historical pass never impersonates a"
+            " current verification."
+        )
+    return "\n".join(lines) + "\n\n"
+
+
+def _delivery_snapshot_path(
+    project_root: Path, run_id: str, revision: int, task_id: str, attempt_id: int
+) -> Path:
+    """Delivery snapshots are addressed by revision AND attempt: a
+    same-numbered task in another revision (or a retry's new attempt) writes
+    its own file and never overwrites another delivery's snapshot."""
+    directory = project_root / ".orx" / "runs" / run_id / "deliveries"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{task_id}-r{revision:02d}-a{attempt_id:03d}.json"
+
+
+def _record_replan_delivery(
+    project: Project, run: Run, revision: Revision, task: TaskRow,
+    attempt, delivered_evidence: str | None,
+) -> dict | None:
+    """Persist the replan reference chain at an ACCEPTED delivery (G004
+    T004), bound to the completing attempt:
+
+    - one traceable provenance row (`replan_artifact_source_add`) for every
+      (task <-> declared source) edge an artifact reference resolves to,
+      carrying the source task's own attempt and evidence row identity;
+    - a delivery snapshot: existence + sha256 of every declared artifact
+      reference at delivery time, written under ``deliveries/`` addressed by
+      revision and attempt (never overwritten by a same-numbered task in
+      another revision) and recorded as evidence on the attempt so the
+      database keeps finding it.
+
+    Returns None (and writes nothing) when the task declared no artifacts.
+    Writes no verification rows and inherits nothing: the chain supports
+    later prompts and semantic review, never a verdict."""
+    store = project.store
+    mapping = store.replan_mapping_for(revision.id)
+    if mapping is None:
+        return None
+    entry = next((t for t in mapping.tasks if t.task_id == task.task_id), None)
+    if entry is None or not entry.artifacts:
+        return None
+
+    sources = store.replan_sources_for_task(revision.id, task.task_id)
+    artifact_rows: list[dict] = []
+    for artifact in entry.artifacts:
+        row: dict = {"artifact": artifact, "resolved_sources": []}
+        resolved = False
+        for label, ev in _artifact_source_evidence(store, sources, artifact):
+            resolved = True
+            source = next(
+                s for s in sources
+                if f"{s.source_revision}:{s.source_task_id}" == label
+            )
+            store.replan_artifact_source_add(
+                run.id, revision.id, task.task_id,
+                source.source_revision, source.source_task_id, artifact,
+                attempt_id=ev.attempt_id, evidence_id=ev.id,
+            )
+            row["resolved_sources"].append({
+                "source": label,
+                "attempt_id": ev.attempt_id,
+                "evidence_id": ev.id,
+            })
+        row["resolved_to_recorded_evidence"] = resolved
+        fs = _artifact_fs_path(project.root, artifact)
+        present = fs is not None and fs.is_file()
+        row["exists_at_delivery"] = present
+        row["digest_at_delivery"] = _file_digest(fs) if present else None
+        artifact_rows.append(row)
+
+    snapshot = {
+        "kind": "replan_delivery_snapshot",
+        "run_id": run.id,
+        "revision": revision.revision,
+        "task_id": task.task_id,
+        "classification": entry.classification,
+        "attempt": attempt.id,
+        "delivery_evidence": delivered_evidence,
+        "recorded_at": db_now(),
+        "artifacts": artifact_rows,
+    }
+    path = _delivery_snapshot_path(
+        project.root, run.id, revision.revision, task.task_id, attempt.id
+    )
+    path.write_text(json.dumps(snapshot, indent=2) + "\n")
+    rel = str(path.relative_to(project.root))
+    store.evidence_add(attempt.id, DELIVERY_SNAPSHOT_KIND, rel)
+    return {
+        "snapshot": rel,
+        "artifact_sources": sum(len(r["resolved_sources"]) for r in artifact_rows),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Assignment-time static preflight (R002 follow-up).
 #
 # The delivery contract in worker_prompt only helps if the worker can
@@ -1935,7 +2336,7 @@ def _preflight_block(task: TaskRow) -> str:
 
 
 def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
-                  check_budget: int = 3) -> str:
+                  check_budget: int = 3, replan_context: str = "") -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
@@ -1947,6 +2348,12 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
         if goal.context
         else ""
     )
+    # Replan tasks get the reference chain: classification, sources with
+    # full identity and recorded status, artifact provenance and
+    # existence/change state, and the classification-specific instructions
+    # (confirm -> applicability + regression only; redo -> reason + scope).
+    # Empty for first-plan tasks: the prompt is byte-identical to before.
+    replan_block = replan_context if replan_context else ""
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
     return f"""You are an ORX worker for Goal {goal.id}: {goal.objective}
 
@@ -1957,7 +2364,7 @@ Task {task.task_id}: {task.objective}
 Goal constraints (binding for this work):
 {constraints}
 
-{context_block}Scope (write only inside these project-relative paths): {allowed}
+{context_block}{replan_block}Scope (write only inside these project-relative paths): {allowed}
 Read these files first — before any exploration, and only these plus the
 files you yourself create or modify (project-relative):
 {preread}
@@ -2010,11 +2417,20 @@ Rules:
 
 
 def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
-                    evidence_lines: str = "", prior_issues: str = "") -> str:
+                    evidence_lines: str = "", prior_issues: str = "",
+                    replan_context: str = "") -> str:
     capabilities = ", ".join(item.capabilities) or "none"
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
     context_blocks = ""
+    if replan_context:
+        # The reference chain this task's replan mapping declares, clearly
+        # labeled HISTORY: the verifier sees the provenance but cannot read
+        # it as this task's verification result.
+        context_blocks += (
+            "\nReplan correspondence this task references (recorded history"
+            f" — see the boundary note at its end):\n{replan_context}"
+        )
     if gate_summary:
         context_blocks += (
             "\nDeterministic checks already run for this task (do not re-run them):\n"
@@ -2311,6 +2727,14 @@ def task_complete(
         )
 
     store.evidence_add(attempt.id, "completion", str(evidence_path))
+    # The accepted delivery persists the replan reference chain bound to the
+    # completing attempt: provenance rows for every resolved (task <->
+    # source) edge plus the delivery snapshot (existence + digest of each
+    # declared reference at delivery time). Supporting material only — it
+    # writes no verification rows and inherits no prior pass.
+    replan_delivery = _record_replan_delivery(
+        project, run, revision, task, attempt, delivered_evidence=str(evidence_path),
+    )
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
     machine.transition(
         store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
@@ -2340,6 +2764,8 @@ def task_complete(
         "attempt": attempt.id,
         "delivery": {"status": "passed", "checks_run": gate["summary"]["total"]},
     }
+    if replan_delivery is not None:
+        result["replan_delivery"] = replan_delivery
     if mismatch is not None:
         result["model_mismatch"] = mismatch
     return result
@@ -2631,6 +3057,10 @@ def verify_dispatch(project: Project) -> dict:
                     gate_summary=_gate_summary(store, revision.id, task),
                     evidence_lines=_evidence_lines(store, revision.id, task.task_id),
                     prior_issues=_prior_issues(store, revision.id, task.task_id),
+                    replan_context=_replan_reference_context(
+                        store, project.root, revision.id, task.task_id,
+                        audience="verifier",
+                    ),
                 )
                 entry_out["attempt"] = attempt.id
                 entry_out["execution"] = _execution_spec(project, profile, attempt)
@@ -2674,6 +3104,9 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
             gate_summary=_gate_summary(store, revision.id, task),
             evidence_lines=_evidence_lines(store, revision.id, task.task_id),
             prior_issues=_prior_issues(store, revision.id, task.task_id),
+            replan_context=_replan_reference_context(
+                store, project.root, revision.id, task.task_id, audience="verifier"
+            ),
         ),
         timeout=project.config.command_timeout_sec,
     )

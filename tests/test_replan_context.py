@@ -148,6 +148,37 @@ def test_snapshot_marks_missing_information_unknown(project, goal):
     assert "verified: (no verification results recorded)" in facts
 
 
+# ---------------------------------------------------------------------------
+# G004 T004: the planner facts carry recorded evidence identity
+
+
+def test_snapshot_evidence_carries_row_identity_and_facts_render_it(mixed_run):
+    """Every evidence row in the fact snapshot carries its evidence row id
+    and producing attempt id, and the rendered facts (hence the planner
+    prompt) quote them — a replan can cite prior results traceably instead
+    of by task number."""
+    store = mixed_run.store
+    # T002 failed, so the Run never reached done and the Goal stays active.
+    goal_row = store.goal_active()
+    run = store.run_for_goal(goal_row.id)
+    snap = dispatch.replan_snapshot(store, goal_row, run)
+    t1 = next(t for t in snap["tasks"] if t["task_id"] == "T001")
+    [entry] = t1["evidence"]
+    assert entry["kind"] == "completion"
+    assert isinstance(entry["id"], int)
+    assert isinstance(entry["attempt_id"], int)
+
+    facts = plan_mod.render_replan_facts(snap)
+    assert f"[completion] {entry['path']} (evidence row {entry['id']}, attempt {entry['attempt_id']})" in facts
+
+    # The routed replan prompt carries the same identity plus the rule that
+    # artifacts are cited through the correspondence.
+    result = dispatch.plan_route(mixed_run)
+    prompt = result["assignment"]["prompt"]
+    assert "(evidence row" in prompt and ", attempt " in prompt
+    assert 'cite the evidence paths in "artifacts"' in prompt
+
+
 def test_snapshot_without_revisions_renders_the_empty_state(project, goal):
     store = project.store
     run = store.run_for_goal(goal.id)

@@ -1,6 +1,6 @@
 # 重规划对应关系与工作分类契约（G004）
 
-创建：2026-10-05。状态：契约与纯校验已实现（阶段 1）；存储接口与 v9 持久化已实现（阶段 3 的落库部分，T002）；dispatch 接线与执行面引用见 §9 阶段划分。
+创建：2026-10-05。状态：契约与纯校验已实现（阶段 1）；存储接口与 v9 持久化已实现（阶段 3 的落库部分，T002）；dispatch 接线与原子生效已实现（阶段 2，T003）；执行面引用贯通已实现（阶段 4，T004，见 §8.1）。
 
 本文件是 Plan IR 重规划映射（`replan` 字段）的正式契约：新计划修订生效前，必须产出
 新旧任务的对应关系与工作分类；成果（artifact/evidence）按此对应关系引用，而不是按任务编号。
@@ -176,6 +176,44 @@ NULL）。生效是单事务：作废旧修订+取消未终态旧任务、插入
 新旧对应（含重编号）、四类分类、重做原因、契约差异（将取消的未终态旧任务、保留的
 终态事实、验收条款覆盖）、旧任务去向（含记录状态与去向）、来源状态核对、引用问题。
 
+## 8.1 成果引用的执行面贯通（阶段 4，已交付 T004）
+
+引用链的**解析与展示**（`dispatch._replan_reference_context`）：带来源声明的 replan
+任务，其 worker 与 verifier 提示词都携带对应关系块——分类及含义、每个来源的全身份
+（`修订:任务` + part）与记录状态、来源自身的 evidence 行（含 evidence 行号与产出
+attempt 号）、每个声明成果经对应关系解析的结果（来源 attempt/evidence 身份，或如实
+标注 `unresolved` 留给语义审查）与**存在性/变化状态**。状态判定以**交付快照**为基线：
+存在且摘要一致 -> `UNCHANGED`；存在但摘要不同 -> `CHANGED … not assumed valid`；
+消失 -> `MISSING since the delivery snapshot … not assumed valid`；无基线时只报告
+存在与否，绝不默认有效。缺失或变化时，可追溯的历史出处（快照的修订/任务/attempt/
+evidence 行号）仍然完整展示。
+
+**分类语义进入提示词**：confirm 任务被告知"仅确认适用性并运行必要回归检查，不重做；
+旧 passed 只是支持材料，本任务只经自己的检查通过"，并逐条列出
+`confirm_verification` 当前验证要求；redo 任务明确展示重做原因（声明原文）与重做
+范围（scope.allowed）；verifier 收到的同一链条被显式标注为 recorded HISTORY——
+"历史通过结论不得冒充当前验证"，只按当次检查判定。
+
+**交付时的落库**（`dispatch._record_replan_delivery`，仅在门禁接受的交付上执行）：
+每个解析到已声明来源 evidence 的成果，经 `replan_artifact_source_add` 记一行可追溯
+出处（来源任务自身的 attempt 与 evidence 行）；同时写**交付快照**——所有声明成果
+在交付时刻的存在性与 sha256——文件按 `(run, 任务号, 修订, attempt)` 寻址
+（`deliveries/Txxx-rRR-aAAA.json`），同号任务跨修订、或重试的新 attempt 各写各的，
+互不覆盖；快照作为 evidence 行（kind `delivery_snapshot`）挂在完成 attempt 上，
+数据库始终可查。这些记录**不是验证结果**：不写 verification 行，不改变判定窗口；
+每个新修订的任务仍从 pending/runnable 起步，当前验证窗口为空，只经自己的门禁与
+独立 verifier 通过。
+
+**规划端**（T004）：事实快照的每条 evidence 带 evidence 行号与产出 attempt 号
+（`replan_snapshot` + `render_replan_facts`），planner 提示词据此要求"经对应关系在
+`artifacts` 里引用这些 evidence 路径，绝不按任务编号引用"。
+
+**同号跨修订的检查日志**（T004 修复）：`orx task check` 的日志序列号按
+`(run, 任务号)` **跨全部修订**计数（`Store.verifications_for_task_in_run`）：修订内
+文件名布局不变（`01-0000-command.log`），重用同号任务的新修订从下一个序号继续，
+不再从 0 重排而覆盖旧修订日志；既有 DB 行的路径全部保持有效可读。验证期
+（verify/ 树）日志本就按 attempt 寻址，全局唯一，不受影响。
+
 ## 9. 实施阶段与当前状态
 
 - **阶段 1（已交付）**：本契约 + IR 字段 + 纯校验 + 行为测试 + 规划提示词同步。
@@ -193,7 +231,13 @@ NULL）。生效是单事务：作废旧修订+取消未终态旧任务、插入
     unknown）；多轮追溯（`replan_trace_chain`）、拆分/合并、数据库重新打开后
     均可查询；观测读取契约同步至 v9（gate 只接受明确支持的版本 8/9）。
   - `orx status` 呈现对应关系（待做）。
-- **阶段 4**：worker/verifier 提示词与证据按对应关系引用旧成果（不再按编号）。
+- **阶段 4（已交付，T004）**：worker/verifier 提示词经对应关系引用旧成果（§8.1）：
+  引用链解析 + 存在性/变化展示（交付快照为基线，缺失/变化不默认有效、历史出处保留）、
+  confirm 仅确认适用性与必要回归 / redo 展示原因与范围、交付时绑定 attempt 的成果
+  出处与交付快照落库（同号跨修订互不覆盖，DB 可查）、事实快照与 planner 提示词携带
+  evidence 行/attempt 身份、`orx task check` 日志跨修订续序（旧路径保持可读）。
+  引用与旧通过记录不写 verification 结果：新任务仍 pending/runnable 起步，G003 的
+  开始门禁、同 attempt 检查、交付前重跑与独立 agent 验证不变。
 - **阶段 5**：端到端 dogfood + 全量回归 + 契约文档终审。
 
 ## 10. 兼容性

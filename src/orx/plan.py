@@ -898,10 +898,19 @@ def render_replan_facts(snapshot: dict) -> str:
             lines.append("      verified: (no verification results recorded)")
         evidence = task["evidence"]
         if evidence:
-            lines.append(
-                "      evidence: "
-                + "; ".join(f"[{kind}] {path}" for kind, path in evidence)
-            )
+            rendered_evidence = []
+            for item in evidence:
+                # Carry the recorded identity (evidence row id + producing
+                # attempt id) so a replan can cite prior results traceably —
+                # G004 T004; snapshots without ids render the path alone.
+                identity = ""
+                if item.get("id") is not None:
+                    identity = (
+                        f" (evidence row {item['id']},"
+                        f" attempt {item.get('attempt_id')})"
+                    )
+                rendered_evidence.append(f"[{item['kind']}] {item['path']}{identity}")
+            lines.append("      evidence: " + "; ".join(rendered_evidence))
         else:
             lines.append("      evidence: (none recorded)")
     return "\n".join(lines)
@@ -951,7 +960,12 @@ def planner_prompt(goal, depth: PlanDepth, replan_facts: str = "", intent: str =
         "\n  redone | split | merged | dropped (dropped needs a note) — and its"
         "\n  successors must exactly match the tasks citing it as a source."
         "\n- reference prior results and artifacts through this correspondence"
-        "\n  (\"artifacts\"), never by task number alone."
+        "\n  (\"artifacts\"), never by task number alone. The Execution Facts"
+        "\n  label each recorded evidence row with its evidence row id and"
+        "\n  producing attempt id — cite the evidence paths in \"artifacts\";"
+        "\n  when a citing task delivers, ORX records the provenance and a"
+        "\n  digest snapshot of every referenced artifact, bound to the"
+        "\n  completing attempt, so later rounds see existence and change."
         "\n- ORX never auto-passes tasks: every task in the plan you emit starts"
         "\n  pending or runnable. A Goal acceptance criterion already satisfied by"
         "\n  passed work must still appear VERBATIM in some task's acceptance —"

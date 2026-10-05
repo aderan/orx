@@ -359,3 +359,175 @@ def test_cli_launch_path_shares_the_preflight_contract(tmp_path, monkeypatch):
         assert preflight["sh -c true"]["blocked"] is False
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G004 T004: the replan reference chain rides in the worker/verifier prompts.
+# Confirm tasks get the supporting material plus THIS task's check
+# requirements; redo tasks get the reason and scope; artifacts resolve through
+# the declared correspondence with existence/change state; the verifier sees
+# the same chain labeled history — never as this task's verification.
+
+
+def _replan_ir(goal, tasks, prior_revision, task_entries, superseded_entries):
+    ir = ir_for(goal, tasks)
+    ir["replan"] = {
+        "prior_revision": prior_revision,
+        "tasks": task_entries,
+        "superseded": superseded_entries,
+    }
+    return ir
+
+
+def _passed_prior(project, goal, tmp_path, name="prior-evidence.json"):
+    """Revision 1 with T001 passed and its completion evidence on disk —
+    the state a citing replan task references."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    revision1 = active_task(project, "T001").revision_id
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    evidence = write_evidence(tmp_path, name)
+    dispatch.task_complete(project, "T001", str(evidence))
+    return revision1, evidence
+
+
+def test_first_plan_worker_prompt_omits_the_replan_block(project, goal):
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance)
+    ]))
+    prompt = dispatch.worker_prompt(goal, active_task(project, "T001"))
+    assert "Replan correspondence" not in prompt
+
+
+def test_replan_confirm_worker_prompt_carries_the_reference_chain(
+        project, goal, tmp_path):
+    revision1, evidence = _passed_prior(project, goal, tmp_path)
+    dispatch.submit_plan(project, _replan_ir(goal, [
+        task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+    ], 1, [
+        {"task": "T101", "classification": "confirm",
+         "sources": [{"revision": 1, "task_id": "T001"}],
+         "confirm_verification": ["true"],
+         "artifacts": [str(evidence)]},
+    ], [
+        {"revision": 1, "task_id": "T001", "disposition": "confirmed",
+         "successors": ["T101"]},
+    ]))
+    entry = dispatch.run_slice(project)["host_required"][0]
+    assert entry["task"] == "T101"
+    prompt = entry["prompt"]
+    # Byte-identical to the composition the dispatch layer builds.
+    assert prompt == dispatch.worker_prompt(
+        goal, active_task(project, "T101"),
+        replan_context=dispatch._replan_reference_context(
+            project.store, project.root,
+            active_task(project, "T101").revision_id, "T101", audience="worker",
+        ),
+    )
+    # Source identity: revision AND task, plus its recorded status.
+    assert "Replan correspondence for this task" in prompt
+    assert "a task number alone never implies correspondence" in prompt
+    assert "classification: confirm — prior passed work this task relies on AS-IS" in prompt
+    assert ("1:T001 (revision 1, task T001, part=false) — recorded status:"
+            " passed") in prompt
+    # attempt/evidence identity of the source's own evidence.
+    assert "evidence: [completion]" in prompt
+    assert "(evidence row " in prompt and ", attempt " in prompt
+    # The artifact resolves through the correspondence, never by number.
+    assert f"  - {evidence} -> resolves to recorded source evidence: 1:T001 (source attempt " in prompt
+    assert "file present (no delivery snapshot recorded yet — nothing to compare)" in prompt
+    assert "never assumed valid by default" in prompt
+    # A confirm task confirms applicability + regression only.
+    assert "ONLY to confirm this work still applies" in prompt
+    assert "necessary regression checks" in prompt
+    assert "do NOT redo the work" in prompt
+    assert "Current verification requirements for this confirmation" in prompt
+    assert "'true'" in prompt
+    assert "a prior pass never substitutes" in prompt
+    # The archived assignment file carries the same chain.
+    assert (project.root / entry["prompt_file"]).read_text() == prompt
+
+
+def test_replan_redo_worker_prompt_shows_reason_and_scope(project, goal):
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["false"]),
+    ]))
+    dispatch.run_slice(project)  # parks; revision 1's T001 stays waiting_host
+    dispatch.submit_plan(project, _replan_ir(goal, [
+        task_spec("T201", acceptance=goal.acceptance, verification=["true"]),
+    ], 1, [
+        {"task": "T201", "classification": "redo",
+         "sources": [{"revision": 1, "task_id": "T001"}],
+         "redo_reason": "the check contract changed; the old result cannot prove it"},
+    ], [
+        {"revision": 1, "task_id": "T001", "disposition": "redone",
+         "successors": ["T201"]},
+    ]))
+    prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+    assert "classification: redo — this work must be DONE AGAIN (implementation task)" in prompt
+    assert ("Redo reason (why this work must be done again, from the replan"
+            " declaration): the check contract changed; the old result"
+            " cannot prove it") in prompt
+    assert "Scope of the redo (the only paths this task may write):" in prompt
+    # The source's honest recorded status is shown as history: activation
+    # cancelled the unfinished round-1 task (waiting_host -> cancelled).
+    assert "recorded status: cancelled" in prompt
+
+
+def test_replan_worker_prompt_reports_unresolved_and_missing_artifacts(
+        project, goal, tmp_path):
+    _passed_prior(project, goal, tmp_path)
+    dispatch.submit_plan(project, _replan_ir(goal, [
+        task_spec("T102", acceptance=goal.acceptance, verification=["true"]),
+    ], 1, [
+        {"task": "T102", "classification": "confirm",
+         "sources": [{"revision": 1, "task_id": "T001"}],
+         "confirm_verification": ["true"],
+         "artifacts": ["reports/never-created.md"]},
+    ], [
+        {"revision": 1, "task_id": "T001", "disposition": "confirmed",
+         "successors": ["T102"]},
+    ]))
+    prompt = dispatch.run_slice(project)["host_required"][0]["prompt"]
+    assert "  - reports/never-created.md -> names no recorded evidence of the declared sources" in prompt
+    assert "semantic review" in prompt
+    assert ("state: file MISSING on disk and no delivery snapshot recorded —"
+            " the reference cannot be confirmed") in prompt
+    assert "never assumed valid by default" in prompt
+
+
+def test_replan_verifier_prompt_labels_the_chain_as_history(
+        project, goal, tmp_path):
+    revision1, evidence = _passed_prior(project, goal, tmp_path)
+    dispatch.submit_plan(project, _replan_ir(goal, [
+        task_spec("T101", acceptance=goal.acceptance,
+                  verification=["true", "agent: review the confirmation"]),
+    ], 1, [
+        {"task": "T101", "classification": "confirm",
+         "sources": [{"revision": 1, "task_id": "T001"}],
+         "confirm_verification": ["true"],
+         "artifacts": [str(evidence)]},
+    ], [
+        {"revision": 1, "task_id": "T001", "disposition": "confirmed",
+         "successors": ["T101"]},
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T101")
+    dispatch.task_complete(project, "T101", str(write_evidence(tmp_path, "citing.json")))
+
+    out = dispatch.verify_dispatch(project)
+    entry = next(e for e in out["agent_required"] if e["task"] == "T101")
+    prompt = entry["prompt"]
+    assert "Replan correspondence this task references (recorded history" in prompt
+    assert "1:T001 (revision 1, task T001, part=false) — recorded status: passed" in prompt
+    # Provenance was recorded at the delivery this verification round judges.
+    assert f"-> provenance recorded at delivery: 1:T001 (source attempt " in prompt
+    assert f"{evidence}" in prompt
+    # The boundary: history never impersonates the current verification.
+    assert "recorded HISTORY this task references" in prompt
+    assert "NOT this task's verification results" in prompt
+    assert "a historical pass never impersonates a current verification" in prompt
+    assert "judge only the check below" in prompt
+    assert (project.root / entry["prompt_file"]).read_text() == prompt

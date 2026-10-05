@@ -128,9 +128,30 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
       + 旧库构造夹具（seed.sql v9 子集）。
 - [ ] `orx status` / 快照呈现新旧对应关系与分类。
 
-### 阶段 4：成果按对应关系引用 — Not Started
-- [ ] worker/verifier 提示词经 `artifacts` 边引用旧成果，不按任务编号。
-- [ ] 证据文件引用与对应关系挂钩的行为测试。
+### 阶段 4：成果按对应关系引用 — Done（T004，R004）
+- [x] worker/verifier 提示词经 `artifacts` 边引用旧成果，不按任务编号
+      （`dispatch._replan_reference_context`：分类含义、来源全身份+记录状态、
+      来源 evidence 行号/attempt 号、每个成果的解析身份与存在性/变化状态；
+      confirm 仅确认适用性+必要回归、redo 展示原因与范围、verifier 端显式标注
+      recorded HISTORY 不得冒充当前验证）。
+- [x] 交付时保存绑定 attempt 的成果来源与交付快照：`_record_replan_delivery`
+      仅在门禁接受的交付上运行——每个解析成果经 `replan_artifact_source_add`
+      记录来源任务自身 attempt/evidence 身份；交付快照
+      （`deliveries/Txxx-rRR-aAAA.json`，修订+attempt 寻址）记录所有声明成果的
+      存在性与 sha256，作为 evidence 行挂在完成 attempt 上；缺失/变化不默认有效
+      （UNCHANGED/CHANGED/MISSING 如实展示，历史出处保留）。
+- [x] 修复同号任务跨修订的 check 日志覆盖：`orx task check` 日志序列按
+      (run, 任务号) 跨修订续数（`Store.verifications_for_task_in_run`），修订内
+      布局不变、既有路径保持可读；交付快照按修订+attempt 寻址互不覆盖。
+- [x] planner 端贯通：事实快照 evidence 携带行号/attempt 身份并渲染进提示词，
+      规划规则要求经对应关系在 artifacts 里引用 evidence 路径。
+- [x] 不变量保持：引用与旧通过记录不写 verification 结果（新任务 pending/
+      runnable 起步、当前窗口为空、只经自己的门禁+独立 verifier 通过）；G003
+      门禁/同 attempt 检查/交付前重跑/独立验证不变；无 schema 版本变化
+      （state 仅增读接口）。
+- 证据：`uv run pytest -q tests/test_assignments.py tests/test_replan_context.py
+  tests/test_verify_check.py tests/test_verify.py tests/test_delivery_gate_e2e.py`
+  70 绿（61 存量 + 9 新增）；全量 592 绿。
 
 ### 阶段 5：端到端 dogfood 与终审 — Not Started
 - [ ] 真实重规划场景走通：确认/新增/重做/延续四类齐全，成果引用可追溯。
@@ -145,3 +166,7 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
 - 2026-10-05 R4 T003：阶段 2 完成——共用差异预检（`_replan_precheck`）+ 原子生效
   单事务 + `orx plan check --file` 只读命令 + 手工 submit/CLI planner 同一门禁 +
   已完成 Run 失败重规划不再提前重开 + 夹具显式声明关系（见阶段 2 证据行）。
+- 2026-10-05 R4 T004：阶段 4 完成——引用链解析进 worker/verifier 提示词（存在性/
+  变化以交付快照为基线，缺失不默认有效、历史出处保留）+ 交付时绑定 attempt 的
+  成果出处与交付快照落库（同号跨修订互不覆盖）+ 同号跨修订 check 日志续序修复 +
+  planner 事实快照携带 evidence 身份（见阶段 4 证据行）。

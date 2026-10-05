@@ -443,3 +443,104 @@ def test_verification_output_and_evidence_recorded(planned, tmp_path):
     assert rows[0].output_path and (planned.root / rows[0].output_path).exists()
     attempt = planned.store.attempt_latest_for_task(revision.id, "T001")
     assert attempt.result == "completed"
+
+
+# ---------------------------------------------------------------------------
+# G004 T004: delivery-time artifact provenance + snapshot, no inheritance
+
+
+def test_complete_records_replan_provenance_and_delivery_snapshot(
+        project, goal, tmp_path):
+    """An accepted delivery of a replan task persists the reference chain
+    bound to the completing attempt: a traceable provenance row per resolved
+    (task <-> source) edge — the SOURCE task's own attempt and evidence row
+    identity — plus a delivery snapshot addressed by revision and attempt
+    (never overwritten by a same-numbered task in another revision) and
+    recorded as evidence so the database keeps finding it. None of it is a
+    verification result: the task's current window holds exactly the
+    delivery gate's own rows, and the next revision's tasks still start
+    pending/runnable with an empty window."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    revision1 = active_task(project, "T001").revision_id
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    source_evidence = write_evidence(tmp_path, "prior-evidence.json")
+    dispatch.task_complete(project, "T001", str(source_evidence))
+    source_rows = project.store.evidence_rows_for_task(revision1, "T001")
+    [completion_row] = [r for r in source_rows if r.kind == "completion"]
+
+    ir = ir_for(goal, [
+        task_spec("T101", acceptance=goal.acceptance, verification=["true"]),
+    ])
+    ir["replan"] = {
+        "prior_revision": 1,
+        "tasks": [{
+            "task": "T101", "classification": "confirm",
+            "sources": [{"revision": 1, "task_id": "T001"}],
+            "confirm_verification": ["true"],
+            "artifacts": [str(source_evidence)],
+        }],
+        "superseded": [{
+            "revision": 1, "task_id": "T001", "disposition": "confirmed",
+            "successors": ["T101"],
+        }],
+    }
+    dispatch.submit_plan(project, ir)
+    revision2 = active_task(project, "T101").revision_id
+
+    # The new task starts fresh: pending/runnable, empty verification window.
+    # The referenced prior result wrote nothing into the current results.
+    assert active_task(project, "T101").status == "runnable"
+    assert project.store.verifications_current(revision2, "T101") == []
+    assert project.store.verifications_for(revision2, "T101") == []
+
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T101")
+    citing_evidence = write_evidence(tmp_path, "citing-evidence.json")
+    result = dispatch.task_complete(project, "T101", str(citing_evidence))
+    assert result["verdict"] == "passed"
+
+    delivery = result["replan_delivery"]
+    snapshot_rel = delivery["snapshot"]
+    assert snapshot_rel.startswith(".orx/runs/R001/deliveries/T101-r02-a")
+    snapshot_path = project.root / snapshot_rel
+    assert snapshot_path.exists()
+    doc = json.loads(snapshot_path.read_text())
+    assert doc["revision"] == 2 and doc["task_id"] == "T101"
+    assert doc["classification"] == "confirm"
+    [artifact_row] = doc["artifacts"]
+    assert artifact_row["artifact"] == str(source_evidence)
+    assert artifact_row["resolved_to_recorded_evidence"] is True
+    assert artifact_row["resolved_sources"] == [{
+        "source": "1:T001",
+        "attempt_id": completion_row.attempt_id,
+        "evidence_id": completion_row.id,
+    }]
+    assert artifact_row["exists_at_delivery"] is True
+    assert artifact_row["digest_at_delivery"]
+    assert delivery["artifact_sources"] == 1
+
+    # Provenance row: the source task's OWN attempt and evidence identity.
+    [provenance] = project.store.replan_artifact_sources_for_task(
+        revision2, "T101")
+    assert (provenance.source_revision, provenance.source_task_id) == (1, "T001")
+    assert provenance.attempt_id == completion_row.attempt_id
+    assert provenance.evidence_id == completion_row.id
+
+    # The snapshot is evidence on the COMPLETING attempt: the DB finds it.
+    completing = project.store.attempt_latest_for_task(revision2, "T101")
+    [snapshot_row] = [
+        r for r in project.store.evidence_rows_for_task(revision2, "T101")
+        if r.kind == "delivery_snapshot"
+    ]
+    assert snapshot_row.attempt_id == completing.id
+    assert snapshot_row.path == snapshot_rel
+
+    # The reference chain never wrote a verification result: the current
+    # window holds exactly the delivery gate's fresh green row(s).
+    current = project.store.verifications_current(revision2, "T101")
+    assert [v.kind for v in current] == ["command"]
+    assert all(v.passed for v in current)
+    assert all(v.attempt_id == completing.id for v in current)

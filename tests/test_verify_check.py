@@ -287,3 +287,79 @@ def test_check_timeout_semantics_match_verify(tmp_path, monkeypatch):
         assert "[exit timeout" in log_text
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G004 T004: same task number, different revisions — check logs never overwrite
+
+
+def test_check_logs_same_task_number_across_revisions_never_overwrite(
+        project, goal):
+    """A replan may reuse a task number; the two T001s are different work.
+    The check-log sequence counts command rows across ALL revisions of the
+    run, so revision 2's first check writes a fresh file instead of
+    restarting the filenames and clobbering revision 1's log. Every DB row
+    keeps finding its own file, and the layout inside one revision is
+    unchanged (existing history paths stay readable)."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["echo round-one; exit 3"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    first = dispatch.task_check(project, "T001")
+    assert first["summary"]["failed"] == 1
+    first_log = project.root / first["results"][0]["log_path"]
+    assert first_log.name == "01-0000-command.log"  # revision 1 layout unchanged
+    assert "round-one" in first_log.read_text()
+
+    # Replan reusing the SAME number: revision 2's T001 declares the
+    # correspondence explicitly (redo of the failed round-1 task).
+    dispatch.task_fail(project, "T001", "round one approach failed")
+    ir = ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["echo round-two; exit 4"]),
+    ])
+    ir["replan"] = {
+        "prior_revision": 1,
+        "tasks": [{
+            "task": "T001", "classification": "redo",
+            "sources": [{"revision": 1, "task_id": "T001"}],
+            "redo_reason": "the check contract changed for the new round; "
+                           "the old result cannot prove it",
+        }],
+        "superseded": [{
+            "revision": 1, "task_id": "T001", "disposition": "redone",
+            "successors": ["T001"],
+        }],
+    }
+    dispatch.submit_plan(project, ir)
+    revision2 = active_task(project, "T001").revision_id
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+
+    second = dispatch.task_check(project, "T001")
+    second_log = project.root / second["results"][0]["log_path"]
+    assert second_log.name == "01-0001-command.log"  # sequence continued
+    assert second_log != first_log
+    assert "round-two" in second_log.read_text()
+    # Revision 1's log was NOT overwritten: its content is intact.
+    assert "round-one" in first_log.read_text()
+    assert "[exit 3" in first_log.read_text()
+
+    # Both revisions' DB rows find their own historical file.
+    run = project.store.run_for_goal(goal.id)
+    revisions = [r for r in project.store.revisions_all() if r.run_id == run.id]
+    rows = [
+        v for rev in revisions
+        for v in project.store.verifications_for(rev.id, "T001")
+        if v.kind == "command"
+    ]
+    assert len(rows) == 2
+    assert len({v.output_path for v in rows}) == 2
+    for row in rows:
+        assert (project.root / row.output_path).exists()
+    # The new revision's task is different work: its window is its own.
+    assert project.store.verifications_current(revision2, "T001") == [
+        v for v in rows if v.revision_id == revision2
+    ]

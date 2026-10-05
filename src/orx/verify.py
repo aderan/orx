@@ -51,7 +51,12 @@ def _check_log_path(project_root: Path, run_id: str, task_id: str, index: int,
                     seq: int) -> Path:
     """Logs for `orx task check` runs. A separate `check/` tree with a per-run
     sequence number: every call appends fresh rows, so the log of an earlier
-    row is never overwritten by a later check of the same entry."""
+    row is never overwritten by a later check of the same entry. The sequence
+    counts across ALL revisions of the run (the caller passes it): task ids
+    are per-revision identities, but the log directory is shared per
+    (run, task id) — continuing the sequence across revisions is what keeps a
+    same-numbered task in a new revision from overwriting the old revision's
+    log while every already-written path stays valid and readable."""
     directory = project_root / ".orx" / "runs" / run_id / "check" / task_id
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{index:02d}-{seq:04d}-command.log"
@@ -180,8 +185,15 @@ def run_task_check(
     ]
     agent_entries = len(items) - len(command_items)
     results: list[dict] = []
+    # The per-(run, task id) log sequence counts command rows across ALL
+    # revisions of the run, not just this one: a replan that reuses a task
+    # number starts a new revision with a zero per-revision count, and a
+    # per-revision sequence would restart the filenames and overwrite the
+    # earlier revision's logs. Counting across revisions keeps every
+    # already-written log path valid (old rows stay readable) while new
+    # revisions continue the sequence into fresh files.
     seq = sum(
-        1 for v in store.verifications_for(revision_row_id, task.task_id)
+        1 for v in store.verifications_for_task_in_run(run_id, task.task_id)
         if v.kind == "command"
     )
     for index, item in command_items:

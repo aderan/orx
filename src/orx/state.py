@@ -682,6 +682,23 @@ class Verification:
 
 
 @dataclass(frozen=True)
+class EvidenceRow:
+    """One recorded evidence attachment (execution / completion /
+    verification / delivery_snapshot) with its row identity — the
+    provenance surface the replan reference chain quotes (G004 T004).
+
+    Identity is (evidence row id, producing attempt id): artifact
+    provenance rows cite exactly these, never a bare task number.
+    """
+
+    id: int
+    attempt_id: int
+    kind: str
+    path: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class RoutingDecision:
     id: int
     attempt_id: int | None
@@ -1516,6 +1533,15 @@ class Store:
             raise records.NotFoundError(f"task {task_id} not found in revision row {revision_row_id}")
         return _task(r)
 
+    def task_get_by_row_id(self, row_id: int) -> TaskRow:
+        """One task row by its database id — the full-identity anchor a
+        replan source carries (``source_task_row_id``), so resolving a
+        source's recorded status never depends on the task number alone."""
+        r = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (row_id,)).fetchone()
+        if not r:
+            raise records.NotFoundError(f"task row {row_id} not found")
+        return _task(r)
+
     def tasks_every(self) -> list[TaskRow]:
         rows = self.conn.execute("SELECT * FROM tasks ORDER BY id").fetchall()
         return [_task(r) for r in rows]
@@ -1782,6 +1808,22 @@ class Store:
         ).fetchall()
         return [(r["kind"], r["path"]) for r in rows]
 
+    def evidence_rows_for_task(self, revision_row_id: int, task_id: str) -> list[EvidenceRow]:
+        """Evidence rows WITH ids for a task's attempts, oldest first — the
+        identity (evidence row id, producing attempt id) that replan artifact
+        provenance records and prompts quote (G004 T004)."""
+        rows = self.conn.execute(
+            "SELECT e.id AS id, e.attempt_id AS attempt_id, e.kind AS kind,"
+            " e.path AS path, e.created_at AS created_at FROM evidence e"
+            " JOIN attempts a ON e.attempt_id = a.id"
+            " WHERE a.revision_id = ? AND a.task_id = ? ORDER BY e.id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [
+            EvidenceRow(r["id"], r["attempt_id"], r["kind"], r["path"], r["created_at"])
+            for r in rows
+        ]
+
     # -- verifications ----------------------------------------------------------
 
     def verification_add(
@@ -1819,6 +1861,22 @@ class Store:
         rows = self.conn.execute(
             "SELECT * FROM verifications WHERE revision_id = ? AND task_id = ? ORDER BY id",
             (revision_row_id, task_id),
+        ).fetchall()
+        return [_verification(r) for r in rows]
+
+    def verifications_for_task_in_run(self, run_id: str, task_id: str) -> list[Verification]:
+        """Every verification row recorded for one task id across ALL
+        revisions of one run, oldest first. Task ids are per-revision
+        identities, but the ``orx task check`` log filenames are shared per
+        (run, task id): this read lets the check runner sequence those log
+        files across revisions, so a same-numbered task in a later revision
+        never overwrites an earlier revision's log (G004 T004). Rows are
+        never rewritten or deleted, so the count only grows."""
+        rows = self.conn.execute(
+            "SELECT v.* FROM verifications v"
+            " JOIN plan_revisions pr ON pr.id = v.revision_id"
+            " WHERE pr.run_id = ? AND v.task_id = ? ORDER BY v.id",
+            (run_id, task_id),
         ).fetchall()
         return [_verification(r) for r in rows]
 
