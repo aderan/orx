@@ -149,6 +149,12 @@ when every command check is green). The outcomes you act on are the
 structured delivery statuses and the reason prefixes in steps 6–8.
 
 1. Read `orx status --json` before acting. It is the only source of truth.
+   Keep the analytics watchdog running for the session — it is the
+   Controller's own stall detector (R006: a rate-limited controller session
+   sat silent for 2.5 hours and only the human returning noticed; the
+   no_progress rule had fired but nobody was watching):
+   `~/Sources/Tools/orx-analytics/.venv/bin/orx-analytics watch start`
+   (check `watch status`; `watch stop` when the Goal is done).
 2. Treat `mode = "host_required"` from `orx plan` (or an entry in
    `host_required` from `orx run`) as your cue to launch a subagent — it is
    never a failure. The entry's `execution` spec is the full launch contract:
