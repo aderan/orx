@@ -111,11 +111,30 @@ One row for every configured profile, then any status row whose profile is
 no longer defined. A profile with no row is `unknown`. Human columns are
 `PROFILE`, `STATE`, `SINCE`, `REASON`. `SINCE` is `updated_at`. `REASON`
 joins `last_error_kind` and `note`. A `cooldown` row includes
-`retry <cooldown_until>`. `reset <quota_reset_at>` appears when a quota
-reset time is known. A manual `orx resource set` override is marked
-`override`; `orx resource clear` drops that mark. `--json` is the usual
-`{"ok": true, ...}` envelope; `profiles` carries the same fields. A missing
-project exits 1.
+`retry <cooldown_until>`. `reset <quota_reset_at>` appears when a quota reset time is known; a known
+reset that has already passed shows `reset passed (routes again)`. A manual
+`orx resource set` override is marked `override`; `orx resource clear` drops
+that mark. `--json` is the usual `{"ok": true, ...}` envelope; `profiles`
+carries the same fields. A missing project exits 1.
+
+## Live quota preflight
+
+```sh
+orx quota [--force] [--json]
+```
+
+Best-effort live usage for the three harnesses with a quota source —
+`codex` (ChatGPT backend), `cursor` (dashboard usage-summary via the
+login-keychain session), `zcode` (GLM coding-plan monitor API) — plus which
+of the project's CLI profiles each harness backs. Never launches an agent
+and never raises on an unreachable provider (that reports `unknown`).
+Snapshots are cached for 60s; `--force` refetches. Outside a project it
+prints the harness snapshots only. `orx run` / `orx plan` / `orx verify`
+run the same preflight before routing: a provider that reports a reached
+limit gates its profiles as `exhausted` with the reset time, an expired
+exhaustion is released automatically, and operator `orx resource set`
+overrides always win. `ORX_QUOTA_PREFLIGHT=0` disables the preflight
+entirely.
 
 ## Timeline
 

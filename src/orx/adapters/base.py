@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -262,3 +263,55 @@ def classify_failure(run_result) -> str:
             if needle in lowered:
                 return kind
     return "process_failure"
+
+
+# Quota reset extraction (G005). Codex embeds the exact reset moment in its
+# usage-limit failures ("... or try again at Oct 6th, 2026 2:16 AM."); the
+# same vocabulary is accepted for the other harnesses ("resets at ...").
+_RESET_MARKERS: tuple[str, ...] = (
+    "try again at ", "try again on ", "resets at ", "reset at ",
+)
+_RESET_TIME_FORMATS: tuple[str, ...] = (
+    "%b %d, %Y %I:%M %p", "%b %d %Y %I:%M %p",
+    "%b %d, %Y %H:%M", "%b %d %Y %H:%M",
+    "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z",
+)
+# "Oct 6th, 2026" — the ordinal suffix is decoration strptime cannot eat.
+_ORDINAL_SUFFIX = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
+
+
+def parse_quota_reset(text: str) -> str | None:
+    """ISO-8601 timestamp of the quota reset named in harness failure output,
+    when the harness printed one. Harnesses render it in the machine's local
+    zone, so a naive parse is anchored to local time. None when no marker has
+    a parsable time after it (callers keep "never recovers" semantics)."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for marker in _RESET_MARKERS:
+        start = lowered.find(marker)
+        while start != -1:
+            fragment = text[start + len(marker):start + len(marker) + 48]
+            # The codex JSONL event ends the sentence inside a quoted string;
+            # offer the candidates with JSON decoration stripped too.
+            candidates = [
+                fragment,
+                fragment.split('"')[0],
+                fragment.split("}")[0],
+            ]
+            for candidate in candidates:
+                cleaned = _ORDINAL_SUFFIX.sub("", candidate.strip().rstrip('.,;"\\'))
+                for fmt in _RESET_TIME_FORMATS:
+                    try:
+                        moment = datetime.strptime(cleaned, fmt)
+                    except ValueError:
+                        continue
+                    return moment.astimezone().isoformat(timespec="seconds")
+            start = lowered.find(marker, start + len(marker))
+    return None
+
+
+def quota_reset_from(run_result) -> str | None:
+    """The quota reset time printed in a launch's captured output, if any."""
+    return parse_quota_reset(captured_stderr(run_result) + "\n" + captured_stdout(run_result))

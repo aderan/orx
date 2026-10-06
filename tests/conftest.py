@@ -11,9 +11,12 @@ from orx import dispatch
 @pytest.fixture(autouse=True)
 def isolate_user_layer(tmp_path, monkeypatch):
     """Every test sees an empty M1 user layer: a real ~/.config/orx on the
-    developer machine must never leak into test projects."""
+    developer machine must never leak into test projects. Quota preflight is
+    disabled too — run/plan/verify entry points must never touch the network
+    from the suite (tests that exercise it re-enable and monkeypatch)."""
     monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "isolated-config"))
     monkeypatch.setenv("ORX_DATA_DIR", str(tmp_path / "isolated-data"))
+    monkeypatch.setenv("ORX_QUOTA_PREFLIGHT", "0")
     yield
 
 HOST_PROFILES_TOML = """\

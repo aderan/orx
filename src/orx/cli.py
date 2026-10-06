@@ -879,13 +879,21 @@ def run(json_out: bool = JsonOpt) -> None:
     if not json_out:
         if result.get("note"):
             typer.echo(result["note"])
+        for item in result.get("quota_preflight", []):
+            if item.get("changed"):
+                resets = f" (resets {item['resets_at']})" if item.get("resets_at") else ""
+                typer.echo(f"quota preflight: {item['profile']} -> {item['quota']}{resets}")
         for item in result["started"]:
+            fallback = (f" (fallback from {item['fallback_from']})"
+                        if item.get("fallback_from") else "")
             typer.echo(
-                f"started: {item['task']} via {item['profile']}"
+                f"started: {item['task']} via {item['profile']}{fallback}"
                 f" -> {item['status']} (verdict {item.get('verdict')}, log {item.get('log')})"
             )
         for item in result["failed"]:
-            typer.echo(f"failed: {item['task']} via {item['profile']}: {item.get('reason')}")
+            fallback = (f" (fallback from {item['fallback_from']})"
+                        if item.get("fallback_from") else "")
+            typer.echo(f"failed: {item['task']} via {item['profile']}{fallback}: {item.get('reason')}")
         for item in result["host_required"]:
             via = f" via {item['profile']}" if item.get("profile") else ""
             note = " (resurfaced waiting assignment)" if item.get("resurfaced") else ""
@@ -916,6 +924,35 @@ def run(json_out: bool = JsonOpt) -> None:
                       "deferred", "routing_errors", "recovery")
         ):
             typer.echo("nothing to dispatch")
+
+
+@app.command()
+@handle_errors
+def quota(
+    json_out: bool = JsonOpt,
+    force: bool = typer.Option(
+        False, "--force", help="Bypass the 60s snapshot cache and fetch fresh."
+    ),
+) -> None:
+    """Live quota preflight for codex / cursor / zcode (best effort, never launches an agent)."""
+    try:
+        project = dispatch.open_project()
+    except NotFoundError:
+        project = None  # outside a project: report harness snapshots only
+    data = dispatch.quota_report(project, force=force)
+    _ok(json_out, **data)
+    if not json_out:
+        for snap in data["snapshots"]:
+            line = f"{snap['harness']}: {snap['status']}"
+            if snap.get("summary"):
+                line += f" — {snap['summary']}"
+            if snap.get("resets_at"):
+                line += f" (resets {snap['resets_at']})"
+            if snap.get("error"):
+                line += f" [{snap['error']}]"
+            if snap.get("profiles"):
+                line += f"  profiles: {', '.join(snap['profiles'])}"
+            typer.echo(line)
 
 
 @app.command()

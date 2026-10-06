@@ -110,8 +110,9 @@ def test_override_protects_and_clear_reenables(tmp_path, monkeypatch):
 
 def test_failing_worker_flips_health_and_routing_falls_back(tmp_path, monkeypatch):
     """End-to-end: a shell worker whose output says 'rate limit' drives its
-    profile into cooldown; the next run_slice falls through to the next
-    worker in the configured list."""
+    profile into cooldown, and since G005 the same run_slice immediately
+    falls through to the next configured worker (the manual `task retry`
+    round-trip is no longer needed for resource failures)."""
     import os
     import stat
     bindir = tmp_path / "bin"
@@ -166,15 +167,14 @@ command_timeout_sec = 30
             __import__("conftest").task_spec("T001", acceptance=["a1"], verification=[]),
         ]))
         first = dispatch.run_slice(project)
-        assert first["failed"] and "rate limit" in first["failed"][0]["reason"]
+        # The rate-limited failure is recorded (attempts carry its reason)
+        # while the same slice already re-routed to the next rung.
+        assert first["failed"] == []
+        started = first["started"][0]
+        assert started["profile"] == "oksh" and started["fallback_from"] == "ratey"
+        assert started["status"] == "passed"
         row = project.store.resource_row("ratey")
         assert row.status == "cooldown" and row.last_error_kind == "rate_limited"
-
-        dispatch.task_retry(project, "T001")
-        second = dispatch.run_slice(project)
-        started = second["started"][0]
-        assert started["profile"] == "oksh"  # cooldown pushed routing to the fallback
-        assert started["status"] == "passed"
     finally:
         project.close()
 

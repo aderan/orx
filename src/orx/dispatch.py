@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from orx import adapters, machine, plan as plan_mod, probes, routing, runtime, verify
-from orx.adapters.base import classify_failure, scan_marker
+from orx import adapters, machine, plan as plan_mod, probes, quota, routing, runtime, verify
+from orx.adapters.base import classify_failure, quota_reset_from, scan_marker
 from orx import health
 from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
@@ -849,6 +849,10 @@ def plan_route(
     active this is a replan: the prompt carries a deterministic fact snapshot
     plus (when supplied) the Controller's --context-file intent."""
     store = project.store
+    # Same best-effort preflight as run_slice (G005): a quota-dead planner
+    # rung is gated before the route, not discovered by paying for a failed
+    # call.
+    quota.refresh(project)
     goal, run = _active_context(project)
     # A bad context file fails before routing, attempts, or any model call.
     intent = load_replan_context(context_file) if context_file else ""
@@ -1025,9 +1029,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     effort = adapter.effort_outcome(launch, run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=None)
-    health.record_attempt_outcome(
-        store, profile.name, ok=run_result.ok,
-        error_kind=None if run_result.ok else classify_failure(run_result))
+    _record_attempt_health(store, profile.name, run_result)
     store.attempt_update(
         attempt.id,
         ended_at=db_now(),
@@ -1113,6 +1115,20 @@ def _captured(run_result, name: str) -> str:
     if isinstance(full, str) and full:
         return full
     return getattr(run_result, name, "") or ""
+
+
+def _record_attempt_health(store, profile_name: str, run_result) -> str | None:
+    """The one health seam after every CLI launch (G005): classify the
+    failure, learn the resource transition, and carry the quota reset the
+    harness printed (codex names the exact moment) so an exhaustion can
+    self-release once the reset passes. Returns the ErrorKind."""
+    error_kind = None if run_result.ok else classify_failure(run_result)
+    health.record_attempt_outcome(
+        store, profile_name, ok=run_result.ok, error_kind=error_kind,
+        quota_reset_at=(quota_reset_from(run_result)
+                        if error_kind == "quota_exhausted" else None),
+    )
+    return error_kind
 
 
 def _failure_excerpt(run_result) -> str:
@@ -1360,6 +1376,11 @@ def run_slice(project: Project) -> dict:
         out["note"] = "no active plan revision"
         return out
 
+    # Best-effort live preflight (G005): providers reporting a reached limit
+    # gate their profiles before the first route, an expired exhaustion is
+    # released, and operator overrides always win. No signal -> no change.
+    out["quota_preflight"] = quota.refresh(project)
+
     started = 0
     cap = project.config.effective_parallelism
     parked_this_slice: set[str] = set()
@@ -1394,6 +1415,15 @@ def run_slice(project: Project) -> dict:
                 continue
             outcome = _execute_cli_task(project, goal, run, revision, current, result, request, profile)
             started += 1
+            # Immediate rung fallback (G005): a quota/rate failure has already
+            # marked the profile non-routable in health, so one re-route now
+            # lands the next configured rung instead of parking the task as
+            # FAILED until a manual `orx task retry`.
+            if (outcome.get("status") == "failed"
+                    and outcome.get("error_kind") in RESOURCE_FALLBACK_KINDS):
+                outcome = (_reroute_resource_failure(
+                    project, goal, run, revision, task.task_id, caps, outcome)
+                    or outcome)
             if outcome["status"] == "failed":
                 out["failed"].append(outcome)
             else:
@@ -1617,9 +1647,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     effort = adapter.effort_outcome(launch, run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
-    health.record_attempt_outcome(
-        store, profile.name, ok=run_result.ok,
-        error_kind=None if run_result.ok else classify_failure(run_result))
+    error_kind = _record_attempt_health(store, profile.name, run_result)
     store.evidence_add(attempt.id, "execution", log)
     store.attempt_update(
         attempt.id, ended_at=db_now(),
@@ -1634,7 +1662,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
                            reason=reason, failure_reason=reason)
         return {"task": task.task_id, "profile": profile.name, "status": "failed",
-                "reason": reason, "log": log, "prompt_file": prompt_file}
+                "reason": reason, "error_kind": error_kind,
+                "log": log, "prompt_file": prompt_file}
 
     # Delivery gate, shared with `orx task complete`: every command entry
     # runs fresh through the same `task check` runner, bound to this
@@ -1685,6 +1714,43 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     if replan_delivery is not None:
         result["replan_delivery"] = replan_delivery
     return result
+
+
+# Failure kinds that mean "this profile cannot serve requests right now, but
+# the ladder's next rung can": quota exhaustion (until the reset passes) and
+# rate limiting (cooldown). Everything else is task-shaped or config-shaped —
+# a different profile would fail the same way, so the task stays FAILED.
+RESOURCE_FALLBACK_KINDS = ("quota_exhausted", "rate_limited")
+
+
+def _reroute_resource_failure(project, goal, run, revision, task_id, caps,
+                              failed) -> dict | None:
+    """One immediate hop down the worker ladder for a resource failure.
+
+    The failed profile is already non-routable (health learned from the same
+    launch), so a fresh route picks the next rung; when nothing else is
+    routable the task stays FAILED exactly as before. The hop is bounded by
+    construction — callers invoke it at most once per task per slice."""
+    store = project.store
+    task = store.task_get(revision.id, task_id)
+    if task is None or TaskStatus(task.status) is not TaskStatus.FAILED:
+        return None
+    request = routing.RouteRequest(role=Role.WORKER, required_capabilities=caps)
+    result = routing.route(store, project.config, project.profiles, request)
+    if not result.ok or result.selected == failed.get("profile"):
+        routing.persist_decision(store, request, result)
+        return None
+    machine.transition(
+        store, revision.id, task_id, "retry", TaskStatus.RUNNABLE,
+        reason=(f"resource fallback: profile '{failed.get('profile')}'"
+                f" {failed.get('error_kind')}"),
+    )
+    outcome = _execute_cli_task(
+        project, goal, run, revision, store.task_get(revision.id, task_id),
+        result, request, result.profile,
+    )
+    outcome["fallback_from"] = failed.get("profile")
+    return outcome
 
 
 # How many retained failed checks a retry prompt spells out before folding
@@ -2982,6 +3048,8 @@ def verify_dispatch(project: Project) -> dict:
         out["note"] = "no active plan revision"
         return out
 
+    quota.refresh(project)  # best-effort preflight before verifier routing
+
     for task in store.tasks_all(revision.id):
         if TaskStatus(task.status) is not TaskStatus.VERIFYING:
             continue
@@ -3142,9 +3210,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
-    health.record_attempt_outcome(
-        store, profile.name, ok=run_result.ok,
-        error_kind=None if run_result.ok else classify_failure(run_result))
+    _record_attempt_health(store, profile.name, run_result)
     # Scan the agent's extracted message FIRST: CLI agents wrap their output
     # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
     # line inside the raw stdout never appears as a standalone line. The raw
@@ -3526,6 +3592,8 @@ def _health_reason(row) -> str:
         parts.append(f"retry {row.cooldown_until}")
     if row.quota_reset_at:
         parts.append(f"reset {row.quota_reset_at}")
+        if row.status == "exhausted" and not health.quota_exhaustion_active(row):
+            parts.append("reset passed (routes again)")
     if row.override:
         parts.append("override")
     return "; ".join(parts)
@@ -3545,6 +3613,25 @@ def _health_entry(name: str, row) -> dict:
         "quota_reset_at": row.quota_reset_at if row else None,
         "override": bool(row.override) if row else False,
     }
+
+
+def quota_report(project: Project | None, force: bool = False) -> dict:
+    """Live quota snapshots for the three preflight harnesses plus, inside a
+    project, the CLI profiles each harness backs. Never raises: an
+    unreachable provider reports status unknown."""
+    by_harness: dict[str, list[str]] = {h: [] for h in quota.QUOTA_HARNESSES}
+    if project is not None:
+        for name, profile in project.profiles.items():
+            harness = profile.harness.value
+            if harness in by_harness and profile.driver.value == "cli":
+                by_harness[harness].append(name)
+    snapshots = []
+    for harness in quota.QUOTA_HARNESSES:
+        snapshot = quota.fetch_quota(harness, force=force)
+        entry = snapshot.to_dict()
+        entry["profiles"] = sorted(by_harness[harness])
+        snapshots.append(entry)
+    return {"snapshots": snapshots}
 
 
 def agent_status(project: Project) -> dict:

@@ -186,8 +186,11 @@ Layering already provides the override points; no per-project dialect exists:
 - `[worker.low|medium|high]` per-complexity routing — Plan IR already carries
   `routing.complexity` (validated, persisted) but dispatch does not consume
   it yet.
-- Automatic retry escalation (climb the ladder on retry count instead of
-  controller-pinned profiles).
+- Automatic retry escalation (climb the ladder on retry *count* instead of
+  controller-pinned profiles). G005 landed the resource-shaped subset: a
+  quota/rate-limit failure re-routes one rung down inside the same
+  `orx run` slice, and an exhaustion with a known reset self-releases when
+  it passes.
 - Field-level profile merge (project overrides one field instead of the whole
   profile).
 - Harness adapters for deepseek / glm-flash CLI surfaces.

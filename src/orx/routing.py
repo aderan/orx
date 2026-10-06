@@ -121,6 +121,18 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
         reject: str | None = None
         if resource in NON_ROUTABLE_RESOURCE_STATUSES:
             reject = resource.value  # 'unavailable' | 'exhausted' | 'auth_required'
+            if resource is ResourceStatus.EXHAUSTED:
+                # Time-bounded gate (G005): an exhaustion whose reset time is
+                # known and has passed routes again — the next outcome
+                # re-learns the truth. An unknown reset keeps the
+                # manual-clear semantics. Released reads as `unknown`, not
+                # `exhausted`: "should be usable, unverified" is exactly what
+                # unknown means, and it lets the pool treat the rung as
+                # preferred instead of dropping it behind the healthy ones.
+                from orx.health import quota_exhaustion_active
+                if not quota_exhaustion_active(store.resource_row(name)):
+                    reject = None
+                    resource = ResourceStatus.UNKNOWN
         elif resource is ResourceStatus.COOLDOWN:
             # Time-bounded gate: reject only while the retry time is in the
             # future; an expired cooldown routes again and re-learns from the
