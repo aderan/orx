@@ -47,6 +47,10 @@ LAYER_DEFAULT = "default"
 ENV_OVERRIDES: dict[str, str] = {
     "runtime.max_parallel": "ORX_RUNTIME_MAX_PARALLEL",
     "runtime.command_timeout_sec": "ORX_RUNTIME_COMMAND_TIMEOUT_SEC",
+    # G006 §8: the progress-timeout layering includes the environment
+    # override (env > project > user > builtin), same mechanism as the
+    # existing integer runtime keys.
+    "worker.progress_timeout_min": "ORX_WORKER_PROGRESS_TIMEOUT_MIN",
 }
 
 BUILTIN_DEFAULTS: dict = {
@@ -58,6 +62,11 @@ BUILTIN_DEFAULTS: dict = {
     "plan.deep.profiles": [],
     "worker.profiles": [],
     "worker.max_check_rounds": 3,
+    # G006 (docs/host-progress-contract.md §8): the long-silence threshold
+    # for host worker progress reports, in minutes. Observation only — an
+    # overdue report produces a check-the-original-session hint, never a
+    # state transition. Builtin default 60; compared in seconds.
+    "worker.progress_timeout_min": 60,
     "verify.profiles": [],
     "runtime.max_parallel": 1,
     "runtime.command_timeout_sec": 1800,
@@ -77,6 +86,7 @@ WRITABLE_SPEC: dict[str, str] = {
     "plan.deep.profiles": "profile names (comma-separated or a JSON array)",
     "worker.profiles": "profile names (comma-separated or a JSON array)",
     "worker.max_check_rounds": "integer >= 1",
+    "worker.progress_timeout_min": "integer >= 1",
     "verify.profiles": "profile names (comma-separated or a JSON array)",
     "runtime.max_parallel": "integer >= 1",
     "runtime.command_timeout_sec": "integer > 0",
@@ -199,6 +209,9 @@ class Config:
     # kills a session; the value bounds what prompts prescribe and what
     # task_check reports.
     worker_max_check_rounds: int = 3
+    # G006 §8: host worker progress-report timeout in minutes (>= 1).
+    # Long silence over this bound only raises an observation hint.
+    worker_progress_timeout_min: int = 60
     max_parallel: int = 1
     command_timeout_sec: int = 1800
     inbox_github_labels: list[str] = field(default_factory=list)
@@ -314,6 +327,16 @@ def load_config(path: Path) -> Config:
         errors.append("config.toml: [worker] max_check_rounds must be an integer >= 1")
         check_rounds = 3
 
+    progress_timeout = (
+        worker.get("progress_timeout_min", 60) if isinstance(worker, dict) else 60
+    )
+    if (
+        not isinstance(progress_timeout, int) or isinstance(progress_timeout, bool)
+        or progress_timeout < 1
+    ):
+        errors.append("config.toml: [worker] progress_timeout_min must be a positive integer")
+        progress_timeout = 60
+
     runtime_cfg = data.get("runtime", {})
     if not isinstance(runtime_cfg, dict):
         errors.append("config.toml: [runtime] must be a table")
@@ -346,6 +369,7 @@ def load_config(path: Path) -> Config:
         worker_profiles=worker_profiles,
         verify_profiles=verify_profiles,
         worker_max_check_rounds=check_rounds,
+        worker_progress_timeout_min=progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
         warnings=tuple(warnings),
@@ -620,6 +644,7 @@ def load_effective(
     worker_profiles = layered("worker.profiles") or []
     verify_profiles = layered("verify.profiles") or []
     worker_check_rounds = layered("worker.max_check_rounds")
+    worker_progress_timeout = layered("worker.progress_timeout_min")
     inbox_labels = layered("inbox.github_labels") or []
     inbox_auto_accept = layered("inbox.auto_accept")
 
@@ -652,6 +677,13 @@ def load_effective(
     ):
         errors.append("config.toml: [worker] max_check_rounds must be an integer >= 1")
         worker_check_rounds = 3
+    if (
+        not isinstance(worker_progress_timeout, int)
+        or isinstance(worker_progress_timeout, bool)
+        or worker_progress_timeout < 1
+    ):
+        errors.append("config.toml: [worker] progress_timeout_min must be a positive integer")
+        worker_progress_timeout = 60
     if not isinstance(max_parallel, int) or isinstance(max_parallel, bool) or max_parallel < 1:
         errors.append("config.toml: [runtime] max_parallel must be an integer >= 1")
         max_parallel = 1
@@ -702,6 +734,7 @@ def load_effective(
         worker_profiles=worker_profiles,
         verify_profiles=verify_profiles,
         worker_max_check_rounds=worker_check_rounds,
+        worker_progress_timeout_min=worker_progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
         inbox_github_labels=list(inbox_labels),
@@ -765,6 +798,7 @@ def config_entries(effective: EffectiveConfig) -> list[dict]:
         "plan.deep.profiles": list(cfg.depth_profiles.get("deep") or []),
         "worker.profiles": list(cfg.worker_profiles),
         "worker.max_check_rounds": cfg.worker_max_check_rounds,
+        "worker.progress_timeout_min": cfg.worker_progress_timeout_min,
         "verify.profiles": list(cfg.verify_profiles),
         "runtime.max_parallel": cfg.max_parallel,
         "runtime.command_timeout_sec": cfg.command_timeout_sec,
@@ -872,6 +906,11 @@ def parse_config_value(key: str, raw: str, *, profile_names: set[str] | None = N
         _require_known_profiles(key, names, profile_names)
         return names
     if key == "worker.max_check_rounds":
+        number = _parse_int(key, raw)
+        if number < 1:
+            raise ConfigError([f"{key} must be an integer >= 1"])
+        return number
+    if key == "worker.progress_timeout_min":
         number = _parse_int(key, raw)
         if number < 1:
             raise ConfigError([f"{key} must be an integer >= 1"])

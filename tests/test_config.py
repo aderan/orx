@@ -693,3 +693,92 @@ def test_set_check_rounds_budget_validates_and_writes(tmp_path):
         with pytest.raises(ConfigError):
             set_config_value(path, "worker.max_check_rounds", bad, create=True)
     assert path.read_bytes() == before  # refused before any write
+
+
+# -- worker.progress_timeout_min: G006 progress-report silence threshold -----
+# docs/host-progress-contract.md §8: positive integer minutes, builtin
+# default 60, layered env > project > user > default, same validation as
+# the other positive-integer keys. The threshold only feeds observation.
+
+
+def test_progress_timeout_defaults_to_sixty_minutes(tmp_path):
+    """No layer sets the threshold: the builtin 60 applies and is reported
+    as `default` on the config list surface (and by the single-file loader)."""
+    pc, pp = _project_files(tmp_path)
+    absent = tmp_path / "no-layer"
+    eff = load_effective(pc, pp, user_config=absent / "c.toml",
+                         user_profiles=absent / "p.toml")
+    assert eff.config.worker_progress_timeout_min == 60
+    assert eff.origins["worker.progress_timeout_min"] == "default"
+    entry = next(
+        row for row in config_entries(eff)
+        if row["key"] == "worker.progress_timeout_min"
+    )
+    assert entry == {"key": "worker.progress_timeout_min",
+                     "value": 60, "origin": "default"}
+    assert load_config(pc).worker_progress_timeout_min == 60
+
+
+def test_progress_timeout_layers_env_project_user(tmp_path, monkeypatch):
+    uc, up = _write_user_layer(
+        tmp_path,
+        config_toml='schema_version = 1\n[worker]\nprogress_timeout_min = 30\n',
+    )
+    pc, pp = _project_files(tmp_path)
+    (pc).write_text((pc).read_text() + "[worker]\nprogress_timeout_min = 15\n")
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.worker_progress_timeout_min == 15
+    assert eff.origins["worker.progress_timeout_min"] == "project"
+
+    # project silent about it -> the user layer fills the gap
+    (pc).write_text('schema_version = 1\n[controller]\nprofile = "host-planner"\n')
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.worker_progress_timeout_min == 30
+    assert eff.origins["worker.progress_timeout_min"] == "user"
+
+    # the environment override beats every file layer
+    monkeypatch.setenv("ORX_WORKER_PROGRESS_TIMEOUT_MIN", "5")
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.config.worker_progress_timeout_min == 5
+    assert eff.origins["worker.progress_timeout_min"] == "env"
+
+
+def test_progress_timeout_rejects_non_positive_and_non_integers(tmp_path, monkeypatch):
+    pc, pp = _project_files(tmp_path)
+    absent = tmp_path / "no-layer"
+    for bad in ("0", "-5", '"60"', "1.5", "true"):
+        (pc).write_text(
+            'schema_version = 1\n[controller]\nprofile = "host-planner"\n'
+            f"[worker]\nprogress_timeout_min = {bad}\n"
+        )
+        with pytest.raises(ConfigError) as excinfo:
+            load_effective(pc, pp, user_config=absent / "c.toml",
+                           user_profiles=absent / "p.toml")
+        assert "progress_timeout_min" in str(excinfo.value)
+        with pytest.raises(ConfigError):
+            load_config(pc)
+
+    # a non-integer environment value is refused by the same rule
+    monkeypatch.setenv("ORX_WORKER_PROGRESS_TIMEOUT_MIN", "soon")
+    (pc).write_text('schema_version = 1\n[controller]\nprofile = "host-planner"\n')
+    with pytest.raises(ConfigError):
+        load_effective(pc, pp, user_config=absent / "c.toml",
+                       user_profiles=absent / "p.toml")
+
+
+def test_set_progress_timeout_validates_and_writes(tmp_path):
+    import tomllib
+
+    from orx.config import set_config_value
+
+    path = tmp_path / "config.toml"
+    path.write_text("schema_version = 1\n")
+    result = set_config_value(path, "worker.progress_timeout_min", "90", create=True)
+    assert result["value"] == 90
+    assert tomllib.loads(path.read_text())["worker"]["progress_timeout_min"] == 90
+
+    before = path.read_bytes()
+    for bad in ("0", "-1", "60m", "1.5"):
+        with pytest.raises(ConfigError):
+            set_config_value(path, "worker.progress_timeout_min", bad, create=True)
+    assert path.read_bytes() == before  # refused before any write

@@ -41,6 +41,8 @@ SCHEMA_TABLES = {
     "replan_superseded",
     "replan_reports",
     "replan_artifact_sources",
+    # v10 (G006): host worker progress reports (docs/host-progress-contract §6)
+    "attempt_progress",
 }
 
 
@@ -296,3 +298,120 @@ def test_timeline_outside_project(tmp_path, monkeypatch):
     assert result.exit_code == 1
     body = payload(result)
     assert body["ok"] is False and "error" in body
+
+
+# -- G006 T004: attempt.report history + the current-window block -----------
+# docs/host-progress-contract.md §7: every stored report is a history event
+# carrying the FULL identity (role, task, attempt number, sequence, phase,
+# message); history is filterable like every other event but can never
+# impersonate the current window, which the envelope states separately
+# (`current`) with its own age/overdue hint. All clocks are the injectable
+# ORX seam — no real sleep.
+
+
+def _controlled_clock(monkeypatch):
+    """Auto-advancing frozen clock (distinct, increasing stamps) whose base
+    the test can still jump forward for age control."""
+    state = {"now": datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)}
+
+    def now():
+        value = state["now"]
+        state["now"] = value + timedelta(seconds=1)
+        return value.isoformat(timespec="microseconds")
+
+    monkeypatch.setattr("orx.state.now", now)
+    monkeypatch.setattr("orx.dispatch.db_now", now)
+
+    def advance(seconds):
+        state["now"] = state["now"] + timedelta(seconds=seconds)
+
+    return advance
+
+
+def test_timeline_attempt_report_events_and_current_window(project, monkeypatch):
+    advance = _controlled_clock(monkeypatch)
+    goal, run = dispatch.create_goal(
+        project,
+        objective="report the work",
+        acceptance=["marker file exists"],
+        constraints=[],
+        context="",
+    )
+    dispatch.submit_plan(
+        project,
+        ir_for(goal, [
+            task_spec(
+                "T001",
+                objective="do the work",
+                acceptance=["marker file exists"],
+                verification=["true"],
+            )
+        ]),
+    )
+    dispatch.run_slice(project)
+    claimed = dispatch.task_claim(project, "T001")
+    attempt = claimed["attempt"]
+    dispatch.task_heartbeat(
+        project, "T001", attempt, "checking", "round 1/3 red, fixing"
+    )
+    dispatch.task_heartbeat(project, "T001", attempt, "implementing")
+
+    body = dispatch.timeline(project)
+    reports = [e for e in body["entries"] if e["event"] == "attempt.report"]
+    # Append order, full identity in the detail, actor is the attempt's profile.
+    assert [e["detail"] for e in reports] == [
+        f"worker T001 a{attempt} #1 checking — round 1/3 red, fixing",
+        f"worker T001 a{attempt} #2 implementing",
+    ]
+    assert all(e["actor"] == "host-worker" for e in reports)
+    # History filters by the full identity like every other event.
+    by_task = dispatch.timeline(project, task_id="T001")
+    assert len([e for e in by_task["entries"] if e["event"] == "attempt.report"]) == 2
+    by_profile = dispatch.timeline(project, profile="host-worker")
+    assert len([e for e in by_profile["entries"]
+                if e["event"] == "attempt.report"]) == 2
+    by_other_profile = dispatch.timeline(project, profile="host-planner")
+    assert not [e for e in by_other_profile["entries"]
+                if e["event"] == "attempt.report"]
+
+    # The current window is stated separately, labeled, and reads the LATEST
+    # report of the CURRENT attempt — not merely the newest history row.
+    current = {c["task"]: c["progress"] for c in body["current"]}
+    assert current["T001"]["attempt"] == attempt
+    assert current["T001"]["state"] == "reported"
+    assert current["T001"]["phase"] == "implementing"
+    assert current["T001"]["age_sec"] is not None
+    assert current["T001"]["timeout_sec"] == 3600
+    assert current["T001"]["hint"] is None
+
+    # Past the builtin 60-minute threshold the window (not the history)
+    # carries the overdue check hint.
+    advance(4000)
+    progress = next(
+        c["progress"] for c in dispatch.timeline(project)["current"]
+        if c["task"] == "T001"
+    )
+    assert progress["state"] == "overdue"
+    assert "check the original worker session" in progress["hint"]
+
+    # History never impersonates the current window: after an explicit
+    # fail + retry + claim, the old reports stay in the timeline (append
+    # only), but the fresh window starts unknown.
+    dispatch.task_fail(project, "T001", "worker lost")
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)
+    new_claim = dispatch.task_claim(project, "T001")
+    body = dispatch.timeline(project)
+    reports = [e for e in body["entries"] if e["event"] == "attempt.report"]
+    assert len(reports) == 2  # history kept
+    assert all(f"a{attempt} " in e["detail"] for e in reports)  # old attempt's
+    progress = next(
+        c["progress"] for c in body["current"] if c["task"] == "T001"
+    )
+    assert progress["attempt"] == new_claim["attempt"] != attempt
+    assert progress["state"] == "unknown"
+    assert progress["phase"] is None and progress["hint"] is None
+
+    # The task filter narrows the current window the same way.
+    filtered = dispatch.timeline(project, task_id="T001")
+    assert [c["task"] for c in filtered["current"]] == ["T001"]

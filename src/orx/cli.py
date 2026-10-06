@@ -915,6 +915,8 @@ def run(json_out: bool = JsonOpt) -> None:
                 f"recovery: {item['task']} is RUNNING under attempt {item['attempt']}"
                 + (f" (session {item['session_ref']})" if item.get("session_ref") else "")
             )
+            for progress_line in _render_progress(item.get("progress")):
+                typer.echo(f"  {progress_line}")
             typer.echo(f"  {item['contract']}")
             if item.get("prompt_file"):
                 typer.echo(f"  prompt file: {item['prompt_file']}")
@@ -966,6 +968,54 @@ def status(json_out: bool = JsonOpt) -> None:
         _render_status(data)
 
 
+def _format_progress_age(age_sec: float) -> str:
+    """Compact human age for a progress observation (90s, 12m, 3h 05m...)."""
+    seconds = int(age_sec)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes:02d}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _render_progress(progress: dict | None) -> list[str]:
+    """Human rendering of a §7 current-window progress block: the same facts
+    the JSON carries — state, latest report, its age, the configured
+    threshold hint when overdue, and any clock-anomaly note. One or two
+    lines; `unknown` is stated as unknown, never filled with a guess."""
+    if not progress:
+        return []
+    state = progress.get("state")
+    attempt = progress.get("attempt")
+    who = f"attempt {attempt}" if attempt is not None else "no current attempt"
+    if state == "unknown":
+        return [f"progress: unknown ({who}, no report received)"]
+    facts = []
+    if progress.get("phase"):
+        facts.append(f"phase {progress['phase']}")
+    if progress.get("message"):
+        facts.append(f"message {progress['message']}")
+    if progress.get("received_at"):
+        facts.append(f"received_at {progress['received_at']}")
+    if progress.get("age_sec") is not None:
+        facts.append(f"age {_format_progress_age(progress['age_sec'])}")
+    if progress.get("note"):
+        facts.append(f"note: {progress['note']}")
+    line = f"progress: {state} ({who}"
+    if facts:
+        line += "; " + ", ".join(facts)
+    line += ")"
+    lines = [line]
+    if state == "overdue" and progress.get("hint"):
+        lines.append(f"  overdue check: {progress['hint']}")
+    return lines
+
+
 def _render_status(data: dict) -> None:
     goal = data["goal"]
     run = data["run"]
@@ -997,6 +1047,8 @@ def _render_status(data: dict) -> None:
         if task.get("session_ref"):
             line += f"  session {task['session_ref']}"
         typer.echo(line)
+        for progress_line in _render_progress(task.get("progress")):
+            typer.echo(f"      {progress_line}")
     v = data["verification"]
     typer.echo(
         f"Verification: {v['passed']} passed / {v['failed']} failed / {v['awaiting_agent']} awaiting agent"
@@ -1026,6 +1078,8 @@ def task_list(json_out: bool = JsonOpt) -> None:
             if task["blocked_by"]:
                 line += f"  blocked_by: {', '.join(task['blocked_by'])}"
             typer.echo(line)
+            for progress_line in _render_progress(task.get("progress")):
+                typer.echo(f"    {progress_line}")
 
 
 @task_app.command("claim")
@@ -1762,6 +1816,16 @@ def timeline(
         project.close()
     _ok(json_out, **result)
     if not json_out:
+        # The current window is labeled as such so the history below (any
+        # attempt's attempt.report rows) can never be read as present state.
+        for item in result.get("current", []):
+            progress = item.get("progress") or {}
+            who = f"current window: {item['task']}"
+            attempt = progress.get("attempt")
+            if attempt is not None:
+                who += f" (attempt {attempt})"
+            for progress_line in _render_progress(progress):
+                typer.echo(f"{who}  {progress_line}")
         for entry in result["entries"]:
             typer.echo(
                 f"{_timeline_clock(entry['ts'])}  {entry['actor']}  "

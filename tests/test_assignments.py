@@ -10,6 +10,7 @@ real agent, no paid model.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orx import dispatch
@@ -531,3 +532,47 @@ def test_replan_verifier_prompt_labels_the_chain_as_history(
     assert "a historical pass never impersonates a current verification" in prompt
     assert "judge only the check below" in prompt
     assert (project.root / entry["prompt_file"]).read_text() == prompt
+
+
+# ---------------------------------------------------------------------------
+# G006 T004: the recovery face's progress observation is read-only.
+#
+# docs/host-progress-contract.md §7/§9: `orx run`'s recovery entry carries
+# the current attempt's latest report and age, and observing it — however
+# often — never changes task state, opens an attempt, writes a task event,
+# or dispatches anything. Fixed clock; no real sleep.
+
+
+def test_recovery_progress_observation_is_read_only(project, goal, monkeypatch):
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    run = project.store.run_for_goal(goal.id)
+    revision = project.store.revision_active(run.id)
+    attempt = project.store.attempt_latest_for_task(revision.id, "T001")
+
+    holder = {"now": datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)}
+
+    def now():
+        return holder["now"].isoformat(timespec="microseconds")
+
+    monkeypatch.setattr("orx.state.now", now)
+    monkeypatch.setattr("orx.dispatch.db_now", now)
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking")
+    holder["now"] = holder["now"] + timedelta(seconds=45)
+
+    attempts_before = len(project.store.attempts_all())
+    events_before = len(project.store.task_events_all())
+    first = dispatch.run_slice(project)["recovery"][0]["progress"]
+    second = dispatch.run_slice(project)["recovery"][0]["progress"]
+    # Repeated observation of the same frozen instant is identical…
+    assert first == second
+    assert first["state"] == "reported"
+    assert first["attempt"] == attempt.id
+    assert first["age_sec"] == 45
+    # …and wrote nothing: same attempts, same events, still running.
+    assert len(project.store.attempts_all()) == attempts_before
+    assert len(project.store.task_events_all()) == events_before
+    assert active_task(project, "T001").status == "running"

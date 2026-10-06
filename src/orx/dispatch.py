@@ -78,6 +78,11 @@ profiles = ["orx-host"]
 # kills a session); it bounds what the worker prompt prescribes and what
 # `orx task check` reports as check_rounds.
 max_check_rounds = 3
+# Long-silence threshold for host worker progress reports
+# (`orx task heartbeat`), in minutes. Observation only: past this bound
+# status/task list/recovery raise a check-the-original-session hint —
+# never an automatic fail, retry, or second worker.
+progress_timeout_min = 60
 
 [verify]
 profiles = ["orx-host"]
@@ -1492,6 +1497,11 @@ def run_slice(project: Project) -> dict:
             "execution": _execution_spec(
                 project, project.profiles.get(attempt.profile), attempt
             ),
+            # G006 §7/§10: the current window's latest report, its age, and
+            # (when past the configured threshold) the check-the-original-
+            # session hint ride with the re-surfaced identity. Observation
+            # only — it never parks, fails, retries, or opens an attempt.
+            "progress": progress_observation(project, attempt),
             "contract": (
                 "no second writer: this attempt still owns the task. First check"
                 " the original subagent (handle = session_ref) for a late result"
@@ -2628,6 +2638,10 @@ def task_list(project: Project) -> list[dict]:
                     if attempt
                     else None
                 ),
+                # G006 §7: current-window progress observation. Read-only;
+                # `unknown` until this attempt reports, never a fallback to
+                # an older attempt's history.
+                "progress": progress_observation(project, attempt),
             }
         )
     return rows
@@ -3225,6 +3239,71 @@ def task_heartbeat(project: Project, task_id: str, attempt_id: int,
         "message": row.message,
         "received_at": row.received_at,
     }
+
+
+# --- read-only observation (contract §7-§8) --------------------------------
+#
+# The current window of task T is its latest attempt
+# (`attempt_latest_for_task` of the active revision) — the ONLY window any
+# observation reads. A window without reports is `unknown`; it never falls
+# back to an older attempt's history (a retry's fresh attempt starts
+# unknown even though the closed one reported). The read clock is the same
+# injectable ORX UTC seam received_at was written with; an age that cannot
+# be computed honestly (missing/unparseable received_at, or a received_at
+# after the read clock) keeps state `reported`, nulls age_sec, notes the
+# anomaly, and never raises the overdue hint. age >= timeout_sec (closed
+# boundary: exactly equal IS overdue) yields state `overdue` plus a hint
+# that only suggests checking the original session — observing never
+# changes task state, opens attempts, or dispatches models.
+
+PROGRESS_NOTE_UNPARSEABLE = "clock anomaly: received_at missing or unparseable"
+PROGRESS_NOTE_FUTURE = "clock anomaly: received_at after read clock"
+
+
+def progress_observation(project: Project, attempt, timeout_min: int | None = None) -> dict:
+    """The §7 current-window progress observation for one task's latest
+    attempt. Pure read: store + config + the ORX clock seam, nothing else."""
+    if timeout_min is None:
+        timeout_min = project.config.worker_progress_timeout_min
+    timeout_sec = timeout_min * 60
+
+    def block(state, report=None, *, age_sec=None, hint=None, note=None) -> dict:
+        return {
+            "attempt": attempt.id if attempt is not None else None,
+            "state": state,
+            "phase": report.phase if report is not None else None,
+            "message": report.message if report is not None else None,
+            "received_at": report.received_at if report is not None else None,
+            "age_sec": age_sec,
+            "timeout_sec": timeout_sec,
+            "hint": hint,
+            "note": note,
+        }
+
+    if attempt is None:
+        return block("unknown")
+    report = project.store.attempt_progress_latest(attempt.id)
+    if report is None:
+        return block("unknown")
+    try:
+        if not report.received_at:
+            raise ValueError("received_at missing")
+        age_sec = (_parse_ts(db_now()) - _parse_ts(report.received_at)).total_seconds()
+    except ValueError:
+        return block("reported", report, note=PROGRESS_NOTE_UNPARSEABLE)
+    if age_sec < 0:
+        return block("reported", report, note=PROGRESS_NOTE_FUTURE)
+    if age_sec >= timeout_sec:
+        handle = attempt.session_ref if attempt.session_ref else "unknown"
+        return block(
+            "overdue", report, age_sec=age_sec,
+            hint=(
+                f"no progress report for {int(age_sec // 60)}m"
+                f" (>= {timeout_min}m threshold); check the original worker"
+                f" session (handle: {handle}) before any fail/retry"
+            ),
+        )
+    return block("reported", report, age_sec=age_sec)
 
 
 def _verification_counts(store: Store, revision: Revision) -> dict:
@@ -4055,6 +4134,17 @@ def timeline(
             add(attempt.ended_at, attempt.profile, "attempt.end",
                 _detail(attempt.role, label, attempt.result or "-"),
                 run=run, task=attempt.task_id, prof=attempt.profile)
+        # G006 §7: every stored progress report is history, in append order.
+        # The detail carries the FULL identity (role, task, attempt number,
+        # sequence, phase, message), so an old attempt's report can never be
+        # mistaken for the current window's — the current view is the
+        # separate `current` block below, never these rows.
+        for report in store.attempt_progress_all(attempt.id):
+            add(report.received_at, attempt.profile, "attempt.report",
+                _detail(attempt.role, label, f"a{attempt.id}",
+                        f"#{report.sequence}", report.phase,
+                        *(["—", report.message] if report.message else [])),
+                run=run, task=attempt.task_id, prof=attempt.profile)
 
     for decision in store.routing_decisions_all():
         attempt = attempts_by_id.get(decision.attempt_id) if decision.attempt_id else None
@@ -4103,7 +4193,30 @@ def timeline(
         {"ts": entry["ts"], "actor": entry["actor"], "event": entry["event"], "detail": entry["detail"]}
         for entry in selected
     ]
-    return {"entries": entries, "count": len(entries)}
+
+    # Current window (G006 §7): the active revision's tasks with their
+    # latest-attempt observation, explicitly labeled as the current view so
+    # the history above (attempt.report rows of any age, including closed
+    # attempts') can never impersonate it. Follows the task filter only —
+    # run/profile filters select history entries, the current window is
+    # defined by the active revision alone. Read-only, like the rest of
+    # this read model.
+    current: list[dict] = []
+    try:
+        active_goal, active_run = _active_context(project)
+        active_revision = _active_revision(project, active_run)
+    except NotFoundError:
+        active_revision = None
+    if active_revision is not None:
+        for task in store.tasks_all(active_revision.id):
+            if task_id is not None and task.task_id != task_id:
+                continue
+            attempt = store.attempt_latest_for_task(active_revision.id, task.task_id)
+            current.append({
+                "task": task.task_id,
+                "progress": progress_observation(project, attempt),
+            })
+    return {"entries": entries, "count": len(entries), "current": current}
 
 
 # ---------------------------------------------------------------------------

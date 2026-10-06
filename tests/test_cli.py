@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import stat
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -764,6 +766,144 @@ def test_task_heartbeat_never_binds_the_controller_session(cli_project, monkeypa
         assert project.store.attempt_progress_all(attempt_bound)[-1].phase == "checking"
     finally:
         project.close()
+
+
+# -- G006 T004: progress observation on status / task list / run / timeline --
+#
+# docs/host-progress-contract.md §7-§8: every observation face shows the
+# current attempt's latest report, its time and age, `unknown` when there
+# is none, and the overdue CHECK HINT past the configured threshold. The
+# CLI text states the same facts as the --json envelope; clocks are the
+# injectable ORX seam, never a real sleep.
+
+
+def _frozen_cli_clock(monkeypatch):
+    holder = {"now": datetime(2026, 10, 6, 12, 0, 0, tzinfo=timezone.utc)}
+
+    def now():
+        return holder["now"].isoformat(timespec="microseconds")
+
+    monkeypatch.setattr("orx.state.now", now)
+    monkeypatch.setattr("orx.dispatch.db_now", now)
+    return holder
+
+
+def test_status_and_task_list_carry_current_progress(cli_project, monkeypatch):
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+
+    # Before any report: unknown, no guesses, builtin 60-minute threshold.
+    progress = payload(invoke("status", "--json"))["tasks"][0]["progress"]
+    assert progress == {
+        "attempt": attempt,
+        "state": "unknown",
+        "phase": None,
+        "message": None,
+        "received_at": None,
+        "age_sec": None,
+        "timeout_sec": 3600,
+        "hint": None,
+        "note": None,
+    }
+    listed = payload(invoke("task", "list", "--json"))["tasks"][0]
+    assert listed["progress"] == progress
+
+    # One report under a frozen clock: reported, with the honest age.
+    clock = _frozen_cli_clock(monkeypatch)
+    ok = invoke("task", "heartbeat", "--json", "T001",
+                "--attempt", str(attempt), "--phase", "checking",
+                "--message", "round 1/3 red")
+    assert ok.exit_code == 0, ok.stdout
+    clock["now"] = clock["now"] + timedelta(seconds=120)
+    progress = payload(invoke("task", "list", "--json"))["tasks"][0]["progress"]
+    assert progress["state"] == "reported"
+    assert progress["phase"] == "checking"
+    assert progress["message"] == "round 1/3 red"
+    assert progress["age_sec"] == 120
+    assert progress["hint"] is None
+
+    # Human text states the same facts on both faces.
+    human_status = invoke("status")
+    assert "progress: reported" in human_status.stdout
+    assert "phase checking" in human_status.stdout
+    assert "age 2m" in human_status.stdout
+    human_list = invoke("task", "list")
+    assert "progress: reported" in human_list.stdout
+    assert "phase checking" in human_list.stdout
+
+
+def test_run_recovery_reports_progress_and_overdue_hint(cli_project, monkeypatch):
+    # A 1-minute threshold makes the overdue hint reachable by clock math.
+    (cli_project / ".orx" / "config.toml").write_text(
+        HOST_CONFIG_TOML.replace(
+            '[worker]\nprofiles = ["host-worker", "host-external"]\n',
+            '[worker]\nprofiles = ["host-worker", "host-external"]\n'
+            "progress_timeout_min = 1\n",
+        )
+    )
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+    clock = _frozen_cli_clock(monkeypatch)
+    ok = invoke("task", "heartbeat", "--json", "T001",
+                "--attempt", str(attempt), "--phase", "implementing")
+    assert ok.exit_code == 0, ok.stdout
+
+    recovery = payload(invoke("run", "--json"))["recovery"]
+    assert [e["task"] for e in recovery] == ["T001"]
+    assert recovery[0]["progress"]["state"] == "reported"
+    assert recovery[0]["progress"]["timeout_sec"] == 60
+    assert recovery[0]["progress"]["age_sec"] == 0
+
+    # Past the threshold: the hint appears (envelope and text), and the
+    # observation itself still changes nothing.
+    clock["now"] = clock["now"] + timedelta(seconds=90)
+    recovery = payload(invoke("run", "--json"))["recovery"]
+    progress = recovery[0]["progress"]
+    assert progress["state"] == "overdue"
+    assert progress["age_sec"] == 90
+    assert "check the original worker session" in progress["hint"]
+    assert _task_status("T001") == "running"
+
+    human = invoke("run")
+    assert "recovery: T001 is RUNNING under attempt" in human.stdout
+    assert "progress: overdue" in human.stdout
+    assert "overdue check:" in human.stdout
+    assert "check the original worker session" in human.stdout
+
+
+def test_timeline_cli_shows_current_window_and_report_history(
+        cli_project, monkeypatch):
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+    clock = _frozen_cli_clock(monkeypatch)
+    ok = invoke("task", "heartbeat", "--json", "T001",
+                "--attempt", str(attempt), "--phase", "checking",
+                "--message", "round 1/3 red, fixing")
+    assert ok.exit_code == 0, ok.stdout
+
+    body = payload(invoke("timeline", "--json"))
+    current = {c["task"]: c["progress"] for c in body["current"]}
+    assert current["T001"]["state"] == "reported"
+    assert current["T001"]["attempt"] == attempt
+    # The report is history too, with its full identity.
+    reports = [e for e in body["entries"] if e["event"] == "attempt.report"]
+    assert [e["detail"] for e in reports] == [
+        f"worker T001 a{attempt} #1 checking — round 1/3 red, fixing"
+    ]
+
+    # Overdue surfaces on the current window with the hint, in text too.
+    clock["now"] = clock["now"] + timedelta(seconds=3700)
+    human = invoke("timeline")
+    assert f"current window: T001 (attempt {attempt})" in human.stdout
+    assert "progress: overdue" in human.stdout
+    assert "overdue check:" in human.stdout
+    assert "attempt.report" in human.stdout
+    # The history entry itself stays a plain stamped row.
+    entry_lines = [
+        line for line in human.stdout.splitlines()
+        if "attempt.report" in line
+    ]
+    assert re.match(r"^\d{2}:\d{2}:\d{2}  \S+  attempt\.report  .+", entry_lines[-1])
 
 
 def test_verify_submit_envelope(cli_project):
