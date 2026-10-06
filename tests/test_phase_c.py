@@ -9,7 +9,9 @@ Acceptance criteria:
 
 from __future__ import annotations
 
+import tomllib
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +28,8 @@ from conftest import (
     task_spec,
     write_evidence,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
@@ -77,6 +81,27 @@ def test_zcode_preset_packaged_files_are_valid():
 def test_list_presets_includes_zcode():
     presets = list_presets()
     assert any(p["name"] == "zcode" for p in presets)
+
+
+def test_wheel_packaging_forces_native_agent_definitions_into_the_distribution():
+    """The 0.3.1 gap, pinned at the source of the regression: the wheel's
+    force-include carried skills/ but not agents/, so a clean (non-editable)
+    install had no packaged copy for ``source_agents_dir()`` — the preset
+    then reported every native role as "definition not packaged with this
+    ORX (install manually)". The built-wheel behavior itself is verified
+    end-to-end by tests/test_package_acceptance.py; this fast pin keeps the
+    hatch config from silently losing agents/ again."""
+    doc = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    includes = doc["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert includes.get("skills") == "orx/skills"
+    assert includes.get("agents") == "orx/agents", (
+        "agents/ missing from the wheel force-include: a clean install"
+        " cannot install the native roles through the preset"
+    )
+    # The packaged names actually exist in the included source directory.
+    source = REPO_ROOT / "agents"
+    for ref in ("orx-worker", "orx-verifier", "orx-verifier-strong"):
+        assert (source / f"{ref}.md").is_file(), ref
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+schema_version = 1
+
+# The default profile routes every role to the host driver: work is done by
+# you (or your host agent) and submitted back through the CLI. Replace or
+# extend with cli/external profiles as you adopt real agent harnesses.
+
+[profiles.orx-host]
+driver = "host"
+harness = "zcode"
+model = "unconfigured"
+class = "frontier"
+effort = "medium"
+capabilities = ["coding"]

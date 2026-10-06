@@ -3,8 +3,12 @@
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
 v9, 2026-10-06 for v10, 2026-10-06 for v11). This document is the supported
 way to analyze `.orx/state.db` from outside this repository. The analysis
-layer lives at `~/Sources/Tools/orx-analytics/` and is not shipped here.
-ORX stores the rows and defines how to read them.
+implementation (`orx-analytics`) lives in a separate repository and is not
+shipped here; this contract names no fixed checkout location for it — where
+a consumer's copy lives is that consumer's configuration, not a fact of
+this contract. Historical measurement reports may quote real paths as
+evidence of what ran; those are history, not defaults. ORX stores the rows
+and defines how to read them.
 
 Readers select named columns. They do not call `Store.open`, and they do
 not migrate. Worked SQL below is the source the contract tests execute

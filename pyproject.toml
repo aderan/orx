@@ -33,6 +33,11 @@ packages = ["src/orx"]
 # Skills ship inside the distribution at orx/skills/ (source of truth stays
 # at repo-root skills/); editable checkouts fall back to the repo copy.
 "skills" = "orx/skills"
+# Native ZCode agent definitions (orx-worker / orx-verifier / orx-verifier-
+# strong) ship at orx/agents/ so a clean wheel install can install them
+# through `orx preset install zcode` (presets.source_agents_dir reads the
+# packaged copy first). Source of truth stays at repo-root agents/.
+"agents" = "orx/agents"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

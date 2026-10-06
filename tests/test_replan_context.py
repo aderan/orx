@@ -399,3 +399,60 @@ def test_cli_planner_auto_submit_goes_through_the_same_gate(
         assert reports and all(r.revision_id is None for r in reports)
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G007 T003: docs/upgrade-0.3.1.md §7 states the --context-file contract the
+# code actually enforces, and keeps the code-level optionality of the flag
+# apart from the controller's mid-Goal process requirement.
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+UPGRADE_DOC = (REPO_ROOT / "docs" / "upgrade-0.3.1.md").read_text()
+
+
+def _flatten(text: str) -> str:
+    """Whitespace-normalized text: the contract is the words, not the
+    line wrapping (same discipline as the skill-pinning tests)."""
+    import re
+    return re.sub(r"\s+", " ", text)
+
+
+def test_upgrade_doc_pins_the_context_file_limits_to_the_code():
+    """The doc quotes the exact limits and error texts load_replan_context
+    enforces — readable file, non-empty, 64 KiB — and names the
+    reason/intent/supporting-material content the empty-file error itself
+    demands. Validation-before-dispatch is stated, and the tests above
+    prove it for the code."""
+    flat = _flatten(UPGRADE_DOC)
+    # "64 KiB" is an honest rendering of the constant the code uses.
+    assert dispatch.REPLAN_CONTEXT_MAX_BYTES == 64 * 1024
+    assert "64 KiB" in flat and "65536" in flat
+    for error_text in (
+        "cannot read replan context file",  # unreadable file
+        "or omit --context-file",           # the empty-file error's own out
+        "exceeds 65536 bytes",              # the oversize error, verbatim
+    ):
+        assert error_text in flat, error_text
+    for content in ("reason", "intent", "supporting material"):
+        assert content in flat, content
+    # The doc claims validation happens before anything is dispatched.
+    assert "任何分发之前" in flat
+
+
+def test_upgrade_doc_separates_code_level_optionality_from_controller_process():
+    """The doc never turns the optional CLI flag into an unconditional
+    must: it states the code accepts a replan without --context-file (the
+    empty-file error itself says "or omit") while the controller's
+    mid-Goal process requires writing the context file first — the same
+    requirement the controller skill teaches."""
+    flat = _flatten(UPGRADE_DOC)
+    assert "可选 CLI 参数" in flat       # code layer: the flag is optional
+    assert "合法输入" in flat            # omitting it is legal input
+    assert "先写 context 文件" in flat   # controller layer: write it first
+    assert "orx replan --context-file <file>" in flat
+    # The controller skill the doc cites teaches that very command.
+    skill = (REPO_ROOT / "skills" / "orx-controller" / "SKILL.md").read_text()
+    assert "orx replan --context-file <file>" in skill
+    # The doc also states what the text supplements and never touches: the
+    # Goal itself.
+    assert "永不被" in flat and "改写" in flat

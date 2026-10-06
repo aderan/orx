@@ -243,3 +243,129 @@ T005 的独立 agent 审查与 Goal 验收以 ORX verification 记录为准，�
 - 未宣称（契约 §11）：定时自动心跳、自动恢复、存活证明、租约、真实时长或
   token 节省数字一律不写；超时提示只建议核查原会话，死亡确认是人的决定。
 
+---
+
+# G007：ORX 0.3.1 发布收尾（2026-10-06 起）
+
+目标：补齐三个必须缺口（wheel 缺 agents force-include、角色定义示范旧
+evidence、controller 技能硬编码本机 analytics 路径），补升级与回退说明与
+安装包级验收，更新版本号与发布材料后正式发布 v0.3.1，并更新本地安装与
+技能。Run：R007；五任务串行（T001→T005），发布渠道沿用 GitHub
+aderan/orx push + tag v0.3.1；本地 editable 安装更新走 `orx skill update`。
+
+范围外（明确延后，不纳入本 Goal）：状态页对应关系呈现、后台自动恢复、
+并行 worktree 均留后续版本。
+
+## 五阶段实施记录
+
+状态图例沿用：Not Started / In Progress / Done（以证据为准，不以文件
+存在为准）。
+
+### 阶段 1：打包补齐 + 角色定义统一 + 包级验收地基 — Done（T001，R7）
+- [x] `pyproject.toml`：`[tool.hatch.build.targets.wheel.force-include]`
+      增加 `agents = "orx/agents"`（与 skills 同法）；干净安装不再报
+      `install manually`。
+- [x] `agents/orx-worker.md` TASK 段统一到现行单 assignment 协议：新版
+      evidence 示例（status/summary/checks[{command,exit_code,log}]/
+      artifacts）、START GATE、BLOCKED EXIT、同会话 CHECK-FIX LOOP、
+      DELIVERY GATE、claim/attempt 身份（`--attempt`）、heartbeat 报告
+      规则、ORX_ASSIGNMENT 身份锚；旧 `{summary,commands,artifacts}`
+      示例删除并声明其被拒。
+- [x] `agents/orx-verifier.md` / `orx-verifier-strong.md` 核对只读独立
+      判断与两行 verdict 契约（与 orx-agent 技能、dispatch verifier
+      prompt 一致），补身份锚段落。
+- [x] 示范 JSON 真实校验：`tests/test_delivery_gate_e2e.py` 从
+      worker 定义中提取示例 JSON，经 `verify.load_delivery_evidence`
+      零错误接受，并在临时 stand-in task 中填充真实 check 行后通过
+      交付门禁；角色/技能示例同 schema 钉住。
+- [x] clean-wheel 回归：`tests/test_phase_c.py` 钉 hatch force-include
+      配置；`tests/test_package_acceptance.py` 构建真实 wheel、临时
+      venv 安装、仓库外运行 probe，证明 orx 导入位置在临时
+      site-packages、三个角色随包分发且 preset 安装内容与包内逐字节
+      一致、无 `install manually` 提示、preset 保留已有文件回归通过。
+- [x] `scripts/check_release.py`：构建、临时安装、包内资源与
+      preset/skills 检查四段（可独立运行，`main()` 输出 JSON 报告、
+      发现问题退出非零），由包验收测试调用。
+- [x] `docs/upgrade-0.3.1.md` 起草：旧角色备份（cp 带 .bak-0.3.0）、
+      diff 比较、显式替换（mv + `orx preset install zcode` 或手工合并
+      后放回）与 preset 保留语义、新版 evidence 示例；数据库迁移与
+      回退章节留给阶段 3。
+- 证据：`uv run pytest -q tests/test_phase_c.py tests/test_skills_update.py
+  tests/test_delivery_gate_e2e.py tests/test_package_acceptance.py` 绿；
+  全量 `uv run pytest -q` 绿；`uv build` exit 0；`git diff --check` 干净。
+
+### 阶段 2：controller 看护接入显式配置化 — Done（T002，R7）
+- [x] analytics 看护改为明确配置、可选执行的外部调用：可执行文件来源、
+      start/status/stop 条件、未安装与启动失败处理、仅清理由当前会话
+      启动的看护；移除把本机 analytics 目录表述为固定位置的文字（历史
+      测量中的真实路径保留为历史证据）；技能约束回归。
+      — skills/orx-controller/SKILL.md 循环步骤 1 重写：可执行文件仅经
+      `ORX_ANALYTICS_BIN` 显式解析（无默认位置、不探测），OPTIONAL 且
+      不阻断循环（规划/执行/验证/收尾 never blocked），启动失败记一次
+      继续，`watch stop` 仅限本会话启动的看护；分析实现维持独立仓库、
+      ORX 不内置分析层、看护只观察不自动恢复。docs/observability-contract.md
+      去除固定本机路径表述（保留独立仓库声明与 orx-analytics 名称，
+      历史路径声明为 history, not defaults）。
+      tests/test_delivery_gate_e2e.py 新增 2 项技能/契约约束回归
+      （空白归一后钉住措辞，防止换行规避）。
+- 证据：`uv run pytest -q tests/test_delivery_gate_e2e.py
+  tests/test_observability_contract.py` 24 绿（22 存量 + 2 新增）；
+  全量 `uv run pytest -q` 688 绿；`git diff --check` 干净。
+
+### 阶段 3：升级与回退文档完成 — Done（T003，R7；角色部分 T001 起草）
+- [x] `docs/upgrade-0.3.1.md` 角色文件备份/比较/显式替换与 preset 保留
+      语义、新版 evidence 示例（T001 起草，待 T003 复核）。
+- [x] 从 README 链接；补齐暂停写作者、SQLite 一致性备份、schema v8→v11
+      自动迁移、旧版本拒读新版库、回退必须恢复升级前备份；分渠道更新
+      步骤；`replan --context-file` 要求；README 观测版本改 v8/v9/v10/v11
+      （保留历史契约版本语境）。
+      — `docs/upgrade-0.3.1.md` §2 分渠道步骤（editable：git checkout
+      v0.3.1、明确不做 `uv tool upgrade` 并引用 update.py 的拒绝对原文；
+      wheel：`orx update`/`uv tool upgrade orx-agent`）；§6 备份与回退
+      （新版首次打开旧库前暂停写作者并备份；`VACUUM INTO`/`.backup`
+      一致性快照含 WAL 已提交帧，明示 cp 主文件会漏；连同
+      config/profiles 与 `.orx/runs/` 运行材料；v8→v9→v10→v11 纯增量
+      自动迁移、复制-替换失败保原库；旧版本拒读原文
+      "newer than supported version 8"；回退=恢复备份，never hand-edit
+      schema_version，恢复时移除残留 -wal/-shm）；§7 `replan
+      --context-file`（可读非空、64 KiB/65536 字节、reason/intent/
+      supporting material、分发前校验、代码层可选 vs controller 中途
+      重规划先写 context 文件的流程要求，分开表述）。README：Usage 观测
+      表述改 v8/v9/v10/v11（gate 恰收 8/9/10/11，保留 v8 立契约、
+      v9/v10/v11 增量修订的历史语境）、Skills/update 段升级提示、Docs
+      列表链接。tests/test_delivery_gate_e2e.py +5、
+      tests/test_replan_context.py +2 文档钉住回归（空白归一，备份先于
+      首次打开的顺序、WAL 一致备份、恢复式回退、editable 不走
+      uv tool upgrade、skill 与角色文件两入口分开、文档 §3.4 evidence
+      示例经真实校验器接受、context-file 限额与报错原文对齐代码常量）。
+
+### 阶段 4：安装包级验收固化（完整链路） — Not Started（T004）
+- [ ] 扩展 `scripts/check_release.py` 与包验收测试为完整可重复链路：
+      构建最终源码 wheel、临时环境安装、agents/skills/preset 资源检查、
+      preset 与全部打包技能安装、已有角色保留与技能刷新验证、仓库外
+      stand-in Goal 全流程（规划/执行/新版 evidence 交付/独立 verdict）；
+      真实 v0.3.0 schema v8 样例库副本升级到 v11 的逐行核对与旧版本
+      拒读验证；不允许 skip 或只验证源码回退。
+
+### 阶段 5：版本、发布与本地更新 — Not Started（T005）
+- [ ] 版本单一来源升 0.3.1；四成果发布说明与三个延后事项；README 观测
+      表述更新；docs/m1.2-report.md 测量截止时间戳刷新随发布提交；
+      全量测试 + 构建 + 包级验收 + 独立审查后 push aderan/orx 并建
+      tag v0.3.1（不强推不覆盖）；本地 editable 确认 + `orx skill
+      update` 实跑 + 按升级说明备份/比较/更新本地旧角色定义；归档本
+      阶段记录。
+
+## G007 轮次记录
+- 2026-10-06 R7 T001：阶段 1 交付（attempt 115）——打包、角色统一、
+      示范 JSON 真实校验、clean-wheel 回归、check_release 四段、
+      升级文档角色章节起草；证据见 `.orx/runs/R007/check/T001/`。
+- 2026-10-06 R7 T002：阶段 2 交付（attempt 117）——controller 技能
+      看护接入显式配置化（ORX_ANALYTICS_BIN、OPTIONAL、跳过/启动失败/
+      清理边界）+ 观测契约去除固定本机路径表述 + 技能约束回归 2 项；
+      证据见 `.orx/runs/R007/check/T002/`。
+- 2026-10-06 R7 T003：阶段 3 交付（attempt 119）——升级/回退文档完成
+      并 README 链接（分渠道步骤、备份先于首次打开、WAL 一致备份、
+      v8→v11 自动迁移、旧版拒读、恢复式回退、replan context-file 两层
+      要求；README 观测版本改 v8/v9/v10/v11）；文档钉住回归 7 项；
+      证据见 `.orx/runs/R007/check/T003/`。
+

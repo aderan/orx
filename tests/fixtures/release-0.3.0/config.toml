@@ -1,0 +1,33 @@
+schema_version = 1
+
+# Static definitions only. Runtime resource/quota state lives in SQLite
+# (.orx/state.db) and is managed with `orx resource set`; it never rewrites
+# these files or their ordering.
+
+[controller]
+profile = "orx-host"
+
+[plan]
+depth = "auto"
+allow_class_downgrade = false
+
+[plan.light]
+profiles = ["orx-host"]
+
+[plan.standard]
+profiles = ["orx-host"]
+
+[plan.deep]
+profiles = ["orx-host"]
+
+[worker]
+profiles = ["orx-host"]
+
+[verify]
+profiles = ["orx-host"]
+
+[runtime]
+# M0 shares one working tree: effective CLI parallelism is 1 regardless of
+# this value; a higher setting produces an explicit doctor warning.
+max_parallel = 1
+command_timeout_sec = 1800

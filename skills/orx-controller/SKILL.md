@@ -149,12 +149,29 @@ when every command check is green). The outcomes you act on are the
 structured delivery statuses and the reason prefixes in steps 6–8.
 
 1. Read `orx status --json` before acting. It is the only source of truth.
-   Keep the analytics watchdog running for the session — it is the
-   Controller's own stall detector (R006: a rate-limited controller session
-   sat silent for 2.5 hours and only the human returning noticed; the
-   no_progress rule had fired but nobody was watching):
-   `~/Sources/Tools/orx-analytics/.venv/bin/orx-analytics watch start`
-   (check `watch status`; `watch stop` when the Goal is done).
+   The external analytics watchdog is an OPTIONAL, explicitly configured
+   integration; the ORX loop never depends on it. It exists because a
+   stalled controller is hard to notice (R006: a rate-limited session sat
+   silent for 2.5 hours and only the human returning noticed; the
+   no_progress rule had fired but nobody was watching). The watchdog
+   observes — it never restarts, resumes, or recovers anything.
+   - **Source — explicit configuration only.** Resolve the `orx-analytics`
+     executable from the `ORX_ANALYTICS_BIN` environment variable (an
+     absolute path, or a name resolved on PATH). There is no default
+     location: no checkout directory is assumed or probed. The analysis
+     implementation remains a separate repository; ORX ships no analysis
+     layer of its own.
+   - **start / status** — once per session, only when `ORX_ANALYTICS_BIN`
+     is set and the executable is installed and runnable:
+     `<bin> watch start`, then `<bin> watch status` to confirm.
+   - **Unconfigured, not installed, or start fails** — skip the watchdog
+     and continue the ORX loop exactly as usual: planning, execution,
+     verification, and wrap-up are never blocked or delayed by a missing
+     analytics tool. Note it once; do not retry in a loop.
+   - **stop — cleanup boundary.** When the Goal is done, run
+     `<bin> watch stop` ONLY for a watcher this session started. A
+     watcher another session or the user started is not yours to stop;
+     leave it running.
 2. Treat `mode = "host_required"` from `orx plan` (or an entry in
    `host_required` from `orx run`) as your cue to launch a subagent — it is
    never a failure. The entry's `execution` spec is the full launch contract:

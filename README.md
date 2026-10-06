@@ -170,10 +170,11 @@ Human columns are `PROFILE`, `TASKS`, `RUNTIME`, `INPUT`, `OUTPUT`,
 
 Out-of-repo analysis reads `.orx/state.db` through
 [docs/observability-contract.md](docs/observability-contract.md): the
-v8/v9 tables, join keys, and the SQL for the six report dimensions (the
-gate accepts schema versions 8 and 9 exactly). That
-contract is read-only. The analysis layer itself is not in this
-repository.
+v8/v9/v10/v11 tables — v8 established the observability schema; the v9,
+v10, and v11 amendments were additive — plus join keys and the SQL for
+the six report dimensions (the gate accepts exactly the supported
+versions 8, 9, 10, and 11). That contract is read-only. The analysis
+layer itself is not in this repository.
 
 ## Key invariants
 
@@ -287,6 +288,15 @@ planning, assignment delivery, verification, retry/replan, recovery) and
 `orx-pbv` is an optional, explicitly-invoked multi-round development recipe
 on top of the controller protocol: `orx skill install orx-pbv`.
 
+Upgrading from 0.3.0? Follow
+[docs/upgrade-0.3.1.md](docs/upgrade-0.3.1.md): pause writers, take the
+SQLite-consistent backup (database + project config + run materials)
+before the new version first opens the old database (schema v8 migrates
+to v11 automatically; rollback restores that backup — never a hand-edited
+`schema_version`), then refresh skills with `orx skill update` and
+explicitly compare/replace the three role definitions. Editable installs
+update by checking out the release — no `uv tool upgrade`.
+
 ## Docs
 
 - [职责与边界](docs/responsibilities.md) — responsibility baseline, scope
@@ -298,7 +308,11 @@ on top of the controller protocol: `orx skill install orx-pbv`.
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
 - [Observability read contract](docs/observability-contract.md) — schema
-  v8/v9 tables, joins, and read-only SQL for external analysis
+  v8/v9/v10/v11 tables, joins, and read-only SQL for external analysis
+- [Upgrade to 0.3.1](docs/upgrade-0.3.1.md) — per-channel update steps
+  (editable vs wheel), explicit role-file backup/compare/replace, the
+  pre-upgrade SQLite-consistent backup with schema v8→v11 migration and
+  restore-only rollback, and the `replan --context-file` input contract
 - [Replan contract](docs/replan-contract.md) — the declared old<->new
   correspondence, work classifications, artifact provenance, and the
   structural-check vs semantic-review boundary
