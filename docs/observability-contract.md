@@ -1,8 +1,8 @@
-# ORX observability read contract (schema v8/v9)
+# ORX observability read contract (schema v8/v9/v10)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
-v9). This document is the supported way to analyze `.orx/state.db` from
-outside this repository. The analysis layer lives at
+v9, 2026-10-06 for v10). This document is the supported way to analyze
+`.orx/state.db` from outside this repository. The analysis layer lives at
 `~/Sources/Tools/orx-analytics/` and is not shipped here. ORX stores the
 rows and defines how to read them.
 
@@ -13,16 +13,17 @@ against `tests/fixtures/observability/seed.sql`.
 ## Schema version, stability, and the amendments
 
 `meta.schema_version` is the integer version of the file, stored as text.
-The gate accepts **exactly the explicitly supported versions — `8` and
-`9`** and refuses every other value: never a range, never "at least X".
+The gate accepts **exactly the explicitly supported versions — `8`, `9`,
+and `10`** and refuses every other value: never a range, never "at least X".
 
 | File value | Reader action |
 |---|---|
 | missing `meta` table, missing `schema_version` row, or a non-integer value | refuse; do not infer a version |
 | integer less than 8 (including `7`) | refuse; do not add columns and do not run ORX migrations |
-| `8` | read the sections up to and including the six readings; the v9 replan tables do not exist on a v8 file |
-| `9` | read everything, including the G004 replan correspondence and artifact-provenance queries |
-| integer greater than 9 | refuse; do not rewrite the file |
+| `8` | read the sections up to and including the six readings; the v9 replan tables and the v10 progress table do not exist on a v8 file |
+| `9` | read everything except the v10 progress queries; the `attempt_progress` table does not exist on a v9 file |
+| `10` | read everything, including the G004 replan correspondence and artifact-provenance queries and the G006 progress-report queries |
+| integer greater than 10 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -78,12 +79,24 @@ for the tables and their queries. The gate continues to accept `8`
 explicitly: every query this contract named before the v9 amendment runs
 unchanged on a v8 file, and only the replan queries require `9`.
 
+The fourth amendment, dated 2026-10-06 (G006 host worker progress
+reports, docs/host-progress-contract.md), adds **v10**. v10 is purely
+additive: one new append-only table, `attempt_progress`, holding the
+progress reports a host worker explicitly submits for its own attempt
+(`orx task heartbeat`). No existing table changes and no row is rewritten
+or back-filled — a database upgraded from v9 has an empty
+`attempt_progress`, every attempt on it reads "no report recorded"
+(unknown), and no reader may derive a report from claim times, attempt
+spans, session refs, or token usage. See the G006 section below for the
+table and its queries. The gate continues to accept `8` and `9`
+explicitly; only the progress queries require `10`.
+
 ```sql
 -- query: schema_gate
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9') THEN 'ok'
+  ) IN ('8', '9', '10') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```
@@ -147,7 +160,7 @@ Inside one database these identifiers are different things:
 | Name | Where it lives | Scope |
 |---|---|---|
 | `project_id` | bound by the consumer, not stored | one per database |
-| database-local row id | `plan_revisions.id`, `tasks.id`, `attempts.id`, `task_events.id`, `verifications.id`, `usage_observations.id` | unique inside that table in that file |
+| database-local row id | `plan_revisions.id`, `tasks.id`, `attempts.id`, `task_events.id`, `verifications.id`, `usage_observations.id`, `attempt_progress.id` | unique inside that table in that file |
 | `run_id` | `runs.id`, also copied onto `plan_revisions.run_id`, `planning_assignments.run_id`, `attempts.run_id`, `usage_observations.run_id` | text such as `R001`; unique inside the file; repeats across projects |
 | revision number | `plan_revisions.revision` | integer, unique together with `run_id`; not the same value as `plan_revisions.id` |
 | `task_id` | `tasks.task_id`, copied onto attempts, events, verifications, observations | short id such as `T001`; unique only together with `tasks.revision_id` |
@@ -223,7 +236,7 @@ integers 0 and 1 (`verifications.passed`, `attempts.fallback_used`).
 | Column | Null | Role in this contract |
 |---|---|---|
 | `key` | no | `schema_version` is the only key readers need |
-| `value` | no | text; current files store `8` or `9` |
+| `value` | no | text; current files store `8`, `9`, or `10` |
 
 ### `runs`
 
@@ -372,7 +385,8 @@ below gives the exact rule and the queries.
 
 Other tables (`goals`, `routing_decisions`, `resource_status`, inbox) are
 real and are not required for the six readings below. `evidence` joined the
-named subset with v9 (see the G004 section).
+named subset with v9 (see the G004 section) and `attempt_progress` with
+v10 (see the G006 section).
 
 ## Delivery contract rows (R002 follow-up)
 
@@ -1298,3 +1312,104 @@ ORDER BY a.run_id, pr.revision, a.task_id, a.source_revision,
 `successors_json` is JSON text; read it as a list of new-revision task ids
 inside `superseded_in_revision`. A successor id still only resolves
 together with that revision number.
+
+## G006 host worker progress reports (v10)
+
+This table exists only on v10 files. A `9` (or `8`) `ok` from
+`schema_gate` does not make these queries runnable; readers of progress
+data must also see `meta.schema_version = '10'`. The write path is the
+explicit host worker report channel defined by
+docs/host-progress-contract.md: a report is appended only for the latest,
+still-open host-worker attempt of a running task. A row is an
+**observation fact** — "at `received_at` someone holding that attempt's
+identity submitted this text" — never a liveness proof, a lease, or an
+acceptance input. ORX never rewrites or deletes a report row.
+
+| Table | Column | Null | Meaning |
+|---|---|---|---|
+| `attempt_progress` | `id` | no | report row id |
+| | `attempt_id` | no | the `attempts.id` the report binds to — the real attempt row, never a task number |
+| | `sequence` | no | 1-based, strictly increasing inside the attempt; `UNIQUE(attempt_id, sequence)`; the authority when two `received_at` values tie |
+| | `phase` | no | opaque bounded text exactly as received (stripped) |
+| | `message` | yes | opaque bounded text; NULL when omitted or blank |
+| | `received_at` | no | ORX UTC clock moment the report was received and stored; the client never supplies it |
+
+Identity and honesty rules for these reads:
+
+- Report identity is `(attempt_id, sequence)`. Binding to the attempt row
+  isolates histories mechanically: a retried task has a new attempt with
+  its own sequence space, and the same short `task_id` on another revision
+  is a different attempt set entirely.
+- The **current window** of a task is its latest attempt (by `attempts.id`)
+  in that `(revision_id, task_id)` group. A report on an older attempt of
+  the same task — or on the same task number in another revision — is
+  history; it never surfaces as the task's current progress.
+- No row for an attempt means **unknown**. Readers do not substitute the
+  claim time, `attempts.started_at`, a session ref, or token usage, and a
+  missing report is not evidence the worker died.
+- v9 files have no `attempt_progress` table; after ORX upgrades one, the
+  table is empty and every attempt reads unknown. Nothing is backfilled.
+
+History — every report of every attempt, in receive order, with the
+attempt's role/identity joined in:
+
+```sql
+-- query: progress_history
+SELECT
+  :project_id AS project_id,
+  p.attempt_id,
+  a.role AS attempt_role,
+  a.driver AS attempt_driver,
+  pr.revision AS revision,
+  a.task_id,
+  p.sequence,
+  p.phase,
+  p.message,
+  p.received_at
+FROM attempt_progress p
+JOIN attempts a ON a.id = p.attempt_id
+LEFT JOIN plan_revisions pr ON pr.id = a.revision_id
+ORDER BY p.attempt_id, p.sequence;
+```
+
+Current window — one row per `(revision_id, task_id)` group, carrying the
+group's latest attempt and that attempt's newest report, if any. NULL
+report columns mean the current attempt never reported: unknown, and the
+query structurally cannot fall back to an older attempt's report because
+the join starts from the current attempt:
+
+```sql
+-- query: progress_current
+WITH current_attempt AS (
+  SELECT revision_id, task_id, MAX(id) AS attempt_id
+  FROM attempts
+  WHERE revision_id IS NOT NULL AND task_id IS NOT NULL
+  GROUP BY revision_id, task_id
+),
+latest_report AS (
+  SELECT attempt_id, MAX(sequence) AS sequence
+  FROM attempt_progress
+  GROUP BY attempt_id
+)
+SELECT
+  :project_id AS project_id,
+  ca.revision_id,
+  ca.task_id,
+  ca.attempt_id,
+  lr.sequence,
+  p.phase,
+  p.message,
+  p.received_at
+FROM current_attempt ca
+LEFT JOIN latest_report lr ON lr.attempt_id = ca.attempt_id
+LEFT JOIN attempt_progress p
+  ON p.attempt_id = ca.attempt_id AND p.sequence = lr.sequence
+ORDER BY ca.revision_id, ca.task_id;
+```
+
+Age and staleness are **read-time** computations over `received_at` and the
+consumer's own read clock; they are deliberately not stored columns. When
+`received_at` is missing, unparseable, or later than the read clock, the
+honest result is "reported, age unknown" — never a zero age, a negative
+age, or an overdue verdict from an anomalous clock
+(docs/host-progress-contract.md §8).

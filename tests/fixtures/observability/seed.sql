@@ -1,4 +1,4 @@
--- Schema v9 subset for the observability read contract.
+-- Schema v10 subset for the observability read contract.
 -- Column names and nullability match src/orx/state.py. This file is data
 -- only: applying it does not open Store and does not migrate anything.
 --
@@ -28,6 +28,16 @@
 -- retry's completion evidence (evidence row 1). Identity everywhere is
 -- (run, revision, task_id) and attempt/evidence row ids — the bare task
 -- number T001, which exists on both revisions, resolves nothing.
+--
+-- v10 (G006) progress subset: append-only host worker progress reports.
+-- All three rows bind to attempt 5 — the host worker retry round of
+-- revision 1 T001, the fixture's only host-driver attempt. Sequences are
+-- per attempt (1, 2, 3 in receive order) and the last two share a
+-- received_at, so sequence is the authority. No current window shows a
+-- report on this closed-history fixture: the latest attempt of (1, T001)
+-- is the verifier 6 and of (2, T001) the verifier 10, so progress_current
+-- reads unknown everywhere while progress_history still returns every row
+-- — an older attempt's report never impersonates current progress.
 
 PRAGMA foreign_keys = ON;
 
@@ -244,7 +254,20 @@ CREATE TABLE replan_artifact_sources (
   created_at TEXT NOT NULL
 );
 
-INSERT INTO meta(key, value) VALUES ('schema_version', '9');
+-- v10 (G006) progress storage subset: append-only host worker reports,
+-- bound to the real attempt row, one sequence space per attempt.
+
+CREATE TABLE attempt_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  sequence INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  message TEXT,
+  received_at TEXT NOT NULL,
+  UNIQUE(attempt_id, sequence)
+);
+
+INSERT INTO meta(key, value) VALUES ('schema_version', '10');
 
 INSERT INTO goals(id, objective, status, created_at, updated_at)
 VALUES ('G001', 'fixture', 'done',
@@ -478,3 +501,15 @@ INSERT INTO replan_artifact_sources(
    5, NULL, '2026-10-04T02:04:00.000000+00:00'),
   (3, 'R001', 2, 'T001', 1, 'T001', '.orx/runs/R001/evidence/T001-5.json',
    5, 1, '2026-10-04T02:04:00.000000+00:00');
+
+-- v10 (G006): the host worker's explicit progress reports for its own
+-- attempt (5). Received inside that attempt's span; the last two share a
+-- received_at, so sequence is the authority. NULL message = omitted.
+INSERT INTO attempt_progress(id, attempt_id, sequence, phase, message, received_at)
+VALUES
+  (1, 5, 1, 'implementing', 'store interface first',
+   '2026-10-04T01:35:00.000000+00:00'),
+  (2, 5, 2, 'checking', NULL,
+   '2026-10-04T01:50:00.000000+00:00'),
+  (3, 5, 3, 'delivering', 'evidence staged',
+   '2026-10-04T01:50:00.000000+00:00');

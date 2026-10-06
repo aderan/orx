@@ -33,6 +33,8 @@ QUERIES = (
     "replan_correspondence",
     "replan_superseded",
     "replan_artifact_provenance",
+    "progress_history",
+    "progress_current",
 )
 
 _FENCE = re.compile(r"```sql\n(.*?)```", re.S)
@@ -118,8 +120,8 @@ def _write_was_rejected(conn: sqlite3.Connection) -> bool:
 
 
 def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
-    """The gate is an explicit allowlist (8 and 9), never a range: every
-    other value — older, newer, or malformed — is refused."""
+    """The gate is an explicit allowlist (8, 9, and 10), never a range:
+    every other value — older, newer, or malformed — is refused."""
     queries = load_queries()
     db = tmp_path / "state.db"
     build_db(db)
@@ -129,8 +131,9 @@ def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
     finally:
         conn.close()
 
-    for value, expected in (("8", "ok"), ("7", "refuse"), ("10", "refuse"),
-                            ("v9", "refuse"), (None, "refuse")):
+    for value, expected in (("8", "ok"), ("9", "ok"), ("7", "refuse"),
+                            ("10", "ok"), ("11", "refuse"), ("v9", "refuse"),
+                            (None, "refuse")):
         sample = tmp_path / f"state-{value}.db"
         build_db(sample)
         writer = sqlite3.connect(sample)
@@ -422,5 +425,93 @@ def test_replan_reads_resolve_identity_not_task_numbers():
              ".orx/runs/R001/evidence/T001-5.json", 5, 1),
         ]
         assert len({r["attempt_id"] for r in provenance}) == 2
+    finally:
+        conn.close()
+
+
+def test_progress_reads_keep_history_and_current_window_apart():
+    """v10 attempt_progress reads (G006). History returns each report bound
+    to its attempt in sequence order with full identity; the current window
+    is the task's latest attempt only — attempt 5's reports are history, so
+    no window on this fixture shows one, and a task whose current attempt
+    never reported reads NULL (unknown), never a claim time or an older
+    attempt's report."""
+    queries = load_queries()
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SEED.read_text())
+    try:
+        history = run(conn, queries["progress_history"])
+        assert [
+            (r["attempt_id"], r["sequence"], r["phase"], r["message"], r["received_at"])
+            for r in history
+        ] == [
+            (5, 1, "implementing", "store interface first",
+             "2026-10-04T01:35:00.000000+00:00"),
+            (5, 2, "checking", None, "2026-10-04T01:50:00.000000+00:00"),
+            (5, 3, "delivering", "evidence staged",
+             "2026-10-04T01:50:00.000000+00:00"),
+        ]
+        row = history[0]
+        assert (row["attempt_role"], row["attempt_driver"]) == ("worker", "host")
+        assert (row["revision"], row["task_id"]) == (1, "T001")
+        # Two reports share one received_at: sequence is the authority.
+        assert history[1]["received_at"] == history[2]["received_at"]
+        assert history[1]["sequence"] < history[2]["sequence"]
+
+        current = {
+            (r["revision_id"], r["task_id"]): r
+            for r in run(conn, queries["progress_current"])
+        }
+        assert set(current) == {
+            (1, "T001"), (1, "T002"), (1, "T003"), (1, "T004"), (2, "T001"),
+        }
+        # Reports exist in the file, but every task's current attempt (the
+        # verifier rounds 6 and 10 closed them out) has none: unknown, with
+        # no fallback to attempt 5's or attempt 9's history.
+        for row in current.values():
+            assert row["sequence"] is None and row["phase"] is None
+            assert row["message"] is None and row["received_at"] is None
+        assert current[(1, "T001")]["attempt_id"] == 6
+        assert current[(2, "T001")]["attempt_id"] == 10
+    finally:
+        conn.close()
+
+
+def test_progress_current_reports_only_the_current_attempts_report():
+    """The reported side of the current window: a report bound to the task's
+    latest attempt surfaces; older attempts of the same task stay history.
+    The closed-history fixture cannot contain such a row (the write path
+    only reports on the latest, still-open host-worker attempt), so this
+    test appends the live-case row to a copy before reading."""
+    queries = load_queries()
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SEED.read_text())
+    try:
+        conn.execute(
+            "INSERT INTO attempt_progress(attempt_id, sequence, phase, message,"
+            " received_at) VALUES(10, 1, 'implementing', 'live round',"
+            " '2026-10-04T02:45:00.000000+00:00')"
+        )
+        current = {
+            (r["revision_id"], r["task_id"]): r
+            for r in run(conn, queries["progress_current"])
+        }
+        reported = current[(2, "T001")]
+        assert reported["attempt_id"] == 10
+        assert (reported["sequence"], reported["phase"], reported["message"],
+                reported["received_at"]) == (
+            1, "implementing", "live round", "2026-10-04T02:45:00.000000+00:00",
+        )
+        # Other windows are untouched: revision 1 T001 still reads unknown
+        # even though attempt 5 reported earlier in that task's history.
+        assert current[(1, "T001")]["phase"] is None
+        # History now shows both attempts' rows, each in its own sequence
+        # space, ordered by attempt then sequence.
+        history = run(conn, queries["progress_history"])
+        assert [(r["attempt_id"], r["sequence"]) for r in history] == [
+            (5, 1), (5, 2), (5, 3), (10, 1),
+        ]
     finally:
         conn.close()

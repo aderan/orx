@@ -86,7 +86,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 9
+        assert store.schema_version() == 10
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -101,6 +101,8 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
             # v9 (G004): replan correspondence, preflight reports, and
             # traceable artifact provenance, additive on top of v8.
             *REPLAN_V9_TABLES,
+            # v10 (G006): append-only host worker progress reports.
+            "attempt_progress",
         }
         assert expected <= names
         # v5: fresh databases create attempts with the isolation column in
@@ -335,7 +337,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -370,7 +372,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -410,7 +412,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -514,7 +516,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -600,7 +602,7 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 9
+            assert reopened.schema_version() == 10
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()
@@ -719,7 +721,7 @@ def test_replan_mapping_persists_renumbered_correspondence(project, goal):
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         again = reopened.replan_mapping_for(rev2)
         assert again is not None
         assert {t.task_id: t.classification for t in again.tasks} == {
@@ -949,9 +951,11 @@ def test_replan_report_pending_then_bound(project, goal):
 def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
     """A v8 database gains the replan tables on reopen; every legacy task,
     attempt, evidence, and verification row survives; nothing is backfilled
-    into the new tables — unknown stays unknown."""
+    into the new tables — unknown stays unknown. (The file now also crosses
+    the additive v10 migration on the same reopen: attempt_progress arrives
+    empty too.)"""
     db = tmp_path / "v8.db"
-    store = Store.open(db)  # code is v9; build a v8 db by hand
+    store = Store.open(db)  # code is v10; build a v8 db by hand
     goal, run = store.goal_create("legacy objective", ["keep this"], [], "")
     rev1 = store.revision_create(run.id, "standard", "legacy-planner", {"tasks": ["T001"]}).id
     store.task_insert(rev1, "T001", "legacy task", {}, ["keep this"], ["true"], {}, "passed")
@@ -962,6 +966,7 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
     store.evidence_add(attempt.id, "completion", ".orx/runs/R001/evidence/legacy.json")
     store.verification_add(rev1, "T001", "command", "true", True, attempt_id=attempt.id)
     _drop_v9_tables(store.conn)
+    _drop_v10_progress(store.conn)
     store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
     store.close()
     check = sqlite3.connect(db)
@@ -970,10 +975,11 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
     }
     check.close()
     assert not set(REPLAN_V9_TABLES) <= tables_before
+    assert "attempt_progress" not in tables_before
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -981,6 +987,7 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
             )
         }
         assert set(REPLAN_V9_TABLES) <= tables
+        assert "attempt_progress" in tables
         # Legacy rows are intact, byte for byte in meaning.
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         task = reopened.tasks_all(rev1)[0]
@@ -1001,6 +1008,20 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
         assert reopened.replan_artifact_sources_for_task(rev1, "T001") == []
         assert reopened.replan_successors_for_source(run.id, 1, "T001") == []
         assert reopened.replan_trace_chain(run.id, 1, "T001") == []
+        # No progress report was backfilled for the legacy attempt: unknown
+        # stays unknown — no claim time, session, or usage is turned into one.
+        assert reopened.attempt_progress_latest(attempt.id) is None
+        assert reopened.attempt_progress_all(attempt.id) == []
+        # The upgraded table is writable: the store appends for real attempts.
+        row_id = reopened.attempt_progress_add(
+            attempt.id, "checking", "post-upgrade report",
+            "2026-10-06T02:00:00.000000+00:00",
+        )
+        latest = reopened.attempt_progress_latest(attempt.id)
+        assert latest is not None and latest.id == row_id
+        assert (latest.sequence, latest.phase, latest.message) == (
+            1, "checking", "post-upgrade report",
+        )
     finally:
         reopened.close()
     assert not list(tmp_path.glob("v8.db.migrate-*")), "stale migration backups"
@@ -1013,6 +1034,7 @@ def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch)
     store = Store.open(db)
     goal, _run = store.goal_create("do not lose", ["a"], [], "")
     _drop_v9_tables(store.conn)
+    _drop_v10_progress(store.conn)
     store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
     store.close()
 
@@ -1042,7 +1064,7 @@ def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch)
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1055,6 +1077,7 @@ def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
     db = tmp_path / "wal9.db"
     store = Store.open(db)
     _drop_v9_tables(store.conn)
+    _drop_v10_progress(store.conn)
     store.conn.execute("UPDATE meta SET value = '8' WHERE key = 'schema_version'")
     store.close()
 
@@ -1069,10 +1092,281 @@ def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 9
+            assert reopened.schema_version() == 10
             assert reopened.goal_get("G888").objective == "wal kept 9"
         finally:
             reopened.close()
     finally:
         writer.close()
     assert not list(tmp_path.glob("wal9.db.migrate-*"))
+
+
+# ---------------------------------------------------------------------------
+# G006 host worker progress storage (schema v10): append, read, isolation
+
+
+def _drop_v10_progress(conn) -> None:
+    """Drop the v10 progress table so a reopen has to recreate it, as a real
+    v9 file would look."""
+    conn.execute("DROP TABLE IF EXISTS attempt_progress")
+
+
+def test_attempt_progress_append_latest_all_consistent_across_reopen(project, goal):
+    """add -> reopen: reports are append-only rows bound to the real attempt;
+    latest/all read the same before and after the database is reopened.
+    Two reports may share one received_at — sequence is the authority."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    rev = _mk_revision(store, run.id, ["T001"])
+    attempt = _worker_attempt(store, rev, "T001")
+
+    same_instant = "2026-10-06T02:00:00.000000+00:00"
+    first = store.attempt_progress_add(
+        attempt.id, "exploring", "reading the contract", same_instant
+    )
+    second = store.attempt_progress_add(attempt.id, "implementing", None, same_instant)
+    third = store.attempt_progress_add(
+        attempt.id, "checking", "round 1/3 red, fixing",
+        "2026-10-06T02:05:00.000000+00:00",
+    )
+    assert first < second < third  # row ids follow the append order
+
+    all_rows = store.attempt_progress_all(attempt.id)
+    assert [(r.sequence, r.phase, r.message, r.received_at) for r in all_rows] == [
+        (1, "exploring", "reading the contract", same_instant),
+        (2, "implementing", None, same_instant),  # omitted message stays NULL
+        (3, "checking", "round 1/3 red, fixing", "2026-10-06T02:05:00.000000+00:00"),
+    ]
+    latest = store.attempt_progress_latest(attempt.id)
+    assert latest is not None
+    assert (latest.id, latest.sequence, latest.phase) == (third, 3, "checking")
+
+    # Reopen: latest and history read identically from the persisted file.
+    db_path = store.path
+    project.close()
+    reopened = Store.open(db_path)
+    try:
+        assert reopened.schema_version() == 10
+        again_all = reopened.attempt_progress_all(attempt.id)
+        assert [(r.id, r.sequence, r.phase, r.message, r.received_at) for r in again_all] == [
+            (r.id, r.sequence, r.phase, r.message, r.received_at) for r in all_rows
+        ]
+        again_latest = reopened.attempt_progress_latest(attempt.id)
+        assert again_latest is not None
+        assert again_latest.id == latest.id and again_latest.received_at == latest.received_at
+    finally:
+        reopened.close()
+
+
+def test_attempt_progress_sequence_strictly_increasing_across_connections(tmp_path):
+    """sequence is allocated inside the write transaction (max + 1), so
+    interleaved writers on separate connections still produce a strictly
+    increasing, duplicate-free sequence for one attempt."""
+    db = tmp_path / "concurrent.db"
+    store = Store.open(db)
+    try:
+        goal, run = store.goal_create("concurrent", ["a"], [], "")
+        rev = store.revision_create(run.id, "standard", "p", {"tasks": ["T001"]})
+        store.task_insert(rev.id, "T001", "o", {}, [], [], {}, "running")
+        attempt = store.attempt_create(
+            revision_row_id=rev.id, role="worker", profile="host-worker",
+            driver="host", harness="zcode", model_id="m", requested_effort="high",
+            task_id="T001",
+        )
+        path = db
+        original_id = attempt.id
+    finally:
+        store.close()
+
+    other = Store.open(path)
+    try:
+        base = Store.open(path)
+        try:
+            ids = []
+            # A and B alternate on their own connections; each allocation
+            # must see the other's committed rows.
+            stamps = ["2026-10-06T03:00:0%d.000000+00:00" % i for i in range(4)]
+            ids.append(base.attempt_progress_add(original_id, "a1", None, stamps[0]))
+            ids.append(other.attempt_progress_add(original_id, "a2", None, stamps[1]))
+            ids.append(base.attempt_progress_add(original_id, "a3", None, stamps[2]))
+            ids.append(other.attempt_progress_add(original_id, "a4", None, stamps[3]))
+            rows = base.attempt_progress_all(original_id)
+            sequences = [r.sequence for r in rows]
+            assert sequences == [1, 2, 3, 4]
+            assert len(set(sequences)) == 4  # UNIQUE backstop never tripped
+            assert ids == sorted(ids)
+            assert base.attempt_progress_latest(original_id).phase == "a4"
+        finally:
+            base.close()
+    finally:
+        other.close()
+
+
+def test_attempt_progress_isolated_by_attempt_identity(project, goal):
+    """Reports bind to the attempt row, never the task number: a retry with
+    no reports reads unknown, and the same task number on another revision
+    has its own isolated history."""
+    store = project.store
+    run = store.run_for_goal(goal.id)
+    rev1 = _mk_revision(store, run.id, ["T001"])
+    store.revision_mark_superseded(rev1)
+    rev2 = _mk_revision(store, run.id, ["T001"])  # same NUMBER, new revision
+
+    first_round = _worker_attempt(store, rev1, "T001")
+    retry_round = _worker_attempt(store, rev1, "T001")  # the retry's attempt
+    new_round = _worker_attempt(store, rev2, "T001")
+
+    store.attempt_progress_add(
+        first_round.id, "implementing", "first try", "2026-10-06T04:00:00.000000+00:00"
+    )
+    store.attempt_progress_add(
+        first_round.id, "blocked", "gate red", "2026-10-06T04:10:00.000000+00:00"
+    )
+    store.attempt_progress_add(
+        new_round.id, "exploring", None, "2026-10-06T05:00:00.000000+00:00"
+    )
+
+    # The retry attempt has no reports: unknown, never the prior round's.
+    assert store.attempt_progress_latest(retry_round.id) is None
+    assert store.attempt_progress_all(retry_round.id) == []
+    # The first round keeps its own append history.
+    first_latest = store.attempt_progress_latest(first_round.id)
+    assert first_latest is not None
+    assert (first_latest.sequence, first_latest.phase) == (2, "blocked")
+    assert len(store.attempt_progress_all(first_round.id)) == 2
+    # Same task number on revision 2: its own sequence space, nothing leaked
+    # from revision 1's attempts.
+    new_latest = store.attempt_progress_latest(new_round.id)
+    assert new_latest is not None
+    assert (new_latest.sequence, new_latest.phase, new_latest.message) == (
+        1, "exploring", None
+    )
+    assert len(store.attempt_progress_all(new_round.id)) == 1
+    # The report row is bound to a real attempt row: an unknown attempt id is
+    # refused by the foreign key, not silently recorded.
+    with pytest.raises(sqlite3.IntegrityError):
+        store.attempt_progress_add(
+            999999, "exploring", None, "2026-10-06T06:00:00.000000+00:00"
+        )
+
+
+def test_v9_to_v10_migration_additive_without_backfill(tmp_path):
+    """A v9 database gains attempt_progress on reopen; every legacy row
+    survives; no report is backfilled — an attempt that never reported reads
+    unknown, not a claim time or usage derived stand-in."""
+    db = tmp_path / "v9.db"
+    store = Store.open(db)  # code is v10; build a v9 db by hand
+    goal, run = store.goal_create("legacy objective", ["keep this"], [], "")
+    rev1 = store.revision_create(run.id, "standard", "legacy-planner", {"tasks": ["T001"]}).id
+    store.task_insert(rev1, "T001", "legacy task", {}, ["keep this"], ["true"], {}, "running")
+    attempt = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="legacy", driver="host",
+        harness="zcode", model_id="m", requested_effort="high", task_id="T001",
+    )
+    _drop_v10_progress(store.conn)
+    store.conn.execute("UPDATE meta SET value = '9' WHERE key = 'schema_version'")
+    store.close()
+    check = sqlite3.connect(db)
+    tables_before = {
+        r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    check.close()
+    assert "attempt_progress" not in tables_before
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 10
+        tables = {
+            r["name"]
+            for r in reopened.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "attempt_progress" in tables
+        assert set(REPLAN_V9_TABLES) <= tables  # v9 storage untouched
+        # Legacy rows survive byte for byte in meaning.
+        assert reopened.goal_get(goal.id).objective == "legacy objective"
+        stored = reopened.attempt_get(attempt.id)
+        assert (stored.task_id, stored.driver, stored.session_ref) == ("T001", "host", None)
+        # The new table is empty and nothing was derived: unknown stays unknown.
+        assert reopened.attempt_progress_latest(attempt.id) is None
+        assert reopened.attempt_progress_all(attempt.id) == []
+        count = reopened.conn.execute(
+            "SELECT COUNT(*) AS c FROM attempt_progress"
+        ).fetchone()["c"]
+        assert count == 0
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v9.db.migrate-*")), "stale migration backups"
+
+
+def test_v10_migration_failure_preserves_original_database(tmp_path, monkeypatch):
+    """A failing v10 migration leaves the v9 file untouched and usable; a
+    later clean open migrates it normally."""
+    db = tmp_path / "keep10.db"
+    store = Store.open(db)
+    goal, _run = store.goal_create("do not lose", ["a"], [], "")
+    _drop_v10_progress(store.conn)
+    store.conn.execute("UPDATE meta SET value = '9' WHERE key = 'schema_version'")
+    store.close()
+
+    def boom(_conn):
+        raise RuntimeError("v10 failed")
+
+    monkeypatch.setitem(state_mod.MIGRATIONS, 10, boom)
+    with pytest.raises(RuntimeError, match="v10 failed"):
+        Store.open(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        objective = conn.execute(
+            "SELECT objective FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()[0]
+        assert version == "9"
+        assert objective == "do not lose"
+    finally:
+        conn.close()
+    assert not list(tmp_path.glob("keep10.db.migrate-*"))
+
+    # The v9 original is still usable: reopening without the sabotage
+    # migrates it and keeps the row.
+    monkeypatch.undo()
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 10
+        assert reopened.goal_get(goal.id).objective == "do not lose"
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("keep10.db.migrate-*"))
+
+
+def test_v10_migration_keeps_wal_committed_rows(tmp_path):
+    """A commit that still lives in the WAL must survive the v9 -> v10
+    replacement, and the temporary migration files must be gone."""
+    db = tmp_path / "wal10.db"
+    store = Store.open(db)
+    _drop_v10_progress(store.conn)
+    store.conn.execute("UPDATE meta SET value = '9' WHERE key = 'schema_version'")
+    store.close()
+
+    writer = sqlite3.connect(db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(
+        "INSERT INTO goals(id, objective, constraints_json, acceptance_json, context,"
+        " status, created_at, updated_at) VALUES('G999', 'wal kept 10', '[]', '[]', '',"
+        " 'done', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+    )
+    writer.commit()
+    try:
+        reopened = Store.open(db)
+        try:
+            assert reopened.schema_version() == 10
+            assert reopened.goal_get("G999").objective == "wal kept 10"
+        finally:
+            reopened.close()
+    finally:
+        writer.close()
+    assert not list(tmp_path.glob("wal10.db.migrate-*"))

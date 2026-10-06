@@ -21,7 +21,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 9
+CODE_SCHEMA_VERSION = 10
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -527,6 +527,35 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     )
 
 
+# v10: host worker progress reports (docs/host-progress-contract.md §6, G006).
+# Additive only: one new append-only table. A report row binds to the real
+# attempts.id it was received for — never a task number — so same-numbered
+# tasks across revisions and retries after a fail are isolated by identity.
+# Nothing is backfilled: a database upgraded from v9 has no progress rows,
+# reads on it return unknown (None / []), and no code path derives a report
+# from claim times, session refs, or token usage.
+SCHEMA_V10_PROGRESS = """
+CREATE TABLE IF NOT EXISTS attempt_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  sequence INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  message TEXT,
+  received_at TEXT NOT NULL,
+  UNIQUE(attempt_id, sequence)
+);
+"""
+
+
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V10_PROGRESS)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -538,6 +567,7 @@ MIGRATIONS: dict[int, callable] = {
     7: _migrate_v7,
     8: _migrate_v8,
     9: _migrate_v9,
+    10: _migrate_v10,
 }
 
 
@@ -696,6 +726,24 @@ class EvidenceRow:
     kind: str
     path: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class AttemptProgressRow:
+    """One appended host worker progress report (docs/host-progress-contract.md
+    §6, G006).
+
+    Identity is (attempt row id, sequence). received_at is the ORX clock
+    moment the report was received — an observation fact, never a liveness
+    proof. Rows are append-only: ORX has no update or delete path.
+    """
+
+    id: int
+    attempt_id: int
+    sequence: int
+    phase: str
+    message: str | None
+    received_at: str
 
 
 @dataclass(frozen=True)
@@ -977,6 +1025,17 @@ def _verification(r: sqlite3.Row) -> Verification:
         passed=bool(r["passed"]),
         output_path=r["output_path"],
         created_at=r["created_at"],
+    )
+
+
+def _attempt_progress(r: sqlite3.Row) -> AttemptProgressRow:
+    return AttemptProgressRow(
+        id=r["id"],
+        attempt_id=r["attempt_id"],
+        sequence=r["sequence"],
+        phase=r["phase"],
+        message=r["message"],
+        received_at=r["received_at"],
     )
 
 
@@ -1823,6 +1882,56 @@ class Store:
             EvidenceRow(r["id"], r["attempt_id"], r["kind"], r["path"], r["created_at"])
             for r in rows
         ]
+
+    # -- attempt progress reports (G006, schema v10) --------------------------
+
+    def attempt_progress_add(
+        self, attempt_id: int, phase: str, message: str | None, received_at: str
+    ) -> int:
+        """Append one host worker progress report for an attempt
+        (docs/host-progress-contract.md §6).
+
+        The row binds to the real attempt row: a nonexistent attempt id is
+        rejected by the foreign key, and same-numbered tasks across
+        revisions or retries are different attempt rows, so reports never
+        cross. ``sequence`` is allocated inside this write transaction
+        (current max + 1 for the attempt), which keeps concurrent writers
+        strictly increasing; the UNIQUE(attempt_id, sequence) constraint is
+        the backstop. Append is the only write — ORX never rewrites or
+        deletes a report. Returns the new row id.
+        """
+        with self.tx():
+            current = self.conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS m FROM attempt_progress"
+                " WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            cur = self.conn.execute(
+                "INSERT INTO attempt_progress(attempt_id, sequence, phase, message,"
+                " received_at) VALUES(?,?,?,?,?)",
+                (attempt_id, current["m"] + 1, phase, message, received_at),
+            )
+            return cur.lastrowid
+
+    def attempt_progress_latest(self, attempt_id: int) -> AttemptProgressRow | None:
+        """The attempt's newest report (highest sequence), or None when none
+        was ever stored. None is unknown — callers show unknown and never
+        substitute a claim time, a session, or usage."""
+        row = self.conn.execute(
+            "SELECT * FROM attempt_progress WHERE attempt_id = ?"
+            " ORDER BY sequence DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        return _attempt_progress(row) if row else None
+
+    def attempt_progress_all(self, attempt_id: int) -> list[AttemptProgressRow]:
+        """Every report of one attempt in append order (sequence ascending).
+        Same-instant received_at values order by sequence, the authority."""
+        rows = self.conn.execute(
+            "SELECT * FROM attempt_progress WHERE attempt_id = ? ORDER BY sequence",
+            (attempt_id,),
+        ).fetchall()
+        return [_attempt_progress(r) for r in rows]
 
     # -- verifications ----------------------------------------------------------
 

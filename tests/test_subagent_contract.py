@@ -507,12 +507,12 @@ def test_submit_unknown_attempt_rejected(sub_planned, tmp_path):
 
 def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
     """A v7 database (attempts without the subagent contract columns) upgrades
-    on reopen through v8 to v9; existing rows survive with NULLs (never
-    invented) and the v9 replan tables come along additively."""
+    on reopen through v8 and v9 to v10; existing rows survive with NULLs
+    (never invented) and the v9 replan tables come along additively."""
     import sqlite3
 
     db = tmp_path / "v7.db"
-    store = Store.open(db)  # code is v9; build a v7 db by hand
+    store = Store.open(db)  # code is v10; build a v7 db by hand
     store.conn.execute("ALTER TABLE attempts DROP COLUMN verify_entry")
     store.conn.execute("ALTER TABLE attempts DROP COLUMN actual_model")
     store.conn.execute("ALTER TABLE attempts DROP COLUMN model_source")
@@ -525,7 +525,7 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 9
+        assert reopened.schema_version() == 10
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert {"verify_entry", "actual_model", "model_source"} <= columns
         legacy = reopened.attempts_all()[0]
@@ -541,13 +541,18 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
         }
         assert "replan_mappings" in tables and "replan_artifact_sources" in tables
         assert reopened.replan_mappings_for_run("R001") == []
+        # v10 progress storage arrives empty too (G006): the legacy attempt
+        # never reported, and nothing is derived for it.
+        assert "attempt_progress" in tables
+        assert reopened.attempt_progress_latest(legacy.id) is None
+        assert reopened.attempt_progress_all(legacy.id) == []
     finally:
         reopened.close()
     check = sqlite3.connect(db)
     try:
         assert check.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "9"
+        ).fetchone()[0] == "10"
     finally:
         check.close()
     assert not list(tmp_path.glob("v7.db.migrate-*")), "stale migration backups"
