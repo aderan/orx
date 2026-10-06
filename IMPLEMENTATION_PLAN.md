@@ -194,3 +194,44 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
   README 与两个 skill 同步真实重规划流程并声明历史未知与语义审查边界（测试钉住）；
   `docs/replan-contract.md` 阶段 5 状态更新；G004 记录归档（临时计划并入，
   `orx status` 呈现为显式遗留开放项）。全量 597 绿（592 存量 + 5 新增）。
+
+---
+
+# G006：host worker 进展报告与安全恢复观测（2026-10-06 提交）
+
+目标及计划：[docs/host-progress-plan.md](docs/host-progress-plan.md)。
+权威任务图：[docs/host-progress-plan.json](docs/host-progress-plan.json)。
+Run：R006；五项任务串行，参考工作量 3–5 小时，按验收完成。
+本节为待执行计划，不把旧通过记录或计划文件存在当成已实现。
+
+## Stage 1: 基线修复与契约冻结（T001）
+**Goal**: 修复会话身份测试导入，冻结显式进展报告接口、时间/阈值、身份及安全恢复边界。
+**Success Criteria**: 标准测试入口全绿；契约足以独立编写行为测试；unknown、超时提示和生存状态不混淆。
+**Tests**: `uv run pytest -q`；核对仓库既有 conftest 导入惯例。
+**Status**: Not Started
+
+## Stage 2: 追加存储与只读观测（T002）
+**Goal**: 按 attempt 追加保留进展及最新/历史查询，同步迁移与只读观测契约。
+**Success Criteria**: 重开数据库后数据完整；迁移失败原库可用；WAL 数据保留；旧库不回填假报告。
+**Tests**: `uv run pytest tests/test_state.py tests/test_observability_contract.py tests/test_m12_acceptance.py tests/test_subagent_contract.py -q`。
+**Status**: Not Started
+
+## Stage 3: 显式报告命令与身份门禁（T003）
+**Goal**: 接入 heartbeat 命令，仅允许当前运行中的最新 host-worker attempt 提交报告。
+**Success Criteria**: 过期、已关闭、错误任务/修订/角色被拒绝且无副作用；不改 session_ref、状态、验收或用量。
+**Tests**: `uv run pytest tests/test_cli.py tests/test_lifecycle.py tests/test_session_identity.py -q`。
+**Status**: Not Started
+
+## Stage 4: 进展呈现与安全恢复提示（T004）
+**Goal**: status/list/recovery 展示当前报告、年龄和可配置的超时提示；timeline 保留历史。
+**Success Criteria**: 固定时钟覆盖阈值边界；当前窗口不混入旧报告；核查提示不自动重启原任务。
+**Tests**: `uv run pytest tests/test_config.py tests/test_cli.py tests/test_phase_c.py tests/test_timeline.py tests/test_assignments.py -q`。
+**Status**: Not Started
+
+## Stage 5: 端到端回归与独立验收（T005）
+**Goal**: 替身复演恢复、迟到结果与显式重试；同步 README、执行技能和观测说明。
+**Success Criteria**: 全量测试和构建通过；独立审查确认无第二写入者；文档不宣传自动心跳或存活保证。
+**Tests**: `uv run pytest -q`；`uv build`；计划指定的独立 agent 审查。
+**Status**: Not Started
+
+完成后删除本节临时阶段清单，将实施证据归入阶段报告；保留上方既有历史文档。

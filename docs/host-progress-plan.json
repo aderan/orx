@@ -1,0 +1,228 @@
+{
+  "goal": "G006",
+  "replan": null,
+  "exploration": {
+    "summary": "截至 2026-10-06 HEAD 852cd0a，工作树在 intake 前干净；R005 done。已检查三类相似机制：task claim/complete 的 attempt 身份拒绝与会话晚绑定；run_slice recovery 的 no-second-writer 重浮现；schema v9 additive 迁移及观测只读查询。G004 已实现重规划预检及成果引用，G005 配额预检/退避已提交，host-worker 身份发现已提交。本轮不重复建设这些能力。status/task list 尚无进展报告，recovery 不能区分何时收到过原 worker 的报告。标准 uv run pytest -q 收集失败，唯一异常导入位于 tests/test_session_identity.py；uv run python -m pytest -q 的现有 627 项测试全绿（53.32s）。",
+    "relevant_components": [
+      "src/orx/state.py：attempt/evidence 存储与 schema v9 additive 迁移",
+      "src/orx/dispatch.py：task_claim、稳定 attempt 交付、task_list/status_data、run_slice recovery、timeline",
+      "src/orx/cli.py：task 子命令与 status/run/timeline 人类可读输出",
+      "src/orx/config.py：分层配置、可写键与正整数校验",
+      "tests/test_phase_c.py、tests/test_session_identity.py：无第二写入者、迟到结果与真实 session_ref 契约",
+      "docs/observability-contract.md：明确 schema 支持白名单、只读查询及未知数据纪律"
+    ],
+    "unknowns": [
+      "真实宿主是否能定时主动调用进展接口尚未验证；本阶段交付显式报告接口及技能调用时机，不宣称自动心跳或自动推送。",
+      "没有报告的历史 attempt 无法追溯真实存活状态；必须保持 unknown，不从 claim 时间或供应商消息猜测。",
+      "默认长时间无报告阈值属于实现选择，须在契约中固定并保持可配置；不是 lease 或自动恢复条件。"
+    ],
+    "assumptions": [
+      "当前阶段先解决 host worker 的进展观测，CLI/external/planner/verifier 的进展协议留在范围外。",
+      "本地替身与固定时钟可以验证安全恢复的行为，不需要调用付费模型。"
+    ],
+    "risks": [
+      "过期报告污染重试后的当前窗口，或同号任务跨修订混淆身份。",
+      "把超时提示误当成原 worker 已死亡，导致双写。",
+      "schema 迁移/观测 gate 版本联动遗漏，或历史报告被覆盖。",
+      "只更新 repo skill 而声称所有宿主均已经自动运行心跳。"
+    ]
+  },
+  "approach": {
+    "summary": "五个串行任务，参考工作量 3–5 小时：先恢复标准测试基线并冻结观察语义；再追加存储与只读契约；接入受 attempt 约束的显式报告命令；呈现当前报告及过期提示；最终以本地替身进行恢复闭环与全量验收。",
+    "decisions": [
+      "所有任务先行为测试再最小实现；各任务必须在提交前过自己的 command 门禁，最终独立审查不由 worker 自评替代。",
+      "进展是接收时记录的观察事实，不是进程存活证明、lease、验收、费用或资源健康信号；缺失报告保持 unknown。",
+      "进展写入要求显式 attempt，核对 active revision、任务、最新 host-worker attempt、任务 running 及 attempt 未关闭；不重绑 session_ref。",
+      "按 attempt 追加保留历史，不覆盖旧报告；若新增 schema，使用既有 additive backup-replace-restore，并同步读契约白名单与夹具。",
+      "计划接口为 orx task heartbeat <task> --attempt <id>，携带有界 phase/message；命名、返回字段、阈值与错误规则由 T001 冻结，后续不能临时改契约。",
+      "status/task list/recovery 只读取当前 attempt；timeline 保留历史事件并显示完整身份。用可注入 UTC 时钟测试阈值边界，不真实 sleep。",
+      "超时仅建议核查原会话；只有原执行者已确认死亡后的显式 fail+retry 才打开新 attempt。有效迟到交付按既有门禁受理，旧关闭 attempt 的报告和交付都拒绝。",
+      "不加入后台服务、自动重启、并行写入、跨库分析或 UI；不修改模型路由。G004 status 对应关系呈现遗留项单独保留。"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "T001",
+      "objective": "恢复标准测试入口并冻结 host 进展观察契约：修正 tests/test_session_identity.py 的 conftest 导入以匹配仓库惯例；编写 docs/host-progress-contract.md，定义 heartbeat 命令、phase/message 长度限制、显式 attempt 身份、接收时间/历史存储/current 窗口、unknown 与超时提示、默认阈值与配置键、错误语义、无副作用与恢复边界。标准全量测试实际通过；只产出契约，不提前实现运行能力。",
+      "dependencies": [],
+      "scope": {
+        "allowed": [
+          "tests/test_session_identity.py",
+          "docs/host-progress-contract.md",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "标准入口 uv run pytest -q 全量通过；会话身份测试采用仓库现有导入惯例。",
+        "契约区分报告收到时间、原 worker 生存状态与任务验收；写入身份规则、默认超时阈值、阈值边界、时钟异常及无报告规则明确。",
+        "接口与实现步骤已固定，可从文档独立编写行为测试。"
+      ],
+      "verification": [
+        "uv run pytest -q"
+      ],
+      "preread": [
+        "docs/host-progress-intake.json",
+        "tests/test_session_identity.py",
+        "tests/conftest.py",
+        "src/orx/dispatch.py"
+      ],
+      "routing": {
+        "complexity": "low",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T002",
+      "objective": "按 T001 契约增加 attempt 绑定的追加进展存储，补查询最新/历史报告的最小 Store 接口。新增 schema 必须沿用 additive backup-replace-restore；旧库没有报告不回填、不推测。同步只读观测契约、版本 gate 与 fixture；覆盖重开、迁移失败保原库、WAL 保留、同号跨修订及历史 attempt 隔离。 同步现有 M1.2/子代理迁移测试中的当前 schema 版本断言，保留旧版本迁移输入与行为断言，不弱化历史兼容性。",
+      "dependencies": [
+        "T001"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/state.py",
+          "tests/test_state.py",
+          "docs/observability-contract.md",
+          "tests/fixtures/observability/seed.sql",
+          "tests/test_observability_contract.py",
+          "tests/test_m12_acceptance.py",
+          "tests/test_subagent_contract.py"
+        ]
+      },
+      "acceptance": [
+        "报告以真实 attempt 外键绑定并追加保存，数据库重开后最新/历史查询一致。",
+        "新增 schema 迁移失败保留原库与原数据，旧库无报告保持未知；观测查询严格只读。"
+      ],
+      "verification": [
+        "uv run pytest tests/test_state.py tests/test_observability_contract.py tests/test_m12_acceptance.py tests/test_subagent_contract.py -q"
+      ],
+      "preread": [
+        "docs/host-progress-contract.md",
+        "src/orx/state.py",
+        "tests/test_state.py",
+        "tests/test_observability_contract.py"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T003",
+      "objective": "接入 T001 冻结的 heartbeat CLI 和 dispatch 写入接口：仅允许 active revision 的 running 任务、最新且未关闭的 host-worker attempt，以显式 --attempt 提交有界 phase/message。写入时重新核对所有权并与追加记录原子一致；并发完成与报告不得使关闭 attempt 被复活。提供结构化成功/失败响应，保留 exit codes 0/1/2。所有拒绝均无数据或任务状态副作用。",
+      "dependencies": [
+        "T002"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/dispatch.py",
+          "src/orx/cli.py",
+          "tests/test_cli.py",
+          "tests/test_lifecycle.py",
+          "tests/test_session_identity.py"
+        ]
+      },
+      "acceptance": [
+        "host worker 可以为当前运行中的 attempt 提交结构化进展报告；报告追加保存并在重开数据库后可追溯，旧数据没有报告时如实显示 unknown。",
+        "过期、已关闭、错误任务、错误修订或非 host-worker 的 attempt 无法更新当前任务进展；进展报告不修改任务状态、验收结果、会话身份或 token 用量。",
+        "报告接收时间由 ORX 的 UTC 时钟生成；消息输入校验与来源身份错误可区分，不能用环境里的 Controller session id 覆盖 worker session_ref。"
+      ],
+      "verification": [
+        "uv run pytest tests/test_cli.py tests/test_lifecycle.py tests/test_session_identity.py -q"
+      ],
+      "preread": [
+        "docs/host-progress-contract.md",
+        "src/orx/dispatch.py",
+        "src/orx/cli.py",
+        "tests/test_session_identity.py"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T004",
+      "objective": "实现配置、当前进展与安全恢复呈现：分层配置支持 T001 定义的长时间无报告阈值；status、task list 与 run recovery 添加当前 attempt 最近报告、时间/年龄、unknown 与过期核查提示，CLI 文本同步；timeline 追加历史报告事件并按完整身份过滤，同时明确展示当前窗口最近报告及其年龄/过期提示，历史事件不可冒充当前观察。观察动作不得改变当前任务状态、创建 attempt 或触发模型调用。缺失/异常时间按契约处理。",
+      "dependencies": [
+        "T003"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/config.py",
+          "src/orx/dispatch.py",
+          "src/orx/cli.py",
+          "tests/test_config.py",
+          "tests/test_cli.py",
+          "tests/test_phase_c.py",
+          "tests/test_timeline.py",
+          "tests/test_assignments.py"
+        ]
+      },
+      "acceptance": [
+        "orx status、task list、timeline 和 orx run recovery 展示当前 attempt 的最近报告、时间及可配置的超时提示；历史 attempt 的报告不会冒充当前进展。",
+        "长时间无报告仅触发核查提示，不自动 fail、retry、replan、取消或启动第二个 worker；原 attempt 的有效迟到交付仍可受理。",
+        "阈值遵循现有配置优先级及类型校验；固定时钟覆盖阈值前/等于/超过、unknown 及重试后隔离，无真实 sleep。"
+      ],
+      "verification": [
+        "uv run pytest tests/test_config.py tests/test_cli.py tests/test_phase_c.py tests/test_timeline.py tests/test_assignments.py -q"
+      ],
+      "preread": [
+        "docs/host-progress-contract.md",
+        "src/orx/config.py",
+        "src/orx/dispatch.py",
+        "tests/test_phase_c.py"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T005",
+      "objective": "端到端替身验收与执行协议同步：新建测试连续复演 claim→报告→超时提示→恢复重浮现→原 attempt 有效迟到交付，以及确认死亡后显式 fail/retry→新报告窗口→旧 attempt 迟到报告/交付拒绝。补 README 与 worker/controller skills 的显式报告时机及有界等待/先查原会话规则，写实测报告并更新阶段状态。只记录真实测试结果，不宣称定时自动心跳、自动恢复、真实时长或 token 节省。技能安装同步仅使用现有更新入口。",
+      "dependencies": [
+        "T004"
+      ],
+      "scope": {
+        "allowed": [
+          "tests/test_host_progress_e2e.py",
+          "README.md",
+          "skills/orx-agent/SKILL.md",
+          "skills/orx-controller/SKILL.md",
+          "docs/host-progress-contract.md",
+          "docs/host-progress-report.md",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "本地替身覆盖报告、超时、重连、显式失败后重试和迟到提交拒绝；README、执行技能和只读观测契约与实现一致。",
+        "全部 Goal 验收由当前代码、现有门禁和独立审查证明；文档、只读 SQL、CLI 帮助一致；全部实现按增量可回退提交。"
+      ],
+      "verification": [
+        "uv run pytest -q",
+        "uv build",
+        "agent: 对照 docs/host-progress-contract.md 独立审查进展写入所有权、历史与当前窗口、超时无状态副作用、无第二写入者和有效/失效迟到结果；核对 README 与 skills 未把显式报告宣传为自动心跳或生存证明，不修代码且不降低 Goal 验收。"
+      ],
+      "preread": [
+        "docs/host-progress-contract.md",
+        "tests/test_phase_c.py",
+        "tests/test_session_identity.py",
+        "tests/test_delivery_gate_e2e.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    }
+  ]
+}

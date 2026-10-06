@@ -1,0 +1,16 @@
+{
+  "objective": "完成 ORX 下一阶段：host worker 进展报告与安全恢复观测，让 Controller 能追溯当前 attempt 最后一次报告的时间和进展，并在长时间无报告时获得核查提示。",
+  "acceptance": [
+    "标准入口 uv run pytest -q 全量通过；会话身份测试采用仓库现有导入惯例。",
+    "host worker 可以为当前运行中的 attempt 提交结构化进展报告；报告追加保存并在重开数据库后可追溯，旧数据没有报告时如实显示 unknown。",
+    "过期、已关闭、错误任务、错误修订或非 host-worker 的 attempt 无法更新当前任务进展；进展报告不修改任务状态、验收结果、会话身份或 token 用量。",
+    "orx status、task list、timeline 和 orx run recovery 展示当前 attempt 的最近报告、时间及可配置的超时提示；历史 attempt 的报告不会冒充当前进展。",
+    "长时间无报告仅触发核查提示，不自动 fail、retry、replan、取消或启动第二个 worker；原 attempt 的有效迟到交付仍可受理。",
+    "本地替身覆盖报告、超时、重连、显式失败后重试和迟到提交拒绝；README、执行技能和只读观测契约与实现一致。"
+  ],
+  "constraints": [
+    "遵循现有增量开发和测试约定，保留 exit codes 0/1/2、--json envelope、一个 active Goal 和一个 active plan 的不变量；不直接编辑 .orx/state.db。",
+    "工作仅限 ORX 当前仓库；分析层继续留在独立 orx-analytics 仓库，不修改供应商数据库、账号凭据或执行模型配置。"
+  ],
+  "context": "用户于 2026-10-06 要求根据当前项目状态提交下一阶段数小时任务。本次先提交可执行计划，实施与验收状态按真实执行记录推进。HEAD=852cd0a；G003 交付协议、G004 重规划对应关系/生效前预检/成果引用、配额预检与退避、host worker 会话身份绑定已提交。ORX 状态最近运行 R005 done，工作树初始干净。仍存在 host 进展无持久化报告、recovery 只重浮现 attempt 身份的缺口。标准 uv run pytest -q 目前在 tests/test_session_identity.py 的 from tests.conftest 导入处收集失败，而其余测试沿用 from conftest；首任务修复基线。实施选择：以当前 attempt 为权威身份，显式报告而非推测进程存活；阈值仅供核查。范围不含后台常驻 Controller、自动恢复/租约抢占、并行 worktree、状态 UI、跨供应商成本换算及 G004 status 对应关系遗留项。参考工作量约 3–5 小时，完成以验收为准。"
+}
