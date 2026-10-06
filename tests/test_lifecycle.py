@@ -131,7 +131,7 @@ def test_restart_recovery_mid_run(project, goal, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert {t["id"]: t["status"] for t in dispatch.task_list(reopened)} == before
-        assert reopened.store.schema_version() == 9
+        assert reopened.store.schema_version() == 10
         result = dispatch.task_complete(reopened, "T001", str(write_evidence(tmp_path)))
         assert result["status"] == "passed"
         dispatch.run_slice(reopened)
@@ -643,4 +643,328 @@ def test_worker_prompt_carries_check_fix_budget_rules(project, goal):
         < prompt.index("CHECK-FIX LOOP")
         < prompt.index("DELIVERY GATE")
     )
+
+
+# -- host worker progress reports (G006, docs/host-progress-contract.md §2-§5) --
+
+
+def _heartbeat_setup(project, goal, verification=("true",)):
+    """Active revision + one claimed running task; returns (row, attempt)."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance[:1], verification=list(verification)),
+        task_spec("T002", deps=["T001"], acceptance=goal.acceptance[1:], verification=[]),
+    ]))
+    dispatch.run_slice(project)
+    claim = dispatch.task_claim(project, "T001")
+    row = active_task(project, "T001")
+    attempt = project.store.attempt_get(claim["attempt"])
+    return row, attempt
+
+
+def _heartbeat_snapshot(project, revision_row_id, task_id):
+    """Everything a heartbeat must never touch: task status and events,
+    verification rows, attempt fields (session_ref included), usage rows,
+    and the progress rows themselves (for rejection assertions)."""
+    store = project.store
+    return {
+        "status": store.task_get(revision_row_id, task_id).status,
+        "events": [(e.event, e.reason) for e in store.task_events(revision_row_id, task_id)],
+        "verifications": [
+            (v.id, v.attempt_id, v.passed)
+            for v in store.verifications_for(revision_row_id, task_id)
+        ],
+        "attempts": [
+            (a.id, a.started_at, a.ended_at, a.result, a.session_ref,
+             a.actual_model, a.usage_missing_reason)
+            for a in store.attempts_all()
+        ],
+        "usage": store.conn.execute(
+            "SELECT COUNT(*) AS c FROM usage_observations").fetchone()["c"],
+        "progress": store.conn.execute(
+            "SELECT COUNT(*) AS c FROM attempt_progress").fetchone()["c"],
+    }
+
+
+def test_heartbeat_appends_reports_that_survive_reopen(project, goal):
+    """A running task's current attempt accepts structured reports; the
+    response carries every contract §5 field; append order survives a full
+    close/reopen; and a not-yet-reporting attempt is honestly unknown (no
+    claim-time or any other substitute is fabricated)."""
+    row, attempt = _heartbeat_setup(project, goal)
+
+    # Before any report: unknown, never back-filled from the claim.
+    assert project.store.attempt_progress_latest(attempt.id) is None
+    assert project.store.attempt_progress_all(attempt.id) == []
+
+    first = dispatch.task_heartbeat(
+        project, "T001", attempt.id, "  exploring  ", "   ",
+    )
+    assert first == {
+        "task": "T001",
+        "attempt": attempt.id,
+        "sequence": 1,
+        "phase": "exploring",          # stripped, otherwise untouched text
+        "message": None,               # whitespace-only message == omitted
+        "received_at": first["received_at"],
+    }
+    assert first["received_at"].endswith("+00:00") and "T" in first["received_at"]
+
+    second = dispatch.task_heartbeat(
+        project, "T001", attempt.id, "implementing", "half done",
+    )
+    assert second["sequence"] == 2
+    assert second["phase"] == "implementing"
+    assert second["message"] == "half done"
+    assert second["received_at"] >= first["received_at"]
+
+    # Observation only: task machine and attempt untouched.
+    after = _heartbeat_snapshot(project, row.revision_id, "T001")
+    assert after["status"] == "running"
+    assert after["attempts"][-1][:5] == (
+        attempt.id, attempt.started_at, None, None, attempt.session_ref,
+    )
+    assert after["progress"] == 2
+
+    project.close()  # "crash": a new process reopens from SQLite
+    reopened = dispatch.open_project()
+    try:
+        run = reopened.store.runs_all()[-1]
+        revision = reopened.store.revision_active(run.id)
+        reopened_attempt = reopened.store.attempt_latest_for_task(revision.id, "T001")
+        assert reopened_attempt.id == attempt.id
+        latest = reopened.store.attempt_progress_latest(reopened_attempt.id)
+        assert (latest.sequence, latest.phase, latest.message) == (2, "implementing", "half done")
+        history = reopened.store.attempt_progress_all(reopened_attempt.id)
+        assert [(r.sequence, r.phase, r.message) for r in history] == [
+            (1, "exploring", None),
+            (2, "implementing", "half done"),
+        ]
+        assert reopened.store.task_get(revision.id, "T001").status == "running"
+    finally:
+        reopened.close()
+
+
+def test_heartbeat_received_at_comes_from_the_orx_clock(project, goal, monkeypatch):
+    """received_at is generated by ORX's UTC clock at receive time (the same
+    seam as every other stored timestamp) — the caller has no way to supply
+    a client timestamp through the interface."""
+    row, attempt = _heartbeat_setup(project, goal)
+    fixed = "2026-10-06T02:00:00.123456+00:00"
+    monkeypatch.setattr(dispatch, "db_now", lambda: fixed)
+
+    result = dispatch.task_heartbeat(project, "T001", attempt.id, "checking")
+    assert result["received_at"] == fixed
+    stored = project.store.attempt_progress_latest(attempt.id)
+    assert stored.received_at == fixed
+
+
+def test_heartbeat_input_bounds_are_usage_errors_before_any_lookup(project, goal):
+    """Contract §3: strip first, then count Unicode characters. phase 1-64,
+    message 0-512, whitespace-only message counts as omitted. Bounds
+    violations raise input-validation errors (reason phase_invalid /
+    message_invalid) — and they fire before any identity lookup, so a misuse
+    is distinguishable from an identity/state refusal even when both apply."""
+    row, attempt = _heartbeat_setup(project, goal)
+
+    def rejects(phase, message, reason):
+        with pytest.raises(Exception) as excinfo:
+            dispatch.task_heartbeat(project, "T001", attempt.id, phase, message)
+        assert getattr(excinfo.value, "reason", None) == reason, (
+            f"{phase[:12]!r}/{message and message[:12]!r}: "
+            f"expected {reason}, got {getattr(excinfo.value, 'reason', None)}"
+        )
+
+    rejects("   ", None, "phase_invalid")            # all-whitespace phase
+    rejects("", None, "phase_invalid")               # empty phase
+    rejects("x" * 65, None, "phase_invalid")         # one over the bound
+    rejects("ok", "y" * 513, "message_invalid")      # one over the bound
+    rejects(None, None, "phase_invalid")             # phase is required
+
+    # Misuse precedes identity: a bad phase is reported even when the
+    # attempt id is also bogus (exit-2 class wins over exit-1 class).
+    with pytest.raises(Exception) as excinfo:
+        dispatch.task_heartbeat(project, "T001", 999999, "   ", None)
+    assert getattr(excinfo.value, "reason", None) == "phase_invalid"
+
+    # Boundaries are inclusive: 64-char phase and 512-char message pass.
+    ok_phase = "p" * 64
+    ok_message = "m" * 512
+    result = dispatch.task_heartbeat(
+        project, "T001", attempt.id, ok_phase, ok_message,
+    )
+    assert result["phase"] == ok_phase
+    assert result["message"] == ok_message
+
+    # Unicode text is bounded by characters, not bytes.
+    wide = dispatch.task_heartbeat(project, "T001", attempt.id, "实现" * 32)
+    assert len(wide["phase"]) == 64
+
+    # No progress row was written by any rejected call above (only the two
+    # accepted boundary reports exist).
+    assert _heartbeat_snapshot(project, row.revision_id, "T001")["progress"] == 2
+
+
+def test_heartbeat_ownership_gates_follow_the_contract_table(project, goal):
+    """Every exit-1 row of contract §5, each with its machine reason, and
+    each rejection leaving the database byte-identical: no progress row, no
+    task event, no attempt change, no verification, no usage. The foreign
+    attempts below are test ARRANGEMENT (created/closed directly through
+    the store); each baseline is taken after the arrangement so the
+    comparison proves the rejected heartbeat itself wrote nothing."""
+    from orx.records import ConflictError, NotFoundError
+
+    row, attempt = _heartbeat_setup(project, goal)
+    store = project.store
+    revision_id = row.revision_id
+
+    # An accepted report first, so rejections can prove they add nothing.
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking", "one report")
+
+    def rejected(task_id, attempt_id, reason, exc_type=ConflictError):
+        with pytest.raises(exc_type) as excinfo:
+            dispatch.task_heartbeat(project, task_id, attempt_id, "checking")
+        assert getattr(excinfo.value, "reason", None) == reason
+        assert str(attempt_id) in str(excinfo.value) or task_id in str(excinfo.value)
+        assert _heartbeat_snapshot(project, revision_id, "T001") == baseline
+
+    # task_not_found: the task is not one of the active revision.
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T999", attempt.id, "task_not_found", NotFoundError)
+
+    # task_not_running: T002 never left pending (gate fires before identity,
+    # so even the right-shaped attempt id cannot report for it).
+    rejected("T002", attempt.id, "task_not_running")
+
+    # attempt_not_found.
+    rejected("T001", 999999, "attempt_not_found", NotFoundError)
+
+    # attempt_not_host_worker: a planner attempt and a cli-driver worker.
+    planner = store.attempt_create(
+        revision_id, "planner", "host-planner", "host", "zcode", "m", "high",
+    )
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T001", planner.id, "attempt_not_host_worker")
+    cli_worker = store.attempt_create(
+        revision_id, "worker", "cli-fake", "cli", "shell", "m", "low",
+        task_id="T001",
+    )
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T001", cli_worker.id, "attempt_not_host_worker")
+
+    # attempt_foreign: an attempt of another task in the same revision.
+    foreign = store.attempt_create(
+        revision_id, "worker", "host-worker", "host", "zcode", "m", "medium",
+        task_id="T002",
+    )
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T001", foreign.id, "attempt_foreign")
+
+    # attempt_superseded: a newer attempt owns the window while the claimed
+    # one is still open — the report must not leak into the new window.
+    newer = store.attempt_create(
+        revision_id, "worker", "host-worker", "host", "zcode", "m", "medium",
+        task_id="T001",
+    )
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T001", attempt.id, "attempt_superseded")
+    assert store.attempt_progress_all(newer.id) == []
+
+    # attempt_closed: the newest attempt (still the latest) closed while
+    # the task keeps running.
+    store.attempt_update(newer.id, ended_at=dispatch.db_now(), result="completed")
+    baseline = _heartbeat_snapshot(project, revision_id, "T001")
+    rejected("T001", newer.id, "attempt_closed")
+
+    # The final baseline itself: exactly one report, nothing else moved.
+    assert baseline["progress"] == 1
+    assert baseline["usage"] == 0
+    assert baseline["verifications"] == []
+
+
+def test_heartbeat_after_fail_and_retry_only_the_new_attempt_reports(project, goal):
+    """Contract §10: an explicit fail + retry opens a new attempt window —
+    the old attempt's reports are history and its further reports (and any
+    attempt to reach it) are refused, while the new attempt starts fresh."""
+    row, attempt = _heartbeat_setup(project, goal)
+    dispatch.task_heartbeat(project, "T001", attempt.id, "implementing", "mid work")
+    dispatch.task_fail(project, "T001", "original worker confirmed dead")
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)
+    claim = dispatch.task_claim(project, "T001")
+    fresh = claim["attempt"]
+    assert fresh != attempt.id
+
+    with pytest.raises(Exception) as excinfo:
+        dispatch.task_heartbeat(project, "T001", attempt.id, "delivering")
+    assert getattr(excinfo.value, "reason", None) in (
+        "attempt_closed", "attempt_superseded",
+    )
+
+    # The new window starts at unknown and sequence 1; the old attempt's
+    # report never leaks into it.
+    store = project.store
+    assert store.attempt_progress_latest(fresh) is None
+    first = dispatch.task_heartbeat(project, "T001", fresh, "exploring")
+    assert first["sequence"] == 1
+    assert [(r.sequence, r.phase) for r in store.attempt_progress_all(fresh)] == [
+        (1, "exploring"),
+    ]
+    assert [(r.sequence, r.phase) for r in store.attempt_progress_all(attempt.id)] == [
+        (1, "implementing"),
+    ]
+
+
+def test_heartbeat_racing_completion_never_revives_the_attempt(project, goal, tmp_path):
+    """Both safe orders of the complete/report race: a report first becomes
+    history and the completion closes normally; a completion first closes
+    the attempt and the late report is refused — never a half-write state."""
+    row, attempt = _heartbeat_setup(project, goal)
+
+    # heartbeat first, completion second: both land, report is history.
+    dispatch.task_heartbeat(project, "T001", attempt.id, "delivering", "done, submitting")
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert result["status"] == "passed"
+    assert result["attempt"] == attempt.id
+    history = project.store.attempt_progress_all(attempt.id)
+    assert [(r.sequence, r.phase) for r in history] == [(1, "delivering")]
+
+    # completion first, heartbeat second: closed attempts stay closed.
+    with pytest.raises(Exception) as excinfo:
+        dispatch.task_heartbeat(project, "T001", attempt.id, "delivering", "late")
+    assert getattr(excinfo.value, "reason", None) in (
+        "attempt_closed", "task_not_running",
+    )
+    assert len(project.store.attempt_progress_all(attempt.id)) == 1
+
+
+def test_heartbeat_never_touches_session_identity_or_usage(project, goal, monkeypatch):
+    """heartbeat reads no session from anywhere: the environment's
+    ORX_SESSION_REF is the Controller's, not the worker's, and a report
+    must not overwrite the worker's bound ref (or fill a NULL one). It also
+    consumes no check budget: rounds and usage stay exactly as they were."""
+    monkeypatch.setenv("ORX_SESSION_REF", "sess_controller_env")
+
+    row, attempt = _heartbeat_setup(project, goal)
+    store = project.store
+
+    # A bound worker ref survives reports verbatim.
+    store.attempt_update(attempt.id, session_ref="sess_worker_own")
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking")
+    assert store.attempt_get(attempt.id).session_ref == "sess_worker_own"
+
+    # A NULL ref stays NULL: the env value never leaks in through a report.
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking")
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking", "note")
+    assert store.attempt_get(attempt.id).session_ref == "sess_worker_own"
+
+    # Reports consume no check budget and record no usage.
+    dispatch.task_check(project, "T001")  # one real round for contrast
+    rounds_before = dispatch.task_check(project, "T001")["check_rounds"]["used"]
+    dispatch.task_heartbeat(project, "T001", attempt.id, "checking", "after rounds")
+    rounds_after = dispatch.attempt_check_rounds(
+        store, attempt.id, store.task_get(row.revision_id, "T001"),
+    )
+    assert rounds_after == rounds_before
+    assert store.conn.execute(
+        "SELECT COUNT(*) AS c FROM usage_observations").fetchone()["c"] == 0
 

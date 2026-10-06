@@ -1161,6 +1161,102 @@ def task_check(
         )
 
 
+def _render_heartbeat_rejected(exc: ORXError, json_out: bool) -> None:
+    """Heartbeat rejections carry a machine reason (contract §5): the --json
+    envelope's error is {reason, message}; the human output states the same
+    two facts. reason is None only for failures outside the heartbeat table
+    (e.g. a broken project), which still exit 1."""
+    reason = getattr(exc, "reason", None)
+    if json_out:
+        typer.echo(
+            json.dumps(
+                {"ok": False, "error": {"reason": reason, "message": str(exc)}},
+                indent=2,
+            )
+        )
+    else:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        if reason:
+            typer.echo(f"  reason: {reason}", err=True)
+
+
+@task_app.command("heartbeat")
+@handle_errors
+def task_heartbeat(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    attempt: int = typer.Option(
+        ...,
+        "--attempt",
+        help=(
+            "Attempt id this report belongs to (from `task claim`). The only "
+            "identity entry: ORX never guesses it and never substitutes the "
+            "environment's session."
+        ),
+    ),
+    phase: str = typer.Option(
+        ...,
+        "--phase",
+        help=(
+            "Bounded free text, 1-64 characters after stripping whitespace "
+            "(e.g. exploring, implementing, checking, delivering, blocked)."
+        ),
+    ),
+    message: Optional[str] = typer.Option(
+        None,
+        "--message",
+        help=(
+            "Optional bounded free text, at most 512 characters after "
+            "stripping whitespace; all-whitespace counts as omitted."
+        ),
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Submit a structured progress report for the current running attempt.
+
+    An explicit, side-effect-free observation channel: the report is appended
+    to the named attempt's history with an ORX-generated received_at (UTC)
+    and never changes task status, verification results, session identity,
+    or token usage. The attempt must be the latest, unclosed host-worker
+    attempt of a running task in the active revision; every ownership check
+    is re-done in the same transaction as the append, so a completed attempt
+    is never revived by a late report. ORX_SESSION_REF is not read here —
+    heartbeat never writes a session_ref.
+
+    Exit codes: 0 report recorded; 1 identity/state rejection (reasons:
+    task_not_found, task_not_running, attempt_not_found,
+    attempt_not_host_worker, attempt_foreign, attempt_closed,
+    attempt_superseded); 2 input validation (phase_invalid,
+    message_invalid) or a click usage error. Every rejection writes nothing.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_heartbeat(
+            project, task_id, attempt, phase, message=message,
+        )
+    except ORXError as exc:
+        _render_heartbeat_rejected(exc, json_out)
+        code = (
+            2 if getattr(exc, "reason", None) in dispatch.HEARTBEAT_INPUT_REASONS
+            else 1
+        )
+        raise typer.Exit(code) from None
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(
+            f"progress report recorded: task {result['task']}"
+            f" attempt {result['attempt']} #{result['sequence']}"
+        )
+        typer.echo(f"  phase: {result['phase']}")
+        message_text = (
+            result["message"] if result["message"] is not None else "(none)"
+        )
+        typer.echo(f"  message: {message_text}")
+        typer.echo(f"  received_at: {result['received_at']}")
+        typer.echo("  observation only: status, verification, and attempt untouched")
+
+
 def _render_delivery_rejected(exc: DeliveryRejected, json_out: bool) -> None:
     """A refused delivery: full structured detail on both surfaces.
 

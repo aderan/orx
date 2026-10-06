@@ -3067,6 +3067,166 @@ def task_check(project: Project, task_id: str) -> dict:
     return report
 
 
+# ---------------------------------------------------------------------------
+# Host worker progress reports (G006, docs/host-progress-contract.md §2-§5).
+#
+# heartbeat is an explicit, side-effect-free observation channel: the caller
+# names its attempt (--attempt is the only identity entry; ORX never guesses
+# and never reads ORX_SESSION_REF here — that variable is the Controller's
+# session, not the worker's), ORX stamps received_at from its own UTC clock,
+# and the row is appended to the attempt's history. A report never changes
+# task status, verification rows, attempt fields (session_ref included),
+# check rounds, or usage. Rejections carry a machine reason; input
+# validation (phase/message bounds, exit 2 at the CLI) is checked before any
+# state is read, so a misuse is told apart from an identity/state refusal
+# (exit 1) even when both would apply.
+
+#: Input-validation rejection reasons (contract §3): usage-class errors,
+#: exit 2 at the CLI. Everything else below is an identity/state refusal.
+HEARTBEAT_INPUT_REASONS = ("phase_invalid", "message_invalid")
+
+
+def _heartbeat_input_error(reason: str, message: str) -> ORXError:
+    """A bounds violation (contract §3). Existing exception family; the
+    machine reason rides on the instance, no new exception type."""
+    exc = ORXError(message)
+    exc.reason = reason
+    return exc
+
+
+def _heartbeat_state_error(exc_class, reason: str, message: str):
+    """An identity/ownership refusal (contract §4-§5). Same deal: an existing
+    exception type carrying the frozen `reason` for the --json envelope."""
+    exc = exc_class(message)
+    exc.reason = reason
+    return exc
+
+
+def _heartbeat_clean_inputs(phase: str, message: str | None) -> tuple[str, str | None]:
+    """Contract §3: phase and message are opaque text — ORX bounds them, it
+    does not interpret them. Strip first, then measure Unicode characters:
+    phase 1-64 (all-whitespace is invalid), message 0-512 with
+    all-whitespace counting as omitted (stored NULL)."""
+    phase_clean = (phase or "").strip()
+    if not phase_clean or len(phase_clean) > 64:
+        raise _heartbeat_input_error(
+            "phase_invalid",
+            "--phase must be 1-64 characters after stripping whitespace"
+            f" (got {len(phase_clean)}); phase is free text, ORX only bounds it",
+        )
+    message_clean = None
+    if message is not None:
+        stripped = message.strip()
+        if stripped:
+            if len(stripped) > 512:
+                raise _heartbeat_input_error(
+                    "message_invalid",
+                    "--message must be at most 512 characters after stripping"
+                    f" whitespace (got {len(stripped)}); message is free text,"
+                    " ORX only bounds it",
+                )
+            message_clean = stripped
+    return phase_clean, message_clean
+
+
+def task_heartbeat(project: Project, task_id: str, attempt_id: int,
+                   phase: str, message: str | None = None) -> dict:
+    """Append one host worker progress report (contract §2, §4-§5).
+
+    Input bounds are validated first (usage-class error, nothing read). The
+    ownership gates and the append then run inside ONE transaction
+    (BEGIN IMMEDIATE): the task must be running in the active revision, and
+    the attempt must exist, be a host-worker attempt of exactly this
+    revision/task, be the task's latest attempt, and be unclosed — all
+    re-checked at write time, so a concurrent `task complete` either commits
+    first (heartbeat then sees the closed attempt and rejects, never
+    reviving it) or lands after the report (the report becomes history and
+    the completion closes normally). Any refusal rolls back having written
+    nothing: no progress row, no task event, no attempt change, no
+    verification or usage row. received_at comes from ORX's UTC clock (the
+    same seam as every other stored timestamp); the caller cannot supply it.
+    """
+    phase_clean, message_clean = _heartbeat_clean_inputs(phase, message)
+    store = project.store
+    received_at = db_now()
+    with store.tx():
+        try:
+            goal, run = _active_context(project)
+        except NotFoundError:
+            raise _heartbeat_state_error(
+                NotFoundError, "task_not_found",
+                f"task {task_id}: no active Goal/Run; heartbeat reports the"
+                " active revision's tasks only",
+            ) from None
+        revision = _active_revision(project, run)
+        if revision is None:
+            raise _heartbeat_state_error(
+                NotFoundError, "task_not_found",
+                f"task {task_id}: no active plan revision; heartbeat reports"
+                " the active revision's tasks only",
+            )
+        try:
+            task = store.task_get(revision.id, task_id)
+        except NotFoundError:
+            raise _heartbeat_state_error(
+                NotFoundError, "task_not_found",
+                f"task {task_id} is not a task of the active revision;"
+                " heartbeat cannot report it",
+            ) from None
+        if TaskStatus(task.status) is not TaskStatus.RUNNING:
+            raise _heartbeat_state_error(
+                ConflictError, "task_not_running",
+                f"task {task_id} is {task.status}; only a running task"
+                " accepts progress reports",
+            )
+        try:
+            attempt = store.attempt_get(attempt_id)
+        except NotFoundError:
+            raise _heartbeat_state_error(
+                NotFoundError, "attempt_not_found",
+                f"attempt {attempt_id} not found (task {task_id})",
+            ) from None
+        if attempt.role != Role.WORKER.value or attempt.driver != "host":
+            raise _heartbeat_state_error(
+                ConflictError, "attempt_not_host_worker",
+                f"attempt {attempt_id} is role {attempt.role}, driver"
+                f" {attempt.driver}; heartbeat is for host worker attempts"
+                " only",
+            )
+        if attempt.revision_id != revision.id or attempt.task_id != task.task_id:
+            raise _heartbeat_state_error(
+                ConflictError, "attempt_foreign",
+                f"attempt {attempt_id} belongs to a different revision/task"
+                f" than the active revision's {task.task_id}; same-numbered"
+                " tasks across revisions never share reports",
+            )
+        if attempt.ended_at is not None:
+            raise _heartbeat_state_error(
+                ConflictError, "attempt_closed",
+                f"attempt {attempt_id} is closed (result {attempt.result!r});"
+                " a closed attempt is never revived by a report",
+            )
+        latest = store.attempt_latest_for_task(revision.id, task.task_id)
+        if latest is None or latest.id != attempt_id:
+            raise _heartbeat_state_error(
+                ConflictError, "attempt_superseded",
+                f"attempt {attempt_id} is not the latest attempt for task"
+                f" {task_id}; a newer attempt owns the current window",
+            )
+        store.attempt_progress_add(
+            attempt_id, phase_clean, message_clean, received_at
+        )
+        row = store.attempt_progress_all(attempt_id)[-1]
+    return {
+        "task": task.task_id,
+        "attempt": attempt_id,
+        "sequence": row.sequence,
+        "phase": row.phase,
+        "message": row.message,
+        "received_at": row.received_at,
+    }
+
+
 def _verification_counts(store: Store, revision: Revision) -> dict:
     """Current-view verification counts: each task contributes only the rows
     in its current attempt window (`verifications_current`), so per-attempt

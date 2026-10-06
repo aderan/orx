@@ -598,6 +598,174 @@ def test_task_complete_usage_error_exits_2(cli_project):
     assert result.exit_code == 2
 
 
+# -- task heartbeat: explicit progress reports (G006) -----------------------
+
+
+def _claimed_attempt_id(task_id="T001"):
+    """Read the task's current worker attempt id from state."""
+    project = dispatch.open_project()
+    try:
+        run = project.store.run_for_goal("G001")
+        revision = project.store.revision_active(run.id)
+        return project.store.attempt_latest_for_task(revision.id, task_id).id
+    finally:
+        project.close()
+
+
+def test_task_heartbeat_usage_errors_exit_2(cli_project):
+    _check_project(cli_project, ["true"])
+    # --attempt is mandatory: identity is never guessed or defaulted.
+    missing_attempt = invoke("task", "heartbeat", "T001", "--phase", "checking")
+    assert missing_attempt.exit_code == 2
+    missing_phase = invoke("task", "heartbeat", "T001", "--attempt", "1")
+    assert missing_phase.exit_code == 2
+    bad_attempt = invoke("task", "heartbeat", "T001", "--attempt", "not-an-int",
+                         "--phase", "checking")
+    assert bad_attempt.exit_code == 2
+
+
+def test_task_heartbeat_input_validation_envelope_exits_2(cli_project):
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+
+    blank = invoke("task", "heartbeat", "--json", "T001",
+                   "--attempt", str(attempt), "--phase", "   ")
+    assert blank.exit_code == 2
+    body = payload(blank)
+    assert body["ok"] is False
+    assert body["error"]["reason"] == "phase_invalid"
+    assert "1-64" in body["error"]["message"]
+
+    overlong = invoke("task", "heartbeat", "--json", "T001",
+                      "--attempt", str(attempt), "--phase", "checking",
+                      "--message", "y" * 513)
+    assert overlong.exit_code == 2
+    body = payload(overlong)
+    assert body["error"]["reason"] == "message_invalid"
+
+    # Usage-class failures are distinguishable from identity rejections
+    # even in one call: the bounds error wins over a bogus attempt id.
+    both = invoke("task", "heartbeat", "--json", "T999",
+                  "--attempt", "999999", "--phase", "")
+    assert both.exit_code == 2
+    assert payload(both)["error"]["reason"] == "phase_invalid"
+
+    # Nothing was recorded by any rejected call.
+    assert invoke("task", "list", "--json").stdout and (
+        payload(invoke("task", "list", "--json"))["tasks"][0]["status"] == "running"
+    )
+
+
+def test_task_heartbeat_success_envelope_and_human_output(cli_project):
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+
+    first = invoke("task", "heartbeat", "--json", "T001",
+                   "--attempt", str(attempt), "--phase", "  checking  ")
+    assert first.exit_code == 0, first.stdout
+    body = payload(first)
+    assert body["ok"] is True
+    assert body["task"] == "T001"
+    assert body["attempt"] == attempt
+    assert body["sequence"] == 1
+    assert body["phase"] == "checking"        # stripped, otherwise opaque
+    assert body["message"] is None            # key present, value null
+    assert body["received_at"].endswith("+00:00")
+
+    second = invoke("task", "heartbeat", "--json", "T001",
+                    "--attempt", str(attempt), "--phase", "implementing",
+                    "--message", "round 2/3 red, fixing")
+    assert second.exit_code == 0
+    body = payload(second)
+    assert body["sequence"] == 2
+    assert body["message"] == "round 2/3 red, fixing"
+    assert body["received_at"] >= payload(first)["received_at"]
+
+    # Human output states the same facts.
+    human = invoke("task", "heartbeat", "T001",
+                   "--attempt", str(attempt), "--phase", "delivering")
+    assert human.exit_code == 0
+    assert "progress report recorded" in human.stdout
+    assert f"attempt {attempt} #3" in human.stdout
+    assert "phase: delivering" in human.stdout
+    assert "message: (none)" in human.stdout
+    assert "received_at:" in human.stdout
+
+    # Observation only: the task and its status are untouched.
+    assert _task_status("T001") == "running"
+
+
+def test_task_heartbeat_identity_rejections_exit_1(cli_project):
+    _check_project(cli_project, ["true"])
+    attempt = _claimed_attempt_id()
+
+    missing = invoke("task", "heartbeat", "--json", "T001",
+                     "--attempt", "999999", "--phase", "checking")
+    assert missing.exit_code == 1
+    body = payload(missing)
+    assert body["ok"] is False
+    assert body["error"]["reason"] == "attempt_not_found"
+    assert "999999" in body["error"]["message"]
+
+    human = invoke("task", "heartbeat", "T001",
+                   "--attempt", "999999", "--phase", "checking")
+    assert human.exit_code == 1
+    assert "reason: attempt_not_found" in human.output
+
+    # A completed task no longer accepts reports for its closed attempt.
+    _structured_evidence(cli_project)
+    done = invoke("task", "complete", "--json", "T001", "--evidence", "ev.json",
+                  "--attempt", str(attempt))
+    assert done.exit_code == 0
+    late = invoke("task", "heartbeat", "--json", "T001",
+                  "--attempt", str(attempt), "--phase", "delivering")
+    assert late.exit_code == 1
+    body = payload(late)
+    assert body["error"]["reason"] in ("attempt_closed", "task_not_running")
+
+
+def test_task_heartbeat_never_binds_the_controller_session(cli_project, monkeypatch):
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    # One plan, two independent host tasks: T001 claimed with no session
+    # anywhere, T002 claimed with the worker's own explicit session.
+    invoke("goal", "new", "--json", "--objective", "ship it",
+           "--acceptance", "marker exists")
+    invoke("plan", "--json")
+    plan = ir_for(type("G", (), {"id": "G001"})(), [
+        task_spec("T001", acceptance=["marker exists"], verification=["true"]),
+        task_spec("T002", acceptance=["marker exists"], verification=["true"]),
+    ])
+    (cli_project / "plan.json").write_text(json.dumps(plan))
+    invoke("plan", "submit", "--json", "--file", str(cli_project / "plan.json"))
+    invoke("run", "--json")
+    invoke("task", "claim", "--json", "T001")
+    invoke("task", "claim", "--json", "T002", "--session", "sess_worker_cli")
+    attempt_null = _claimed_attempt_id("T001")
+    attempt_bound = _claimed_attempt_id("T002")
+
+    # The Controller's env session exists while the worker reports: a
+    # report must neither fill the worker's NULL ref with it nor overwrite
+    # the worker's bound ref.
+    monkeypatch.setenv("ORX_SESSION_REF", "sess_controller_env")
+    for task_id, attempt_id in (("T001", attempt_null), ("T002", attempt_bound)):
+        ok = invoke("task", "heartbeat", "--json", task_id,
+                    "--attempt", str(attempt_id), "--phase", "checking")
+        assert ok.exit_code == 0, ok.stdout
+
+    project = dispatch.open_project()
+    try:
+        stored_null = project.store.attempt_get(attempt_null)
+        assert stored_null.session_ref is None  # env did not leak in
+        stored_bound = project.store.attempt_get(attempt_bound)
+        assert stored_bound.session_ref == "sess_worker_cli"  # env did not win
+        for stored in (stored_null, stored_bound):
+            assert stored.ended_at is None and stored.result is None
+        assert project.store.attempt_progress_all(attempt_null)[-1].phase == "checking"
+        assert project.store.attempt_progress_all(attempt_bound)[-1].phase == "checking"
+    finally:
+        project.close()
+
+
 def test_verify_submit_envelope(cli_project):
     invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "a1")
     invoke("plan", "--json")
