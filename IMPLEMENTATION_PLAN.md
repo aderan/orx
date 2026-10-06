@@ -202,54 +202,44 @@ Goal：新计划修订生效前，产出新旧任务对应关系与工作分类�
 目标及计划：[docs/host-progress-plan.md](docs/host-progress-plan.md)。
 权威任务图：[docs/host-progress-plan.json](docs/host-progress-plan.json)。
 Run：R006；五项任务串行，参考工作量 3–5 小时，按验收完成。
-本节为待执行计划，不把旧通过记录或计划文件存在当成已实现。
+实施已完成，本节为归档记录（证据为准，见下）；实测报告：
+[docs/host-progress-report.md](docs/host-progress-report.md)。
 
-## Stage 1: 基线修复与契约冻结（T001）
-**Goal**: 修复会话身份测试导入，冻结显式进展报告接口、时间/阈值、身份及安全恢复边界。
-**Success Criteria**: 标准测试入口全绿；契约足以独立编写行为测试；unknown、超时提示和生存状态不混淆。
-**Tests**: `uv run pytest -q`；核对仓库既有 conftest 导入惯例。
-**Status**: Done
-- [x] `tests/test_session_identity.py` 导入改回仓库惯例 `from conftest import ...`
-      （仓库其余测试均如此；这是标准入口收集失败的唯一根因，仅改此一行）。
-- [x] `docs/host-progress-contract.md` 契约冻结：heartbeat 命令（`orx task heartbeat
-      <task> --attempt <int> --phase <text> [--message <text>] [--json]`，无 --session、
-      无客户端时间戳）；phase strip 后 1–64 / message 0–512 字符（exit 2 输入校验）；
-      所有权门禁七条（active revision、running、worker+host、revision/task 匹配、
-      最新、未关闭、不写 session_ref）单事务重核；成功响应与十行拒绝表（退出码 0/1/2
-      与 reason 代号）；`received_at`（ORX UTC 时钟）与原 worker 生存状态（永远
-      unknown）、任务验收三分纪律；追加表 `attempt_progress`（v10 additive
-      backup-replace-restore，attempt 外键 + attempt 内 sequence，旧库不回填）与
-      Store 三接口命名；当前窗口观察字段（unknown/reported/overdue、age_sec、hint、
-      note）与 timeline `attempt.report` 历史事件；配置键 `worker.progress_timeout_min`
-      （默认 60 分钟、正整数、阈值闭边界 age >= timeout 即 overdue、时钟异常不触发
-      overdue）；无副作用与恢复边界（不自动 fail/retry/重开、合法迟到交付照常受理）；
-      禁止宣称清单与 T002–T005 实现步骤/可测断言映射。
-- 证据：`uv run pytest -q` **627 passed in 49.68s**（R006/T001；日志
-  `.orx/runs/R006/check/T001/pytest-full-attempt1.log`）；`orx task heartbeat`
-  当前不存在（契约先行，未提前实现）。
+## 归档状态（T005 交付时记录）
 
-## Stage 2: 追加存储与只读观测（T002）
-**Goal**: 按 attempt 追加保留进展及最新/历史查询，同步迁移与只读观测契约。
-**Success Criteria**: 重开数据库后数据完整；迁移失败原库可用；WAL 数据保留；旧库不回填假报告。
-**Tests**: `uv run pytest tests/test_state.py tests/test_observability_contract.py tests/test_m12_acceptance.py tests/test_subagent_contract.py -q`。
-**Status**: Not Started
+五阶段全部交付，实测报告见 [docs/host-progress-report.md](docs/host-progress-report.md)
+（只记录实际运行的命令与结果）。权威契约 `docs/host-progress-contract.md`（T001 冻结）；
+端到端替身回归 `tests/test_host_progress_e2e.py`（冻结时钟，无付费模型、无真实 sleep）。
+T005 的独立 agent 审查与 Goal 验收以 ORX verification 记录为准，此处不预支结论。
 
-## Stage 3: 显式报告命令与身份门禁（T003）
-**Goal**: 接入 heartbeat 命令，仅允许当前运行中的最新 host-worker attempt 提交报告。
-**Success Criteria**: 过期、已关闭、错误任务/修订/角色被拒绝且无副作用；不改 session_ref、状态、验收或用量。
-**Tests**: `uv run pytest tests/test_cli.py tests/test_lifecycle.py tests/test_session_identity.py -q`。
-**Status**: Not Started
+### 五阶段实施记录（归档）
 
-## Stage 4: 进展呈现与安全恢复提示（T004）
-**Goal**: status/list/recovery 展示当前报告、年龄和可配置的超时提示；timeline 保留历史。
-**Success Criteria**: 固定时钟覆盖阈值边界；当前窗口不混入旧报告；核查提示不自动重启原任务。
-**Tests**: `uv run pytest tests/test_config.py tests/test_cli.py tests/test_phase_c.py tests/test_timeline.py tests/test_assignments.py -q`。
-**Status**: Not Started
+- [x] Stage 1（T001，3a03e15）：`tests/test_session_identity.py` 导入恢复仓库惯例；
+      契约冻结（命令/门禁/响应/存储/观察/阈值/无副作用/恢复边界/禁止宣称）。
+      证据：全量 627 绿（`evidence-T001.json`）。
+- [x] Stage 2（T002，4bd0c4b）：schema v10 additive `attempt_progress` +
+      Store 三接口（add/latest/all）+ 只读观测契约 v10 同步；重开一致、迁移失败
+      原库可用、WAL 保留、旧库不回填、按 attempt 隔离。证据：指定检查 exit 0
+      （`evidence-T002.json`；提交记录 64 项指定测试绿）。
+- [x] Stage 3（T003，979b837）：`orx task heartbeat` CLI + `dispatch.task_heartbeat`
+      写入接口；输入校验 exit 2、七条所有权门禁单事务重核、全部拒绝无副作用。
+      证据：指定检查 exit 0（`evidence-T003.json`；提交记录 107 项指定测试绿、
+      全量 646+1）。
+- [x] Stage 4（T004，18fef91）：`worker.progress_timeout_min` 分层配置（默认 60）+
+      `progress_observation`（当前窗口/闭边界/时钟异常不误报）接入 status/task
+      list/recovery 与 timeline `attempt.report` 历史。证据：指定检查 exit 0
+      （`evidence-T004.json`；提交记录 164 项指定测试绿、全量 662）。
+- [x] Stage 5（T005，本次）：端到端替身复演 §10 两场景（超时提示→恢复重浮现→
+      原 attempt 合法迟到交付受理；确认死亡 fail/retry→新窗口→旧 attempt 迟到
+      报告 `attempt_closed` 与迟到交付 `stale` 双拒）+ 文档钉 4 测试；
+      README/skills 补显式报告时机、有界等待与先查原会话规则（不越 §11 红线）；
+      技能安装同步仅经 `orx skill update` 现有入口。证据：全量 668 绿（662+6）、
+      `uv build` exit 0（`.orx/runs/R006/check/T005/`）；实测报告
+      `docs/host-progress-report.md`。
 
-## Stage 5: 端到端回归与独立验收（T005）
-**Goal**: 替身复演恢复、迟到结果与显式重试；同步 README、执行技能和观测说明。
-**Success Criteria**: 全量测试和构建通过；独立审查确认无第二写入者；文档不宣传自动心跳或存活保证。
-**Tests**: `uv run pytest -q`；`uv build`；计划指定的独立 agent 审查。
-**Status**: Not Started
+## G006 轮次记录
+- 2026-10-06 R6 T001→T005 串行五任务全部交付；详细实测与命令日志见
+  `docs/host-progress-report.md` 与 `.orx/runs/R006/check/T00*/`。
+- 未宣称（契约 §11）：定时自动心跳、自动恢复、存活证明、租约、真实时长或
+  token 节省数字一律不写；超时提示只建议核查原会话，死亡确认是人的决定。
 
-完成后删除本节临时阶段清单，将实施证据归入阶段报告；保留上方既有历史文档。

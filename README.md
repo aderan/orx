@@ -41,6 +41,7 @@ Every command takes `--json` for a machine envelope:
 ## Profiles (`.orx/profiles.toml`)
 
 - `driver = "host"` — you (or your host agent) do it: `task claim` →
+  optional `task heartbeat` progress reports while running →
   `task complete` / `task fail`.
 - `driver = "cli", harness = "shell"` — any executable; prompt via
   `prompt_transport` (stdin | `{prompt}` argument slot | `{prompt_file}` slot).
@@ -232,6 +233,45 @@ Boundaries:
   tasks in different revisions had been misjudged as the same work); ORX
   claims no verified token savings from replanning.
 
+## Host worker progress reports
+
+Host workers report progress **explicitly**; ORX stores each report and
+surfaces the latest one of the *current* attempt:
+
+```sh
+orx task heartbeat T001 --attempt 42 --phase checking --message "round 2/3 red, fixing"
+```
+
+- `--attempt` (the id `task claim` returned) is the only identity entry.
+  Each report is one append-only row bound to that attempt, with a
+  per-attempt sequence and an ORX-clock `received_at`; history is never
+  overwritten and never backfilled — an attempt without reports reads
+  `unknown`, not a guess.
+- `orx status`, `orx task list`, `orx timeline`, and the `orx run` recovery
+  face show the current attempt's latest report: `state` is `unknown`
+  (no report yet), `reported` (age below the threshold), or `overdue`
+  (age at or past the threshold — the boundary is closed).
+- `overdue` prints a CHECK HINT: check the original worker session (its
+  `session_ref` handle) before any fail/retry. The hint acts on nothing:
+  no fail, no retry, no second worker — and the attempt's legal late
+  delivery (`orx task complete --attempt <id>`) stays acceptable however
+  stale the report is.
+- Threshold: `worker.progress_timeout_min` (the `[worker]` table) —
+  positive integer minutes, default 60 (`ORX_WORKER_PROGRESS_TIMEOUT_MIN`
+  overrides; env > project > user layer > builtin).
+- A report is an observation, not a liveness proof: receiving one proves
+  only that a caller holding that attempt id submitted that text at that
+  time. Workers make the call themselves at key phases — ORX runs no timer
+  and sends no automatic heartbeat; there is no lease and no keepalive.
+- After an explicit `orx task fail` + `orx task retry`, the fresh attempt
+  starts a new window at `unknown`; the old attempt's further reports are
+  rejected (`attempt_closed` / `attempt_superseded`) and its recorded
+  reports remain only as timeline history.
+
+The frozen contract — gates, response fields, error reasons, storage, and
+recovery boundaries — is
+[docs/host-progress-contract.md](docs/host-progress-contract.md).
+
 ## Skills / update
 
 ```sh
@@ -262,6 +302,9 @@ on top of the controller protocol: `orx skill install orx-pbv`.
 - [Replan contract](docs/replan-contract.md) — the declared old<->new
   correspondence, work classifications, artifact provenance, and the
   structural-check vs semantic-review boundary
+- [Host progress contract](docs/host-progress-contract.md) — explicit host
+  worker progress reports, the current window, overdue check hints, and the
+  safe-recovery boundaries
 
 ## M1 layered configuration
 

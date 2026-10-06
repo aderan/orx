@@ -102,6 +102,23 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
      its status and your attempt stays open — fix and complete again on
      the same attempt). A green gate is necessary, never sufficient: it
      never replaces the independent verifier or the agent checks.
+- While the task runs under your claimed attempt, report progress
+  explicitly at key phases — after the start gate, at phase transitions
+  (e.g. exploring, implementing, checking, delivering), when blocked, and
+  right before the final complete:
+
+  `orx task heartbeat <task-id> --attempt <id from claim> --phase <text>`
+  (`--phase` 1–64 characters, optional `--message` up to 512; both are
+  free text).
+
+  The report is one bounded, append-only line for your attempt: it never
+  changes task state, verification results, session identity, or usage,
+  and it is never evidence for acceptance. Reports are explicit calls you
+  make — ORX runs no timer, sends no automatic heartbeat, and a report is
+  not proof your process is alive. A refusal (stale or closed attempt,
+  task not running) exits 1/2 having written nothing; if your attempt was
+  superseded, stop and follow the assignment's delivery contract instead
+  of fighting the refusal.
 - When you finish or stop, write the structured delivery result and submit
   it with `orx task complete <task-id> --evidence <file>`:
 

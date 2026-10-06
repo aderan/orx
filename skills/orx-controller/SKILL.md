@@ -256,12 +256,33 @@ never reconstruct them from memory. Planning assignments live under
 
 `orx run` also lists `recovery` entries: tasks still RUNNING under a host
 attempt that survived a session break. That attempt still owns the task.
+Each entry also carries the attempt's `progress` window: the latest
+explicit report (`orx task heartbeat <id> --attempt <attempt> --phase
+<text>`, submitted by the worker itself) with its `received_at`, `age_sec`,
+the configured `timeout_sec`, and — once the age crosses the threshold —
+a `hint`.
 
-1. First check the ORIGINAL subagent (its handle is the entry's
-   `session_ref`) for a late result; submit it with
-   `orx task complete <id> --attempt <id> --evidence <file>`.
-2. Only if the original is confirmed dead: `orx task fail <id> --reason "<why>"`
-   then `orx task retry <id>` — the next `orx run` routes a fresh attempt.
+The window is an observation, not a verdict: a report is not a liveness
+proof, and silence is not a death verdict. Reports are explicit worker
+calls — ORX runs no timer, sends no automatic heartbeat, and the hint acts
+on nothing by itself. The threshold (`worker.progress_timeout_min`,
+default 60 minutes) is the reference scale for a bounded wait, nothing
+more.
+
+1. Wait a bounded time (the configured threshold is the scale), re-read
+   `orx status --json` / `orx run`, then CHECK the ORIGINAL subagent — its
+   handle is the entry's `session_ref`, and the hint says exactly that:
+   check the original worker session before any fail/retry — for a late
+   result; submit it with
+   `orx task complete <id> --attempt <id> --evidence <file>`. A stale or
+   missing report never invalidates the late delivery: it is still
+   accepted.
+2. Only if the original is confirmed dead — a decision you make and own;
+   ORX never decides it: `orx task fail <id> --reason "<why>"` then
+   `orx task retry <id>` — the next `orx run` routes a fresh attempt.
+   The new attempt's window starts `unknown`; the old attempt's further
+   reports are rejected (`attempt_closed` / `attempt_superseded`) and its
+   late deliveries are rejected as stale.
 3. Never start a second subagent for the same task while its attempt is
    open: shared working directory, concurrent writers corrupt the work.
    ORX enforces this (late completions of the old attempt are rejected as
