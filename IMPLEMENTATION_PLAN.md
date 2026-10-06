@@ -208,7 +208,25 @@ Run：R006；五项任务串行，参考工作量 3–5 小时，按验收完成
 **Goal**: 修复会话身份测试导入，冻结显式进展报告接口、时间/阈值、身份及安全恢复边界。
 **Success Criteria**: 标准测试入口全绿；契约足以独立编写行为测试；unknown、超时提示和生存状态不混淆。
 **Tests**: `uv run pytest -q`；核对仓库既有 conftest 导入惯例。
-**Status**: Not Started
+**Status**: Done
+- [x] `tests/test_session_identity.py` 导入改回仓库惯例 `from conftest import ...`
+      （仓库其余测试均如此；这是标准入口收集失败的唯一根因，仅改此一行）。
+- [x] `docs/host-progress-contract.md` 契约冻结：heartbeat 命令（`orx task heartbeat
+      <task> --attempt <int> --phase <text> [--message <text>] [--json]`，无 --session、
+      无客户端时间戳）；phase strip 后 1–64 / message 0–512 字符（exit 2 输入校验）；
+      所有权门禁七条（active revision、running、worker+host、revision/task 匹配、
+      最新、未关闭、不写 session_ref）单事务重核；成功响应与十行拒绝表（退出码 0/1/2
+      与 reason 代号）；`received_at`（ORX UTC 时钟）与原 worker 生存状态（永远
+      unknown）、任务验收三分纪律；追加表 `attempt_progress`（v10 additive
+      backup-replace-restore，attempt 外键 + attempt 内 sequence，旧库不回填）与
+      Store 三接口命名；当前窗口观察字段（unknown/reported/overdue、age_sec、hint、
+      note）与 timeline `attempt.report` 历史事件；配置键 `worker.progress_timeout_min`
+      （默认 60 分钟、正整数、阈值闭边界 age >= timeout 即 overdue、时钟异常不触发
+      overdue）；无副作用与恢复边界（不自动 fail/retry/重开、合法迟到交付照常受理）；
+      禁止宣称清单与 T002–T005 实现步骤/可测断言映射。
+- 证据：`uv run pytest -q` **627 passed in 49.68s**（R006/T001；日志
+  `.orx/runs/R006/check/T001/pytest-full-attempt1.log`）；`orx task heartbeat`
+  当前不存在（契约先行，未提前实现）。
 
 ## Stage 2: 追加存储与只读观测（T002）
 **Goal**: 按 attempt 追加保留进展及最新/历史查询，同步迁移与只读观测契约。

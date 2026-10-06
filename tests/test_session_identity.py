@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 
 from orx import dispatch
 from orx.cli import app
-from tests.conftest import (
+from conftest import (
     active_task,
     ir_for,
     task_spec,
