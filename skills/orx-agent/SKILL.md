@@ -12,6 +12,10 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 - One assignment, one role (Planner, Worker, or Verifier). The assignment
   names the role; the profile, model, and execution vehicle were chosen
   upstream by routing — run what you were given.
+- Your assignment prompt's first lines carry
+  `ORX_ASSIGNMENT=orx-assignment:…` — the identity anchor ORX uses to bind
+  your session to this attempt. Keep it exactly as given; never remove,
+  rewrite, or leave it out of anything that reproduces the prompt.
 - Never widen scope, modify the Goal, retry or replan yourself, verify your
   own build work, or launch peer agents. The Controller decides the run's
   next step from your report; you never decide it for the run.

@@ -88,8 +88,10 @@ Plan IR 并经 `orx plan submit` 提交、在轮报告注明"Controller 改写"�
    变化走 `orx replan`）。轮计划路径 = 该 task preread 首项，Build 前
    必须落盘。
 4. **Build**：按 orx-controller 的任务契约执行：`orx run` 停泊 host 任务
-   → `orx task claim T00X`（记下返回的 attempt id）→ 子代理原样执行
-   prompt → `orx task complete T00X --evidence evidence.json --attempt <id>`
+   → `orx task claim T00X --discover-session`（记下返回的 attempt id）
+   → 子代理**原样**执行 prompt（首部 `ORX_ASSIGNMENT=orx-assignment:…`
+   身份锚不可删改——会话绑定靠它）→ `orx task complete T00X --evidence
+   evidence.json --attempt <id>`
    （evidence 格式与 stale 拒绝规则见 orx-controller）；失败则
    `orx task fail T00X --reason "<具体原因>"`（原因进入下一次 prompt）。
    prompt 由内核组装（Goal 目标+Goal 约束+task 目标+scope.allowed+验收+
@@ -98,7 +100,8 @@ Plan IR 并经 `orx plan submit` 提交、在轮报告注明"Controller 改写"�
 5. **Validate**：按 orx-controller 的验证契约执行：`orx verify` 运行命令
    门禁并派发 agent 审查；host 驱动时把 verifier prompt 原样交给子代理
    运行，裁决经 `orx verify submit T00X --result pass|fail --entry '<exact
-   entry>' --attempt <派发返回的 id>` 交回；fail 时必须带
+   entry>' --attempt <派发返回的 id> --discover-session` 交回（verifier
+   的会话绑定同样靠 prompt 首部的身份锚）；fail 时必须带
    `--reason "<问题清单>"`——问题经内核进入 failure 状态并自动出现在下一
    次 worker/verifier prompt。
 6. **Gate**：双门禁全过（每条命令门禁 exit 0 且每条 agent 审查 pass）→

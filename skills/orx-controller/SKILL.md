@@ -157,7 +157,11 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    requested `model`/`effort` (profile facts — report what actually ran via
    `--actual-model`, never assume), `workdir`, and the stable `attempt` id.
 3. Pass the assignment `prompt` and `schema` through to the subagent
-   **unchanged**. Do not paraphrase the prompt or trim the schema.
+   **unchanged**. Do not paraphrase the prompt or trim the schema. The
+   prompt's first lines are the `ORX_ASSIGNMENT=orx-assignment:…` identity
+   anchor ORX binds the subagent's session with — dropping or rewriting
+   them breaks session identity (R006: rewritten prompts left every host
+   attempt's `session_ref` NULL).
 4. For a planning assignment: run the prompt in a subagent, have it produce
    Plan IR JSON, save it to a file, then precheck before activation:
    `orx plan check --file plan.json` (read-only diff report — the declared
@@ -178,8 +182,9 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    Claiming after working invites a conflict exit. Pass the claim command
    from the assignment payload through to the subagent verbatim — it is
    `orx task claim <id> --discover-session`, which binds the subagent's real
-   zcode session id (deterministic first-prompt lookup; a worker cannot
-   learn its own id any other way). Quote the attempt you answered:
+   zcode session id by matching the `ORX_ASSIGNMENT` nonce at the top of
+   the prompt it received (a worker cannot learn its own id any other way).
+   Quote the attempt you answered:
    `orx task complete <id> --evidence evidence.json --attempt <id from
    claim>`. A submission for an attempt that is closed or no longer the
    latest is rejected as stale — that is correct; do not fight it. A late or
@@ -234,12 +239,15 @@ structured delivery statuses and the reason prefixes in steps 6–8.
 10. When any task is in `verifying`, run `orx verify`. Agent checks come back
     to you as assignments bound to a stable `attempt` id; submit each verdict
     with `orx verify submit <task> --result pass|fail --entry '<exact entry>'
-    --attempt <id> [--evidence <file>] [--reason "<issues>" on fail]
-    [--actual-model <what the verifier actually ran>]`. The verdict closes
-    the attempt it was dispatched to; re-running `orx verify` re-surfaces the
-    same attempt (never a second dispatch), and routing edits between
-    dispatch and submit cannot move the attribution. A model mismatch prints
-    a WARNING and is recorded — the verdict still counts, but never hide it.
+    --attempt <id> --discover-session [--evidence <file>] [--reason "<issues>"
+    on fail] [--actual-model <what the verifier actually ran>]`
+    (`--discover-session` binds the verifier subagent's session by the
+    `ORX_ASSIGNMENT` nonce in its prompt, exactly like a worker's claim).
+    The verdict closes the attempt it was dispatched to; re-running
+    `orx verify` re-surfaces the same attempt (never a second dispatch), and
+    routing edits between dispatch and submit cannot move the attribution.
+    A model mismatch prints a WARNING and is recorded — the verdict still
+    counts, but never hide it.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
     Not when output "looks finished".
 
@@ -248,8 +256,9 @@ structured delivery statuses and the reason prefixes in steps 6–8.
 `orx status --json` is the state; `orx run` re-surfaces every parked
 host/external assignment with its prompt file — the prompts are
 self-contained (Goal constraints, Goal context, scope, acceptance,
-verification, prior failure feedback), so pass them through unchanged and
-never reconstruct them from memory. Planning assignments live under
+verification, prior failure feedback, and the `ORX_ASSIGNMENT` identity
+anchor), so pass them through unchanged and never reconstruct them from
+memory. Planning assignments live under
 `.orx/runs/<run>/assignments/`.
 
 ### Running tasks after a disconnect (recovery — never a second writer)

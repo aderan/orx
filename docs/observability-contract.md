@@ -1,10 +1,10 @@
-# ORX observability read contract (schema v8/v9/v10)
+# ORX observability read contract (schema v8/v9/v10/v11)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
-v9, 2026-10-06 for v10). This document is the supported way to analyze
-`.orx/state.db` from outside this repository. The analysis layer lives at
-`~/Sources/Tools/orx-analytics/` and is not shipped here. ORX stores the
-rows and defines how to read them.
+v9, 2026-10-06 for v10, 2026-10-06 for v11). This document is the supported
+way to analyze `.orx/state.db` from outside this repository. The analysis
+layer lives at `~/Sources/Tools/orx-analytics/` and is not shipped here.
+ORX stores the rows and defines how to read them.
 
 Readers select named columns. They do not call `Store.open`, and they do
 not migrate. Worked SQL below is the source the contract tests execute
@@ -14,16 +14,18 @@ against `tests/fixtures/observability/seed.sql`.
 
 `meta.schema_version` is the integer version of the file, stored as text.
 The gate accepts **exactly the explicitly supported versions — `8`, `9`,
-and `10`** and refuses every other value: never a range, never "at least X".
+`10`, and `11`** and refuses every other value: never a range, never "at
+least X".
 
 | File value | Reader action |
 |---|---|
 | missing `meta` table, missing `schema_version` row, or a non-integer value | refuse; do not infer a version |
 | integer less than 8 (including `7`) | refuse; do not add columns and do not run ORX migrations |
-| `8` | read the sections up to and including the six readings; the v9 replan tables and the v10 progress table do not exist on a v8 file |
-| `9` | read everything except the v10 progress queries; the `attempt_progress` table does not exist on a v9 file |
-| `10` | read everything, including the G004 replan correspondence and artifact-provenance queries and the G006 progress-report queries |
-| integer greater than 10 | refuse; do not rewrite the file |
+| `8` | read the sections up to and including the six readings; the v9 replan tables, the v10 progress table, and the v11 nonce column do not exist on a v8 file |
+| `9` | read everything except the v10 progress queries and the v11 nonce column; `attempt_progress` and `attempts.nonce` do not exist on a v9 file |
+| `10` | read everything except the v11 nonce column; `attempts.nonce` does not exist on a v10 file |
+| `11` | read everything, including the v11 identity-anchor queries below |
+| integer greater than 11 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -91,12 +93,27 @@ spans, session refs, or token usage. See the G006 section below for the
 table and its queries. The gate continues to accept `8` and `9`
 explicitly; only the progress queries require `10`.
 
+The fifth amendment, dated 2026-10-06 (G007 assignment identity anchors,
+R006 post-mortem), adds **v11**. v11 is additive in schema and closing in
+lifecycle semantics:
+
+| Change | Meaning |
+|---|---|
+| `attempts.nonce` (new nullable column) | One-time identity token `orx-assignment:<uuid4>`, minted at attempt creation and embedded as the first lines of the worker/verifier dispatch prompt. Session discovery matches this token (`ORX_ASSIGNMENT=<nonce>` in the subagent's first text part) instead of a human-readable "attempt N" marker, which R006 showed to be unreliable: 5 of 7 controller-composed worker prompts lost the marker entirely and one carried a closed attempt's number from stale evidence lineage. Legacy rows stay NULL — a nonce is a dispatch fact of the moment, never back-filled; attempts with NULL nonces keep marker-based discovery. |
+| verifier attempt spans | A host verifier attempt's `started_at` is stamped at dispatch (it was stamped at verdict time together with `ended_at`, making every verifier span structurally zero seconds — R006 a113 read as 0.0s while its session ran ~3 minutes). Existing rows are not rewritten. |
+| superseded attempt disposition | When a replan activation cancels unfinished tasks, their still-open attempts are closed in the same transaction: `result='superseded'`, `ended_at` = activation time, `failure_reason` = "revision N superseded". `started_at` is never synthesized — an unclaimed attempt keeps NULL and reads "never claimed". R006's a105 was a zombie row (no result, no span) left by exactly this gap. Existing rows are not rewritten. |
+
+The `result` value `superseded` is new; readers aggregating by result
+treat it as a terminal non-delivery disposition. The gate continues to
+accept `8`, `9`, and `10` explicitly; only the `nonce` column and the
+`superseded` disposition require `11`.
+
 ```sql
 -- query: schema_gate
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9', '10') THEN 'ok'
+  ) IN ('8', '9', '10', '11') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```

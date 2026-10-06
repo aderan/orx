@@ -100,8 +100,14 @@ def test_host_worker_assignment_carries_constraints_preread_and_artifacts(projec
     assert "never touch data/" in prompt and "single writer only" in prompt
     assert "reports/pbv/round-1-plan.md" in prompt and "src/store.py" in prompt
     assert "marker file exists" in prompt
-    # Host and CLI assignments use the same composed prompt.
-    assert prompt == dispatch.worker_prompt(goal, active_task(project, "T001"))
+    # Host and CLI assignments use the same composed prompt, including the
+    # v11 identity header whose nonce is minted at park time.
+    task = active_task(project, "T001")
+    attempt = project.store.attempt_latest_for_task(task.revision_id, "T001")
+    assert attempt is not None
+    assert "ORX_ASSIGNMENT=orx-assignment:" in prompt.splitlines()[1]
+    assert prompt == dispatch.worker_prompt(
+        goal, task, identity=dispatch._identity_block(attempt.nonce))
 
     prompt_file = Path(entry["prompt_file"])
     assert prompt_file.parts[:3] == (".orx", "runs", prompt_file.parts[2])

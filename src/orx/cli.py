@@ -897,7 +897,8 @@ def run(json_out: bool = JsonOpt) -> None:
         for item in result["host_required"]:
             via = f" via {item['profile']}" if item.get("profile") else ""
             note = " (resurfaced waiting assignment)" if item.get("resurfaced") else ""
-            typer.echo(f"host required: {item['task']}{via} ({item['claim']}){note}")
+            attempt = f"attempt {item['attempt']}; " if item.get("attempt") else ""
+            typer.echo(f"host required: {item['task']}{via} ({attempt}{item['claim']}){note}")
             if item.get("prompt_file"):
                 typer.echo(f"  prompt file: {item['prompt_file']}")
         for item in result["waiting_external"]:
@@ -1503,11 +1504,14 @@ def verify(
         for item in result["checked"]:
             typer.echo(f"task {item['task']}: {item['verdict']}")
         for item in result["agent_required"]:
+            attempt_note = f", attempt {item['attempt']}" if item.get("attempt") else ""
             typer.echo(
-                f"agent verification required: task {item['task']} entry {item['entry']!r}"
+                f"agent verification required: task {item['task']} entry {item['entry']!r}{attempt_note}"
                 f" (capabilities {item['required_capabilities']})"
                 + (f" via {item['profile']}" if item.get("profile") else f" ERROR: {item.get('error')}")
             )
+            if item.get("submit_pass"):
+                typer.echo(f"  pass: {item['submit_pass']}")
         for item in result["launched"]:
             typer.echo(
                 f"verifier launched: task {item['task']} entry {item['entry']!r}"
@@ -1531,6 +1535,11 @@ def verify_submit(
         None, "--actual-model",
         help="Model the verifier actually ran (e.g. from the ZCode dispatch receipt), reported not guessed.",
     ),
+    discover_session: bool = typer.Option(
+        False, "--discover-session",
+        help="Bind the verifier subagent's zcode session by the ORX_ASSIGNMENT nonce "
+             "carried at the top of its dispatch prompt (deterministic first-part lookup).",
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Submit a host Agent verifier's verdict for one agent verification entry."""
@@ -1538,6 +1547,7 @@ def verify_submit(
     data = dispatch.verify_submit(
         project, task_id, result, entry, str(evidence) if evidence else None, reason,
         session=session, attempt_id=attempt, actual_model=actual_model,
+        discover_session=discover_session,
     )
     _ok(json_out, **data)
     if not json_out:
@@ -1545,6 +1555,9 @@ def verify_submit(
             f"task {data['task']}: agent verdict {data['result']} for {data['entry']!r};"
             f" status {data['status']}"
         )
+        if data.get("session_discovery"):
+            typer.echo(f"  session discovery: {data['session_discovery'].get('decision')}"
+                       f" (session {data.get('session_ref')})")
         if data.get("model_mismatch"):
             m = data["model_mismatch"]
             typer.echo(

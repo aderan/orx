@@ -232,6 +232,66 @@ def test_verify_dispatch_creates_persistent_verifier_attempt(sub_planned, tmp_pa
     assert attempt.verify_entry == "agent: result reads well"
     assert attempt.ended_at is None
     assert attempt.session_ref is None  # the Controller binds it at submit
+    # G007: the verifier span starts at dispatch — R006's verifier spans
+    # were structurally zero seconds because both ends were stamped at
+    # verdict time.
+    assert attempt.started_at is not None
+    # The dispatch prompt opens with the identity anchor, and the nonce in
+    # the prompt is the nonce on the attempt row.
+    assert attempt.nonce and attempt.nonce.startswith("orx-assignment:")
+    assert entry["prompt"].startswith("ASSIGNMENT IDENTITY")
+    assert f"ORX_ASSIGNMENT={attempt.nonce}" in entry["prompt"]
+    assert entry["submit_pass"].endswith("--discover-session")
+
+
+def test_verify_submit_discovers_session_by_nonce(sub_planned, tmp_path, monkeypatch):
+    """A verifier subagent's session binds by the ORX_ASSIGNMENT nonce at
+    submit time, exactly like a worker's at claim time."""
+    import json
+    import sqlite3
+    import time as _time
+
+    _finish_with_agent_pending(sub_planned, tmp_path)
+    out = dispatch.verify_dispatch(sub_planned)
+    entry = [e for e in out["agent_required"] if e["task"] == "T002"][0]
+    attempt = sub_planned.store.attempt_get(entry["attempt"])
+
+    zdb = tmp_path / "zcode.sqlite"
+    conn = sqlite3.connect(zdb)
+    conn.executescript(
+        "CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT,"
+        " project_id TEXT, title TEXT, time_created INTEGER,"
+        " time_updated INTEGER);"
+        "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+        " data TEXT, sequence INTEGER);"
+    )
+    now = int(_time.time() * 1000)
+    conn.execute("INSERT INTO session VALUES ('ctrl',NULL,?,'p','controller',?,?)",
+                 (str(sub_planned.root), now, now))
+    conn.execute("INSERT INTO session VALUES ('vsub','ctrl',?,'p','verifier',?,?)",
+                 (str(sub_planned.root), now - 60_000, now - 30_000))
+    conn.execute(
+        "INSERT INTO part VALUES ('pv','mv','vsub',?,1)",
+        (json.dumps({
+            "type": "text",
+            "text": "You are an ORX verifier for Goal G001.\n"
+                    f"ORX_ASSIGNMENT={attempt.nonce}",
+        }, separators=(",", ":")),))
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+
+    result = dispatch.verify_submit(
+        sub_planned, "T002", "pass", "agent: result reads well", None,
+        attempt_id=attempt.id, discover_session=True,
+    )
+    assert result["status"] == "passed"
+    assert result["session_discovery"]["decision"] == "unique"
+    closed = sub_planned.store.attempt_get(attempt.id)
+    assert closed.session_ref == "vsub"
+    # the span still opens at dispatch, not at submit
+    assert closed.started_at == attempt.started_at
+    assert closed.ended_at is not None
 
 
 def test_verify_dispatch_is_idempotent_one_attempt_per_entry(sub_planned, tmp_path):
@@ -525,7 +585,7 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 10
+        assert reopened.schema_version() == 11
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert {"verify_entry", "actual_model", "model_source"} <= columns
         legacy = reopened.attempts_all()[0]
@@ -552,7 +612,7 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
     try:
         assert check.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "10"
+        ).fetchone()[0] == "11"
     finally:
         check.close()
     assert not list(tmp_path.glob("v7.db.migrate-*")), "stale migration backups"

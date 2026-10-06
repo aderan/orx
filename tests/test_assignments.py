@@ -10,6 +10,7 @@ real agent, no paid model.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -110,9 +111,21 @@ def test_cli_worker_receives_the_same_prompt_composition(tmp_path, monkeypatch):
         assert out["started"][0]["status"] == "passed"
 
         captured = (tmp_path / "worker-prompt-captured.txt").read_text()
+        # The exact bytes the host path composes are what the CLI process
+        # got — modulo the v11 identity header, whose one-time nonce is
+        # minted per attempt (asserted separately below).
+        m = re.match(
+            r"ASSIGNMENT IDENTITY \(machine anchor — do not remove or alter"
+            r" this line\):\nORX_ASSIGNMENT=(orx-assignment:[0-9a-f-]{36})\n\n",
+            captured,
+        )
+        assert m, "captured prompt must open with the ORX_ASSIGNMENT identity block"
         expected = dispatch.worker_prompt(goal, task)
-        # The exact bytes the host path composes are what the CLI process got.
-        assert captured == expected
+        assert captured[m.end():] == expected
+        # the nonce in the prompt is the nonce stored on the attempt row
+        attempts = [a for a in project.store.attempts_all()
+                    if a.task_id == "T001" and a.role == "worker"]
+        assert attempts and attempts[-1].nonce == m.group(1)
         for marker in ("never touch data/", "single writer only", "docs/cache.md",
                        "marker file exists", "How your work will be checked", "true"):
             assert marker in captured
@@ -179,7 +192,9 @@ def test_run_resurfaces_waiting_host_assignment(project, goal):
     entry = entries[0]
     assert entry["resurfaced"] is True
     assert entry["status"] == "waiting_host"
-    assert entry["claim"] == "orx task claim T002"
+    # Same binding surface as a fresh park: the resurfaced claim also
+    # discovers the (new) subagent's session via the prompt's nonce.
+    assert entry["claim"] == "orx task claim T002 --discover-session"
     assert (project.root / entry["prompt_file"]).read_text()
     assert active_task(project, "T002").status == "waiting_host"
     assert len(project.store.attempts_all()) == attempts_before
@@ -419,13 +434,18 @@ def test_replan_confirm_worker_prompt_carries_the_reference_chain(
     entry = dispatch.run_slice(project)["host_required"][0]
     assert entry["task"] == "T101"
     prompt = entry["prompt"]
-    # Byte-identical to the composition the dispatch layer builds.
+    # Byte-identical to the composition the dispatch layer builds (identity
+    # header included — the nonce is minted at park time).
+    task101 = active_task(project, "T101")
+    attempt101 = project.store.attempt_latest_for_task(
+        task101.revision_id, "T101")
     assert prompt == dispatch.worker_prompt(
-        goal, active_task(project, "T101"),
+        goal, task101,
         replan_context=dispatch._replan_reference_context(
             project.store, project.root,
-            active_task(project, "T101").revision_id, "T101", audience="worker",
+            task101.revision_id, "T101", audience="worker",
         ),
+        identity=dispatch._identity_block(attempt101.nonce),
     )
     # Source identity: revision AND task, plus its recorded status.
     assert "Replan correspondence for this task" in prompt

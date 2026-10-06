@@ -13,6 +13,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,7 +22,19 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 10
+CODE_SCHEMA_VERSION = 11
+
+
+def mint_nonce() -> str:
+    """A one-time assignment identity token, unique per attempt row.
+
+    The dispatch prompt embeds this token verbatim; session discovery matches
+    it instead of a human-readable "attempt N" marker, which a controller may
+    paraphrase, drop, or copy stale from a prior revision's evidence lineage
+    (R006: 5 of 7 worker prompts lost the marker, one carried a closed
+    attempt's number). A uuid cannot be guessed or reused by accident.
+    """
+    return f"orx-assignment:{uuid.uuid4()}"
 
 INBOX_ITEM_STATUSES = ("pending", "accepted", "rejected", "dismissed")
 INBOX_DECIDED_STATUSES = ("accepted", "rejected", "dismissed")
@@ -145,7 +158,8 @@ CREATE TABLE attempts (
   usage_missing_reason TEXT,
   verify_entry TEXT,
   actual_model TEXT,
-  model_source TEXT
+  model_source TEXT,
+  nonce TEXT
 );
 
 CREATE TABLE evidence (
@@ -556,6 +570,22 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+# v11: one-time assignment identity nonces (G007 identity-anchor amendment).
+# Additive only: attempts.nonce holds "orx-assignment:<uuid4>", minted at
+# attempt creation and embedded verbatim in the dispatch prompt, so session
+# discovery matches a token ORX itself emitted instead of a controller-side
+# "attempt N" convention. Existing rows stay NULL — a nonce is a dispatch
+# fact of the moment, never back-filled; discovery on legacy rows keeps the
+# marker fallback.
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "attempts", "nonce", "nonce TEXT")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -568,6 +598,7 @@ MIGRATIONS: dict[int, callable] = {
     8: _migrate_v8,
     9: _migrate_v9,
     10: _migrate_v10,
+    11: _migrate_v11,
 }
 
 
@@ -694,6 +725,11 @@ class Attempt:
     # model_source names where the value came from ('reported' today).
     actual_model: str | None = None
     model_source: str | None = None
+    # One-time assignment identity token ("orx-assignment:<uuid4>"), minted
+    # at creation and embedded in the dispatch prompt. Discovery matches the
+    # token first; NULL on legacy rows means the marker fallback applies.
+    # Immutable after creation — reusing another attempt's token is a bug.
+    nonce: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1009,6 +1045,7 @@ def _attempt(r: sqlite3.Row) -> Attempt:
         verify_entry=r["verify_entry"],
         actual_model=r["actual_model"],
         model_source=r["model_source"],
+        nonce=r["nonce"],
     )
 
 
@@ -1705,6 +1742,7 @@ class Store:
         session_ref: str | None = None,
         run_id: str | None = None,
         verify_entry: str | None = None,
+        nonce: str | None = None,
     ) -> Attempt:
         with self.tx():
             resolved_run = run_id
@@ -1725,8 +1763,8 @@ class Store:
             cur = self.conn.execute(
                 "INSERT INTO attempts(revision_id, task_id, assignment_id, role, profile, driver,"
                 " harness, model, requested_effort, actual_effort, effort_source, fallback_used,"
-                " routing_reason, isolation, started_at, session_ref, run_id, verify_entry)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " routing_reason, isolation, started_at, session_ref, run_id, verify_entry, nonce)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     revision_row_id,
                     task_id,
@@ -1746,6 +1784,7 @@ class Store:
                     session_ref,
                     resolved_run,
                     verify_entry,
+                    nonce if nonce is not None else mint_nonce(),
                 ),
             )
             aid = cur.lastrowid
@@ -1773,6 +1812,34 @@ class Store:
             (revision_row_id, task_id, entry),
         ).fetchone()
         return _attempt(r) if r else None
+
+    def attempts_close_for_tasks(
+        self, revision_row_id: int, task_ids: list[str], *,
+        ended_at: str, result: str, failure_reason: str | None = None,
+    ) -> list[int]:
+        """Close every still-open attempt of these tasks with a recorded
+        disposition (replan supersession). R006 left a parked, never-claimed
+        attempt behind as a zombie row — no result, no span — so a run's
+        history stayed forever ambiguous. started_at is never synthesized:
+        an unclaimed attempt keeps NULL and reads "never claimed", not
+        zero-length. Returns the closed attempt ids."""
+        if not task_ids:
+            return []
+        qmarks = ",".join("?" for _ in task_ids)
+        with self.tx():
+            rows = self.conn.execute(
+                "SELECT id FROM attempts WHERE revision_id = ?"
+                f" AND ended_at IS NULL AND task_id IN ({qmarks})",
+                [revision_row_id, *task_ids],
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            for aid in ids:
+                self.conn.execute(
+                    "UPDATE attempts SET ended_at = ?, result = ?,"
+                    " failure_reason = COALESCE(failure_reason, ?) WHERE id = ?",
+                    (ended_at, result, failure_reason, aid),
+                )
+        return ids
 
     def attempt_mark_usage_missing(self, attempt_id: int, reason: str) -> None:
         """Record why no usage observation was stored. Does not invent tokens."""

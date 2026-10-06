@@ -2,17 +2,24 @@
 
 Why this exists: a host worker is a subagent the Controller's session
 spawns. ORX never sees the spawn, and zcode exports no session id into the
-subagent's shell environment — so `attempts.session_ref` stayed NULL and
+subagent's shell environment — so ``attempts.session_ref`` stayed NULL and
 the recovery contract ("check the original subagent, handle =
 session_ref") had no handle to use.
 
-What a subagent CAN do is ask, as its first action, "which zcode session
-is running me?" — deterministically. The Controller's subagent prompt is
-the session's first text part and names the attempt id; the session's
-directory is the project root; a subagent has a parent. Those three facts
-together identify exactly one session for exactly one attempt, and this
-module is the honest lookup over them: zero or several candidates is a
-reported answer, never a guess.
+Two anchors, strongest first:
+
+- **Nonce (schema v11)**: ORX mints ``orx-assignment:<uuid4>`` per attempt
+  and embeds it as the first lines of the dispatch prompt. A subagent
+  session whose first text part carries the token IS the dispatched
+  assignment — exact, unguessable, and immune to the controller-side prompt
+  paraphrasing that erased every "attempt N" marker in R006 (5 of 7 worker
+  prompts lost the marker; one carried a closed attempt's number from
+  stale evidence lineage). When an attempt has a nonce, the nonce is the
+  only authority: a marker hit is not consulted, because stale lineage
+  references are exactly the failure mode the nonce exists to prevent.
+- **Marker (legacy)**: attempts from before v11 have no nonce; their
+  discovery still matches a human-readable "attempt N" in the first text
+  part plus directory and subagent structure.
 
 The zcode database is opened read-only (mode=ro + query_only), never
 migrated or checkpointed. Default location can be overridden with
@@ -31,6 +38,13 @@ from pathlib import Path
 DEFAULT_ZCODE_DB = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 
 _MARKER = re.compile(r"\battempt (\d+)\b")
+# ORX_ASSIGNMENT=orx-assignment:<uuid4> — the identity line dispatch prompts
+# carry at their very top (first lines survive the 2000-char first-part
+# truncation any reader applies).
+_NONCE = re.compile(
+    r"ORX_ASSIGNMENT=(orx-assignment:"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
 
 
 class ZcodeDbUnavailable(Exception):
@@ -77,9 +91,15 @@ def _open_ro(db: Path) -> sqlite3.Connection:
 def discover_attempt_session(attempt_id: int, project_root: Path,
                              db: str | None = None,
                              created_within_ms: int | None = None,
-                             now_ms: int | None = None) -> dict:
-    """Find the zcode subagent session whose first prompt names this
-    attempt, inside this project's directory.
+                             now_ms: int | None = None,
+                             nonce: str | None = None) -> dict:
+    """Find the zcode subagent session that executed this attempt, inside
+    this project's directory.
+
+    With ``nonce`` (a v11 attempt), the session is the one whose first text
+    part carries ``ORX_ASSIGNMENT=<nonce>`` — the token ORX embedded in the
+    dispatch prompt. Without one (legacy attempts), the marker fallback
+    matches a first part naming "attempt <id>".
 
     Returns {"candidates": [...], "decision": "unique"|"none"|"ambiguous",
              "basis": str} — the caller decides what to store; this
@@ -99,7 +119,6 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
         if created_within_ms is not None and now_ms is not None:
             rows = [r for r in rows
                     if now_ms - r["time_created"] <= created_within_ms]
-        marker = f"attempt {attempt_id}"
         cands: list[Candidate] = []
         for r in rows:
             part = conn.execute(
@@ -112,27 +131,46 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
                 text = json.loads(part["data"]).get("text", "") or ""
             except (json.JSONDecodeError, AttributeError):
                 continue
-            hit = _MARKER.search(text)
-            if hit and int(hit.group(1)) == attempt_id:
-                cands.append(Candidate(
-                    session_id=r["id"], parent_id=r["parent_id"],
-                    title=r["title"], created_ms=r["time_created"],
-                    matched_text=hit.group(0),
-                    first_part_preview=text))
+            if nonce is not None:
+                hit = _NONCE.search(text)
+                if hit and hit.group(1) == nonce:
+                    cands.append(Candidate(
+                        session_id=r["id"], parent_id=r["parent_id"],
+                        title=r["title"], created_ms=r["time_created"],
+                        matched_text=hit.group(0),
+                        first_part_preview=text))
+            else:
+                hit = _MARKER.search(text)
+                if hit and int(hit.group(1)) == attempt_id:
+                    cands.append(Candidate(
+                        session_id=r["id"], parent_id=r["parent_id"],
+                        title=r["title"], created_ms=r["time_created"],
+                        matched_text=hit.group(0),
+                        first_part_preview=text))
         n = len(cands)
         decision = "unique" if n == 1 else ("none" if n == 0 else "ambiguous")
+        if nonce is not None:
+            basis = (
+                "zcode subagent session whose first text part carries the "
+                "attempt's one-time identity token "
+                f"ORX_ASSIGNMENT={nonce} with session.directory equal to "
+                "the project root and a non-null parent (subagent "
+                "structure); read-only lookup, no writes"
+            )
+        else:
+            basis = (
+                "zcode subagent session whose first text part names "
+                f"'attempt {attempt_id}' with session.directory equal to the "
+                "project root and a non-null parent (subagent structure); "
+                "read-only lookup, no writes"
+            )
         return {
             "attempt_id": attempt_id,
             "project_root": root,
             "zcode_db": str(path),
             "decision": decision,
             "candidates": [c.payload() for c in cands],
-            "basis": (
-                "zcode subagent session whose first text part names "
-                f"'attempt {attempt_id}' with session.directory equal to the "
-                "project root and a non-null parent (subagent structure); "
-                "read-only lookup, no writes"
-            ),
+            "basis": basis,
         }
     finally:
         conn.close()

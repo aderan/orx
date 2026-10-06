@@ -44,6 +44,7 @@ from orx.state import (
     Store,
     TaskRow,
     Verification,
+    mint_nonce,
     now as db_now,
 )
 
@@ -1173,7 +1174,8 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
     execution contract): what the Controller must start, with which REQUESTED
     model/effort (profile facts — observed reality is recorded separately as
     actual_model with its source), in which working directory, and the stable
-    attempt identity every later submission must quote."""
+    attempt identity every later submission must quote. The nonce (v11) is
+    the same token embedded at the top of the dispatch prompt."""
     if profile is None:
         return {
             "mode": "self",
@@ -1183,6 +1185,7 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
             "harness": attempt.harness,
             "workdir": str(project.root),
             "attempt": attempt.id,
+            "nonce": attempt.nonce,
             "submit": "controller",
         }
     driver = profile.driver.value
@@ -1200,6 +1203,7 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
         "harness": profile.harness.value,
         "workdir": str(project.root),
         "attempt": attempt.id,
+        "nonce": attempt.nonce,
         "submit": "controller",
     }
 
@@ -1284,13 +1288,29 @@ def submit_plan(project: Project, ir_data: dict,
             )
         if old is not None:
             store.revision_mark_superseded(old.id)
-            for task in store.tasks_all(old.id):
-                if TaskStatus(task.status) in UNFINISHED_TASK_STATUSES:
-                    machine.transition(
-                        store, old.id, task.task_id, "superseded", TaskStatus.CANCELLED,
-                        reason=f"revision {old.revision} superseded",
-                    )
-                    cancelled_old.append(task.task_id)
+            cancelled_tasks = [
+                t for t in store.tasks_all(old.id)
+                if TaskStatus(t.status) in UNFINISHED_TASK_STATUSES
+            ]
+            for task in cancelled_tasks:
+                machine.transition(
+                    store, old.id, task.task_id, "superseded", TaskStatus.CANCELLED,
+                    reason=f"revision {old.revision} superseded",
+                )
+                cancelled_old.append(task.task_id)
+            # G007 data integrity: the same activation also closes the
+            # cancelled tasks' still-open attempts with a recorded
+            # disposition. R006's replan left a parked, never-claimed attempt
+            # as a zombie row (no result, no span), leaving the run's
+            # history forever ambiguous; late heartbeats against it were
+            # only rejected by the ownership gate, not by an honest final
+            # state. started_at is never synthesized — unclaimed attempts
+            # keep NULL and read "never claimed".
+            store.attempts_close_for_tasks(
+                old.id, cancelled_old,
+                ended_at=db_now(), result="superseded",
+                failure_reason=f"revision {old.revision} superseded",
+            )
 
         revision = store.revision_create(run.id, depth_value, planner, ir_data)
         for task in ir.tasks:
@@ -1465,7 +1485,12 @@ def run_slice(project: Project) -> dict:
             "resurfaced": True,
         }
         if status is TaskStatus.WAITING_HOST:
-            entry["claim"] = f"orx task claim {task.task_id}"
+            # Same binding surface as a fresh park: a resumed Controller
+            # re-pastes the archived prompt (which carries the nonce), so the
+            # re-claim can discover the new subagent's session too.
+            entry["claim"] = (
+                f"orx task claim {task.task_id} --discover-session"
+            )
             entry["isolation"] = "prompt_only"
             out["host_required"].append(entry)
         else:
@@ -1533,6 +1558,10 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     payload. The prompt is the same composition a CLI launch would receive
     (constraints, scope, preread, acceptance, prior failure included)."""
     store = project.store
+    # Mint the identity token before composing the prompt so the exact nonce
+    # stored on the attempt row is the one embedded in the prompt (and its
+    # archived assignment file) — one token, one attempt, no second minting.
+    nonce = mint_nonce()
     prompt = worker_prompt(
         goal, task,
         prior_failure=_prior_failure_context(
@@ -1542,6 +1571,7 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         replan_context=_replan_reference_context(
             store, project.root, revision_row_id, task.task_id, audience="worker"
         ),
+        identity=_identity_block(nonce),
     )
     attempt = store.attempt_create(
         revision_row_id=revision_row_id,
@@ -1564,6 +1594,7 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         # will execute. A NULL here is honest, not a gap.
         session_ref=None,
         run_id=run.id,
+        nonce=nonce,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -1576,6 +1607,7 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         "task": task.task_id,
         "objective": task.objective,
         "profile": profile.name,
+        "attempt": attempt.id,
         "prompt": prompt,
         "prompt_file": _write_task_assignment_file(project, run.id, task.task_id, prompt),
         # Structured static preflight (denylist + first-token PATH probe) for
@@ -1608,6 +1640,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     probe = adapter.probe()
 
     scratch = _launch_dir(project, run.id, f"worker-{task.task_id}")
+    nonce = mint_nonce()
     prompt = worker_prompt(
         goal, task,
         prior_failure=_prior_failure_context(
@@ -1617,6 +1650,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         replan_context=_replan_reference_context(
             store, project.root, revision.id, task.task_id, audience="worker"
         ),
+        identity=_identity_block(nonce),
     )
     # Same contract as the host/external park path: the preflight-bearing
     # prompt is archived as the assignment file even though ORX itself
@@ -1647,6 +1681,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         started=True,
         isolation=launch.sandbox,
         run_id=run.id,
+        nonce=nonce,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     machine.transition(
@@ -2423,8 +2458,30 @@ def _preflight_block(task: TaskRow) -> str:
     )
 
 
+def _identity_block(nonce: str | None) -> str:
+    """The machine-readable assignment anchor riding at the very top of every
+    host dispatch prompt (G007 identity contract, schema v11).
+
+    R006 evidence: "attempt N" markers were a controller-side convention —
+    5 of 7 worker prompts lost them entirely and one carried a closed
+    attempt's number from stale evidence lineage. A nonce ORX itself minted
+    and embedded cannot be paraphrased away by accident; when the Controller
+    passes the prompt through unchanged (the skill's standing rule), the
+    token lands in the subagent session's first text part and session
+    discovery matches it exactly. Legacy attempts (nonce NULL) pass an empty
+    block and keep the marker-fallback discovery."""
+    if not nonce:
+        return ""
+    return (
+        "ASSIGNMENT IDENTITY (machine anchor — do not remove or alter"
+        " this line):\n"
+        f"ORX_ASSIGNMENT={nonce}\n\n"
+    )
+
+
 def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
-                  check_budget: int = 3, replan_context: str = "") -> str:
+                  check_budget: int = 3, replan_context: str = "",
+                  identity: str = "") -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
@@ -2443,7 +2500,7 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
     # Empty for first-plan tasks: the prompt is byte-identical to before.
     replan_block = replan_context if replan_context else ""
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
-    return f"""You are an ORX worker for Goal {goal.id}: {goal.objective}
+    return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
 
 Your assignment is ONE task. Do only this task and stay inside its scope.
 
@@ -2506,7 +2563,7 @@ Rules:
 
 def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
                     evidence_lines: str = "", prior_issues: str = "",
-                    replan_context: str = "") -> str:
+                    replan_context: str = "", identity: str = "") -> str:
     capabilities = ", ".join(item.capabilities) or "none"
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
@@ -2528,7 +2585,7 @@ def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
         context_blocks += f"\nExecution evidence for this task:\n{evidence_lines}\n"
     if prior_issues:
         context_blocks += prior_issues
-    return f"""You are an ORX verifier for Goal {goal.id}: {goal.objective}
+    return f"""{identity}You are an ORX verifier for Goal {goal.id}: {goal.objective}
 
 Verify ONE acceptance check for task {task.task_id} ({task.objective}).
 
@@ -2671,17 +2728,19 @@ def task_claim(project: Project, task_id: str, session: str | None = None,
     if (discover_session and attempt is not None
             and attempt.session_ref is None):
         # A subagent cannot read its own zcode session id from the
-        # environment, but its identity is deterministically discoverable:
-        # the Controller's subagent prompt (the session's first text part)
-        # names this attempt id, the session's directory is the project
-        # root, and a subagent has a parent. Unique -> store (this is now
-        # ORX-written identity, not a guess). None/ambiguous -> stays NULL
-        # and the answer says so.
+        # environment, but its identity is deterministically discoverable.
+        # v11 attempts match the one-time nonce ORX embedded at the top of
+        # the dispatch prompt (immune to controller-side paraphrasing or
+        # stale "attempt N" lineage); legacy attempts fall back to the
+        # marker text. Directory equals the project root and a subagent has
+        # a parent. Unique -> store (this is now ORX-written identity, not
+        # a guess). None/ambiguous -> stays NULL and the answer says so.
         from . import zcode_sessions
         try:
             discovery = zcode_sessions.discover_attempt_session(
                 attempt.id, project.root,
                 created_within_ms=24 * 3600 * 1000,
+                nonce=attempt.nonce,
             )
             sid = zcode_sessions.first_session_id(discovery)
             if sid is not None:
@@ -3384,12 +3443,15 @@ def verify_dispatch(project: Project) -> dict:
             }
             if profile.driver.value == "host":
                 # Phase B execution contract: the verifier identity is fixed
-                # HERE, at dispatch. A persistent attempt is opened (not yet
-                # started) and bound to this exact entry; the verdict must
-                # close it. Re-dispatch reuses the open attempt instead of
-                # opening a second execution (duplicate dispatch never
-                # executes twice), and routing edits between dispatch and
-                # submit cannot move the attribution.
+                # HERE, at dispatch. A persistent attempt is opened and bound
+                # to this exact entry; the verdict must close it. Re-dispatch
+                # reuses the open attempt instead of opening a second
+                # execution (duplicate dispatch never executes twice), and
+                # routing edits between dispatch and submit cannot move the
+                # attribution. The span starts at dispatch (R006 a113 had a
+                # structural zero-second span because both ends were stamped
+                # at verdict time) and the nonce rides in the prompt header
+                # so verifier sessions are discoverable like worker sessions.
                 attempt = store.attempt_open_verifier_for_entry(
                     revision.id, task.task_id, item.raw
                 )
@@ -3405,7 +3467,7 @@ def verify_dispatch(project: Project) -> dict:
                         routing_reason=result.reason,
                         fallback_used=result.fallback_used,
                         task_id=task.task_id,
-                        started=False,
+                        started=True,
                         isolation="prompt_only",
                         run_id=run.id,
                         verify_entry=item.raw,
@@ -3419,6 +3481,7 @@ def verify_dispatch(project: Project) -> dict:
                         store, project.root, revision.id, task.task_id,
                         audience="verifier",
                     ),
+                    identity=_identity_block(attempt.nonce),
                 )
                 entry_out["attempt"] = attempt.id
                 entry_out["execution"] = _execution_spec(project, profile, attempt)
@@ -3429,11 +3492,12 @@ def verify_dispatch(project: Project) -> dict:
                 entry_out["isolation"] = "prompt_only"
                 entry_out["submit_pass"] = (
                     f"orx verify submit {task.task_id} --result pass --entry {item.raw!r}"
-                    f" --attempt {attempt.id}"
+                    f" --attempt {attempt.id} --discover-session"
                 )
                 entry_out["submit_fail"] = (
                     f"orx verify submit {task.task_id} --result fail --entry {item.raw!r}"
-                    f" --attempt {attempt.id} --reason \"<issues for the fix loop>\""
+                    f" --attempt {attempt.id} --discover-session"
+                    f" --reason \"<issues for the fix loop>\""
                 )
                 out["agent_required"].append(entry_out)
             else:
@@ -3563,6 +3627,7 @@ def verify_submit(
     project: Project, task_id: str, result_value: str, entry: str | None, evidence: str | None,
     reason: str | None = None, session: str | None = None,
     attempt_id: int | None = None, actual_model: str | None = None,
+    discover_session: bool = False,
 ) -> dict:
     """Record a host Agent verifier's verdict for one agent verification entry.
     `reason` carries the reviewer's issues on a fail; it becomes the recorded
@@ -3635,9 +3700,30 @@ def verify_submit(
     else:
         bound = None
 
+    discovery: dict | None = None
     if bound is not None:
         if session_ref is not None:
             store.attempt_update(bound.id, session_ref=session_ref)
+        discovery: dict | None = None
+        if (discover_session and bound.driver == "host"
+                and bound.harness == "zcode" and bound.session_ref is None):
+            # Verifier sessions are discoverable exactly like worker
+            # sessions: the dispatch prompt carries the attempt's nonce as
+            # its first lines, so the verdict submitter's own session is
+            # found by token. Unique -> store; none/ambiguous -> NULL + say.
+            from . import zcode_sessions
+            try:
+                discovery = zcode_sessions.discover_attempt_session(
+                    bound.id, project.root,
+                    created_within_ms=24 * 3600 * 1000,
+                    nonce=bound.nonce,
+                )
+                sid = zcode_sessions.first_session_id(discovery)
+                if sid is not None:
+                    store.attempt_update(bound.id, session_ref=sid)
+            except zcode_sessions.ZcodeDbUnavailable as e:
+                discovery = {"decision": "unavailable", "error": str(e)}
+        bound = store.attempt_get(bound.id)
         store.attempt_update(
             bound.id,
             started_at=bound.started_at or db_now(),
@@ -3719,6 +3805,9 @@ def verify_submit(
         "verdict": verdict,
         "attempt": bound.id,
     }
+    if discovery is not None:
+        result["session_discovery"] = discovery
+        result["session_ref"] = bound.session_ref
     if mismatch is not None:
         result["model_mismatch"] = mismatch
     return result

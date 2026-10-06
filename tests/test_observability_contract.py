@@ -120,7 +120,7 @@ def _write_was_rejected(conn: sqlite3.Connection) -> bool:
 
 
 def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
-    """The gate is an explicit allowlist (8, 9, and 10), never a range:
+    """The gate is an explicit allowlist (8, 9, 10, and 11), never a range:
     every other value — older, newer, or malformed — is refused."""
     queries = load_queries()
     db = tmp_path / "state.db"
@@ -132,8 +132,8 @@ def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
         conn.close()
 
     for value, expected in (("8", "ok"), ("9", "ok"), ("7", "refuse"),
-                            ("10", "ok"), ("11", "refuse"), ("v9", "refuse"),
-                            (None, "refuse")):
+                            ("10", "ok"), ("11", "ok"), ("12", "refuse"),
+                            ("v9", "refuse"), (None, "refuse")):
         sample = tmp_path / f"state-{value}.db"
         build_db(sample)
         writer = sqlite3.connect(sample)

@@ -109,27 +109,55 @@ def test_park_does_not_stamp_controller_session(project, tmp_path, monkeypatch):
 
 def test_claim_discover_session_unique(project, tmp_path, monkeypatch):
     zdb = tmp_path / "zcode.sqlite"
-    make_zcode_db(zdb, str(project.root), [
-        ("sess_sub_a", "attempt 1"),
-        ("sess_sub_stale", "attempt 99"),   # different attempt: no match
-    ])
     monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
     park_host_task(project)
+    # v11: the parked attempt carries a one-time nonce embedded at the top
+    # of the dispatch prompt; the subagent's first text part carries it too.
+    attempt = latest_attempt(project)
+    assert attempt.nonce and attempt.nonce.startswith("orx-assignment:")
+    make_zcode_db(zdb, str(project.root), [
+        ("sess_sub_a", f"attempt 1\nORX_ASSIGNMENT={attempt.nonce}"),
+        ("sess_sub_stale", "attempt 99"),   # different nonce: no match
+    ])
     result = dispatch.task_claim(project, "T001", discover_session=True)
     assert result["session_ref"] == "sess_sub_a"
     assert result["session_discovery"]["decision"] == "unique"
-    assert "attempt 1" in result["session_discovery"]["basis"]
+    assert attempt.nonce in result["session_discovery"]["basis"]
     assert latest_attempt(project).session_ref == "sess_sub_a"
+
+
+def test_claim_discover_nonce_ignores_stale_marker_lineage(
+        project, tmp_path, monkeypatch):
+    """The R006 failure mode, closed: a v11 attempt matches ONLY its nonce.
+    A session whose prompt carries a stale 'attempt N' evidence lineage
+    (the closed prior attempt's number) must not match — with a nonce
+    present, the marker is not even consulted."""
+    zdb = tmp_path / "zcode.sqlite"
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    park_host_task(project)
+    attempt = latest_attempt(project)
+    make_zcode_db(zdb, str(project.root), [
+        # carries the live nonce AND a stale lineage reference
+        ("sess_sub_a", f"attempt 1\nORX_ASSIGNMENT={attempt.nonce}"),
+        # a different session carries only the stale marker text
+        ("sess_sub_stale", "source attempt 1, evidence row 58"),
+    ])
+    result = dispatch.task_claim(project, "T001", discover_session=True)
+    assert result["session_ref"] == "sess_sub_a"
+    cands = result["session_discovery"]["candidates"]
+    assert [c["session_id"] for c in cands] == ["sess_sub_a"]
 
 
 def test_claim_discover_ambiguous_stays_null(project, tmp_path, monkeypatch):
     zdb = tmp_path / "zcode.sqlite"
-    make_zcode_db(zdb, str(project.root), [
-        ("sess_sub_a", "attempt 1"),
-        ("sess_sub_b", "attempt 1"),
-    ])
     monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
     park_host_task(project)
+    attempt = latest_attempt(project)
+    # two sessions both carrying the live nonce: ambiguous, no store
+    make_zcode_db(zdb, str(project.root), [
+        ("sess_sub_a", f"ORX_ASSIGNMENT={attempt.nonce}"),
+        ("sess_sub_b", f"ORX_ASSIGNMENT={attempt.nonce}"),
+    ])
     result = dispatch.task_claim(project, "T001", discover_session=True)
     assert result["session_ref"] is None
     assert result["session_discovery"]["decision"] == "ambiguous"

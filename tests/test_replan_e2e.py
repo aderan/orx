@@ -89,6 +89,58 @@ def _parked(project):
     return {entry["task"]: entry for entry in entries}
 
 
+def test_replan_activation_closes_orphan_attempts(project, tmp_path):
+    """G007 data integrity: the revision switch closes the superseded tasks'
+    still-open attempts in the same activation. R006's a105 was a zombie row
+    (parked, never claimed, no result, no span) left by exactly this gap —
+    the run's history stayed forever ambiguous."""
+    goal = dispatch.create_goal(
+        project, objective="two-part goal",
+        acceptance=["foundation file exists", "summary file exists"],
+        constraints=[], context="",
+    )[0]
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", objective="foundation", acceptance=[goal.acceptance[0]],
+                  verification=["true"]),
+        task_spec("T002", objective="summary", acceptance=[goal.acceptance[1]],
+                  verification=["true"]),
+    ]))
+    revision1 = active_task(project, "T001").revision_id
+    parked = _parked(project)
+    assert set(parked) == {"T001", "T002"}
+    orphan = project.store.attempt_latest_for_task(revision1, "T002")
+    assert orphan is not None and orphan.result is None  # never claimed
+
+    dispatch.plan_route(project)
+    ir2 = with_replan(
+        ir_for(goal, [
+            task_spec("T001", objective="foundation, kept", acceptance=[goal.acceptance[0]],
+                      verification=["true"]),
+            task_spec("T003", objective="summary, rebuilt", acceptance=[goal.acceptance[1]],
+                      verification=["true"]),
+        ]),
+        1,
+        [{"task": "T001", "classification": "continue",
+          "sources": [{"revision": 1, "task_id": "T001"}]},
+         {"task": "T003", "classification": "new"}],
+        [superseded_entry(1, "T001", "continued", successors=["T001"]),
+         superseded_entry(1, "T002", "dropped",
+                          note="scope moved to T003")],
+    )
+    result = dispatch.submit_plan(project, ir2)
+    assert result["superseded_revision"] == 1
+    # both unfinished rev-1 tasks are cancelled (a "continue" still swaps in
+    # a fresh task row), so both parked attempts close with a disposition
+    assert result["cancelled_tasks"] == ["T001", "T002"]
+
+    closed = project.store.attempt_get(orphan.id)
+    assert closed.result == "superseded"
+    assert closed.ended_at is not None
+    assert closed.failure_reason == "revision 1 superseded"
+    # started_at is never synthesized: unclaimed reads "never claimed"
+    assert closed.started_at is None
+
+
 # ---------------------------------------------------------------------------
 # The full lifecycle: every classification and correspondence shape in one
 # revision switch, asserting the diff report, the persisted chain, the
