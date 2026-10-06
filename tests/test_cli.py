@@ -1552,7 +1552,9 @@ def test_session_flag_precedes_env_on_host_paths(cli_project, monkeypatch):
     assert "empty" in payload(bad_claim)["error"] or "malformed" in payload(bad_claim)["error"]
     assert _task_status("T001") == "waiting_host"
     worker = next(a for a in _open_attempts() if a.role == "worker")
-    assert worker.session_ref == "from-env"
+    # parking stamps nothing: from-env names the controller, not the
+    # worker subagent that will claim (G005)
+    assert worker.session_ref is None
     assert worker.started_at is None
 
     claimed = invoke("task", "claim", "--json", "T001", "--session", "from-claim")
@@ -1586,7 +1588,7 @@ def test_session_flag_precedes_env_on_host_paths(cli_project, monkeypatch):
     assert verifier.session_ref == "from-verify"
 
 
-def test_absent_session_stays_null_and_claim_keeps_parked_ref(cli_project, monkeypatch):
+def test_absent_session_stays_null_and_park_writes_no_ref(cli_project, monkeypatch):
     monkeypatch.delenv("ORX_SESSION_REF", raising=False)
     invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
     assert invoke("plan", "--json").exit_code == 0
@@ -1600,12 +1602,15 @@ def test_absent_session_stays_null_and_claim_keeps_parked_ref(cli_project, monke
     (cli_project / "plan.json").write_text(json.dumps(plan))
     assert invoke("plan", "submit", "--json", "--file", str(cli_project / "plan.json")).exit_code == 0
     invoke("run", "--json")
+    # parking under a set env still writes no ref for the worker attempt
+    worker = next(a for a in _open_attempts() if a.role == "worker")
+    assert worker.session_ref is None
     monkeypatch.delenv("ORX_SESSION_REF", raising=False)
     claimed = invoke("task", "claim", "--json", "T001")
     assert claimed.exit_code == 0, claimed.stdout
     worker = next(a for a in _open_attempts() if a.role == "worker")
-    assert worker.session_ref == "parked-sess"
-    assert payload(claimed)["session_ref"] == "parked-sess"
+    assert worker.session_ref is None
+    assert payload(claimed)["session_ref"] is None
 
 
 def _task_status(task_id):

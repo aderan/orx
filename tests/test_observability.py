@@ -142,13 +142,16 @@ def test_host_report_clears_usage_missing_reason(project, goal):
 
 
 def test_claim_session_flag_precedes_env(project, goal, monkeypatch):
+    # The env value names the CONTROLLER (the process running `orx run`);
+    # the attempt's executor is the worker subagent, so parking must NOT
+    # stamp it. Identity arrives at claim time instead (G005).
     monkeypatch.setenv("ORX_SESSION_REF", "from-env")
     dispatch.submit_plan(project, ir_for(goal, [
         task_spec("T001", acceptance=goal.acceptance),
     ]))
     dispatch.run_slice(project)
     worker = next(a for a in project.store.attempts_all() if a.role == "worker")
-    assert worker.session_ref == "from-env"
+    assert worker.session_ref is None
     dispatch.task_claim(project, "T001", session="from-flag")
     assert project.store.attempt_get(worker.id).session_ref == "from-flag"
 

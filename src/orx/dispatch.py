@@ -1547,7 +1547,12 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         started=False,
         # The host enforces nothing — the prompt is discipline, not a sandbox.
         isolation="prompt_only" if kind == "host" else None,
-        session_ref=_host_session_ref() if kind == "host" else None,
+        # Session identity is bound by the WORKER at claim/complete time
+        # (`--session` / `--discover-session`), never stamped here: the
+        # process parking the task is the Controller, and its env session
+        # (ORX_SESSION_REF) is a different session than the subagent that
+        # will execute. A NULL here is honest, not a gap.
+        session_ref=None,
         run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
@@ -1570,7 +1575,14 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         "execution": _execution_spec(project, profile, attempt),
     }
     if kind == "host":
-        entry["claim"] = f"orx task claim {task.task_id}"
+        entry["claim"] = (
+            f"orx task claim {task.task_id} --discover-session"
+        )
+        entry["session_identity"] = (
+            "claim binds the claiming subagent's zcode session id "
+            "(deterministic first-prompt lookup); pass --session <id> "
+            "instead when the caller knows its own id"
+        )
         entry["isolation"] = "prompt_only"
     else:
         entry["finish_with"] = f"orx task complete {task.task_id} --evidence <file>"
@@ -2621,7 +2633,8 @@ def task_list(project: Project) -> list[dict]:
     return rows
 
 
-def task_claim(project: Project, task_id: str, session: str | None = None) -> dict:
+def task_claim(project: Project, task_id: str, session: str | None = None,
+               discover_session: bool = False) -> dict:
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -2640,6 +2653,28 @@ def task_claim(project: Project, task_id: str, session: str | None = None) -> di
     if attempt is not None and session_ref is not None:
         store.attempt_update(attempt.id, session_ref=session_ref)
         attempt = store.attempt_get(attempt.id)
+    discovery: dict | None = None
+    if (discover_session and attempt is not None
+            and attempt.session_ref is None):
+        # A subagent cannot read its own zcode session id from the
+        # environment, but its identity is deterministically discoverable:
+        # the Controller's subagent prompt (the session's first text part)
+        # names this attempt id, the session's directory is the project
+        # root, and a subagent has a parent. Unique -> store (this is now
+        # ORX-written identity, not a guess). None/ambiguous -> stays NULL
+        # and the answer says so.
+        from . import zcode_sessions
+        try:
+            discovery = zcode_sessions.discover_attempt_session(
+                attempt.id, project.root,
+                created_within_ms=24 * 3600 * 1000,
+            )
+            sid = zcode_sessions.first_session_id(discovery)
+            if sid is not None:
+                store.attempt_update(attempt.id, session_ref=sid)
+                attempt = store.attempt_get(attempt.id)
+        except zcode_sessions.ZcodeDbUnavailable as e:
+            discovery = {"decision": "unavailable", "error": str(e)}
     refresh_run(store, goal, run)
     return {
         "task": task.task_id,
@@ -2647,6 +2682,7 @@ def task_claim(project: Project, task_id: str, session: str | None = None) -> di
         "attempt": attempt.id if attempt else None,
         "driver": "host",
         "session_ref": attempt.session_ref if attempt else None,
+        "session_discovery": discovery,
         "execution": (
             _execution_spec(project, project.profiles.get(attempt.profile), attempt)
             if attempt else None
@@ -2657,6 +2693,7 @@ def task_claim(project: Project, task_id: str, session: str | None = None) -> di
 def task_complete(
     project: Project, task_id: str, evidence: str,
     attempt_id: int | None = None, actual_model: str | None = None,
+    session: str | None = None,
 ) -> dict:
     """Record a structured delivery and enter verification. Completion is
     NOT success: the task passes only when every verification entry passes.
@@ -2686,6 +2723,9 @@ def task_complete(
         raise ConflictError(
             f"task {task_id} is {task.status}; `task complete` requires running or waiting_external"
         )
+    # Late binding: a recovered/late worker may name its session now; the
+    # value is validated before any delivery write happens.
+    session_ref = resolve_session_ref(session)
 
     evidence_path = Path(evidence).expanduser()
     if not evidence_path.is_absolute():
@@ -2742,9 +2782,15 @@ def task_complete(
                 requested_effort="medium",
                 task_id=task.task_id,
                 isolation="prompt_only",
-                session_ref=_host_session_ref(),
+                # The completing caller IS this attempt's executor: an
+                # explicit --session wins, the caller's env is the fallback.
+                session_ref=session_ref if session_ref is not None
+                else _host_session_ref(),
                 run_id=run.id,
             )
+    if session_ref is not None and attempt.session_ref is None:
+        store.attempt_update(attempt.id, session_ref=session_ref)
+        attempt = store.attempt_get(attempt.id)
     mismatch = _record_reported_model(store, attempt.id, attempt.model, actual_model)
 
     if delivery["status"] in ("failed", "blocked"):
@@ -2876,7 +2922,8 @@ def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run
     return result
 
 
-def task_fail(project: Project, task_id: str, reason: str) -> dict:
+def task_fail(project: Project, task_id: str, reason: str,
+              session: str | None = None) -> dict:
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -2884,8 +2931,12 @@ def task_fail(project: Project, task_id: str, reason: str) -> dict:
         raise ConflictError(
             f"task {task_id} is {task.status}; `task fail` requires running or waiting_external"
         )
+    session_ref = resolve_session_ref(session)
     attempt = store.attempt_latest_for_task(revision.id, task.task_id)
     if attempt is not None:
+        if session_ref is not None and attempt.session_ref is None:
+            store.attempt_update(attempt.id, session_ref=session_ref)
+            attempt = store.attempt_get(attempt.id)
         store.attempt_update(
             attempt.id,
             ended_at=db_now(),

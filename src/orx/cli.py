@@ -1033,14 +1033,41 @@ def task_list(json_out: bool = JsonOpt) -> None:
 def task_claim(
     task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
     session: Optional[str] = SessionOpt,
+    discover_session: bool = typer.Option(
+        False, "--discover-session",
+        help=(
+            "Look up the claiming subagent's zcode session id "
+            "deterministically (first text part names the attempt, "
+            "directory matches, subagent has a parent) and store it when "
+            "the match is unique. None/ambiguous leaves session_ref NULL "
+            "and reports why."
+        ),
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Host claim: move a waiting_host task to running (single winner)."""
     project = dispatch.open_project()
-    result = dispatch.task_claim(project, task_id, session=session)
+    try:
+        result = dispatch.task_claim(
+            project, task_id, session=session,
+            discover_session=discover_session,
+        )
+    finally:
+        project.close()
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"task {result['task']} claimed by host; status running")
+        d = result.get("session_discovery")
+        if d is not None:
+            if d.get("decision") == "unique":
+                typer.echo(
+                    f"  session: {result['session_ref']} "
+                    "(discovered: unique first-prompt match)"
+                )
+            else:
+                typer.echo(
+                    f"  session: not bound (discovery: {d.get('decision')})"
+                )
 
 
 @task_app.command("check")
@@ -1187,6 +1214,10 @@ def task_complete(
         None, "--actual-model",
         help="Model the executor actually ran (e.g. from the ZCode dispatch receipt), reported not guessed.",
     ),
+    session: Optional[str] = typer.Option(
+        None, "--session",
+        help="Late-bind the worker's session id to the completing attempt.",
+    ),
     json_out: bool = JsonOpt,
 ) -> None:
     """Execution finished. This is NOT success: verification decides passed/failed.
@@ -1241,14 +1272,51 @@ def task_complete(
 def task_fail(
     task_id: str = typer.Argument(...),
     reason: str = typer.Option(..., "--reason", help="Why the attempt failed."),
+    session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
 ) -> None:
     """Mark a running/waiting_external task failed."""
     project = dispatch.open_project()
-    result = dispatch.task_fail(project, task_id, reason)
+    result = dispatch.task_fail(project, task_id, reason, session=session)
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"task {result['task']}: failed ({reason})")
+
+
+@task_app.command("session-discover")
+@handle_errors
+def task_session_discover(
+    attempt_id: int = typer.Argument(..., help="Attempt id (from the park payload / `task claim`)."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Which zcode subagent session is running this attempt? (read-only)
+
+    Deterministic lookup, never a guess: the session's first text part
+    names the attempt, its directory equals the project root, and it has a
+    parent (subagent structure). Prints the candidate(s) with evidence.
+    Exit codes: 0 unique, 1 none, 2 ambiguous, 3 zcode db unavailable.
+    """
+    from . import zcode_sessions
+    project = dispatch.open_project()
+    try:
+        result = zcode_sessions.discover_attempt_session(
+            attempt_id, project.root)
+    except zcode_sessions.ZcodeDbUnavailable as e:
+        _ok(json_out, error=str(e), decision="unavailable")
+        raise typer.Exit(3) from None
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        for c in result["candidates"]:
+            typer.echo(
+                f"{c['session_id']}  created_ms={c['created_ms']}  "
+                f"matched={c['matched_text']}"
+            )
+            typer.echo(f"  first part: {c['first_part_preview'][:120]}")
+    code = {"unique": 0, "none": 1, "ambiguous": 2}[result["decision"]]
+    if code:
+        raise typer.Exit(code)
 
 
 @task_app.command("retry")

@@ -174,11 +174,17 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    correspondence, never by task number. Same-numbered tasks in different
    revisions are different work. If validation returns `errors`, fix the
    plan per the errors and resubmit.
-5. For a host task: `orx task claim <id>` FIRST, then do the work, then submit
-   the result. Claiming after working invites a conflict exit. Quote the
-   attempt you answered: `orx task complete <id> --evidence evidence.json
-   --attempt <id from claim>`. A submission for an attempt that is closed or
-   no longer the latest is rejected as stale — that is correct; do not fight it.
+5. For a host task: claim FIRST, then do the work, then submit the result.
+   Claiming after working invites a conflict exit. Pass the claim command
+   from the assignment payload through to the subagent verbatim — it is
+   `orx task claim <id> --discover-session`, which binds the subagent's real
+   zcode session id (deterministic first-prompt lookup; a worker cannot
+   learn its own id any other way). Quote the attempt you answered:
+   `orx task complete <id> --evidence evidence.json --attempt <id from
+   claim>`. A submission for an attempt that is closed or no longer the
+   latest is rejected as stale — that is correct; do not fight it. A late or
+   recovered worker may add `--session <its id>` on complete/fail to bind
+   identity that claim could not.
 6. When the work is done, the worker submits the structured delivery
    result: `orx task complete <id> --evidence evidence.json`. The file is
    JSON — `status` (`passed` | `failed` | `blocked`), `summary`, `checks[]`

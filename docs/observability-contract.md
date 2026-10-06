@@ -223,7 +223,7 @@ integers 0 and 1 (`verifications.passed`, `attempts.fallback_used`).
 | Column | Null | Role in this contract |
 |---|---|---|
 | `key` | no | `schema_version` is the only key readers need |
-| `value` | no | text; v7 stores `7` |
+| `value` | no | text; current files store `8` or `9` |
 
 ### `runs`
 
@@ -582,6 +582,36 @@ one from `request_id`, a numeric thread id, or a blank environment
 value. Joining sessions to a vendor store is the external analysis
 layer's job; the key it may carry out of this database is the opaque
 text plus `project_id` and `attempt_id`.
+
+**How a host worker's reference gets written (G005 amendment,
+2026-10-06).** A host worker is a subagent the Controller's session
+spawns; zcode exports no session id into that subagent's shell, so
+`ORX_SESSION_REF` in the parking process names the *Controller*, never
+the worker. Consequences readers can rely on:
+
+- Parking a host task (`route_host`) writes NO `session_ref`. A NULL on
+  a parked/waiting host worker attempt is the designed state, not a gap.
+- The reference arrives at `orx task claim --discover-session` (the
+  deterministic lookup below), at `task claim/complete/fail --session`
+  when the caller knows its own id, or — on the implicit attempt a
+  session-less `task complete` creates — from the completing caller's
+  environment.
+- `orx task session-discover <attempt_id>` is read-only over the zcode
+  database (`ORX_ZCODE_DB`, default `~/.zcode/cli/db/db.sqlite`, opened
+  `mode=ro` + `query_only`). It finds subagent sessions whose first
+  text part names `attempt <id>`, whose `directory` equals the project
+  root, and which have a parent. Unique → that id; none/ambiguous →
+  NULL stays and the decision is reported. Exit codes 0/1/2 (unique/
+  none/ambiguous), 3 when the zcode database is unavailable.
+- A reference written this way is ORX-written identity (the analytics
+  layer treats `attempts.session_ref` as authoritative); the discovery
+  *derivation* remains re-computable by external readers from the same
+  three facts.
+
+Historical note: before this amendment, parking stamped the parking
+process's `ORX_SESSION_REF` onto host worker attempts; R003's ten worker
+attempts predate the claim-time binding and their NULL is the legacy of
+that era plus an unset environment, recoverable only by inference.
 
 ### Execution spans and user waiting
 

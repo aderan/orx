@@ -312,7 +312,7 @@ def test_run_slice_parks_host_context_task_as_host(mixed_project):
     assert [h["task"] for h in result["host_required"]] == ["T001"]
     parked = result["host_required"][0]
     assert parked["profile"] == "host-session"
-    assert parked["claim"] == "orx task claim T001"
+    assert parked["claim"] == "orx task claim T001 --discover-session"
     assert active_task(mixed_project, "T001").status == "waiting_host"
     # The routing decision records what was requested, for the audit trail.
     decision = mixed_project.store.routing_decisions_all()[-1]

@@ -168,8 +168,9 @@ Human columns are `PROFILE`, `TASKS`, `RUNTIME`, `INPUT`, `OUTPUT`,
 `CACHED`, `ACCURACY`. An unknown `--profile` exits 1; a bad flag exits 2.
 
 Out-of-repo analysis reads `.orx/state.db` through
-[docs/observability-contract.md](docs/observability-contract.md): the v7
-tables, join keys, and the SQL for the six report dimensions. That
+[docs/observability-contract.md](docs/observability-contract.md): the
+v8/v9 tables, join keys, and the SQL for the six report dimensions (the
+gate accepts schema versions 8 and 9 exactly). That
 contract is read-only. The analysis layer itself is not in this
 repository.
 
@@ -256,8 +257,8 @@ on top of the controller protocol: `orx skill install orx-pbv`.
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
-- [Observability read contract](docs/observability-contract.md) — schema v7
-  tables, joins, and read-only SQL for external analysis
+- [Observability read contract](docs/observability-contract.md) — schema
+  v8/v9 tables, joins, and read-only SQL for external analysis
 - [Replan contract](docs/replan-contract.md) — the declared old<->new
   correspondence, work classifications, artifact provenance, and the
   structural-check vs semantic-review boundary
