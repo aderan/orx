@@ -6,9 +6,28 @@
 **Goal**: 完成 T001–T003。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T001 基线已冻结、T002 已交付，见下方轮次记录；T003 未开始）
+**Status**: In Progress（R009：T001–T003 已全部交付，见下方轮次记录；阶段终验待独立 verifier）
 
 ### G009/R009 轮次记录
+
+- **T003（2026-10-07 交付）**：资源失败后的下一档按 driver 分发，补齐有界切换与身份绑定。
+  `dispatch._reroute_resource_failure` 由无条件 `_execute_cli_task` 改为按下一 rung 的 driver
+  分发：cli → 本 slice 执行（原路径不变）；host → `_park_task` 正式宿主指派（waiting_host +
+  指派文件携带自己的 ORX_ASSIGNMENT nonce 与新 attempt，与 `orx run` 停泊共用同一条代码）；
+  external → 正式外部契约（waiting_external），绝不冒充 adapter。`run_slice` 按返回的
+  (bucket, entry) 归类输出（started/failed/host_required/waiting_external），停泊任务计入
+  parked_this_slice 防重复上报。有界性：每任务每 slice 至多一跳、失败档已不可路由不会重选
+  （无环）；身份绑定：新档为新 attempt+新 nonce，失败 CLI attempt 原样保留历史。
+  tests/test_health.py 唯一 xfail(strict)（T001 冻结的 CLI→host 红基线）按约定转常规绿；
+  tests/test_routing.py 新增分支矩阵：CLI→host（事故复刻，断言 host_required/profile/nonce/
+  prompt 锚点/attempt 历史）、CLI→external（仅正式外部契约，无 claim 不冒充）、单跳有界
+  （双限流 rung 一 slice 恰两 attempt 后停 FAILED，显式 retry 后经 run_slice 恢复）、
+  host→CLI 与 host→host（经 task fail 正式结束事实 + 资源耗尽事实 + 显式 retry，由既有
+  run-slice 机器按 driver 再分发，新档新身份、旧档留痕）。冻结证据回放
+  docs/diagnostics/cursor-2026-10-07/replay_cli_to_host.py 由红转绿
+  （RED: no adapter for harness 'zcode' → GREEN: host assignment produced，exit 0，
+  脚本未改动）。门禁 tests/test_routing.py+test_quota.py+test_host_progress_e2e.py+
+  test_delivery_gate_e2e.py 89 passed；全量 924 passed、0 xfail（原 918 passed + 1 xfailed）。
 
 - **T002（2026-10-07 交付）**：接通 CLI 结构化 delivery 与正式门禁，修正健康学习语义。
   五个事实分层落地：进程结果（transport）、harness 响应结果（adapter `response_error`：

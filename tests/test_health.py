@@ -179,14 +179,6 @@ command_timeout_sec = 30
         project.close()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "G009 red baseline (2026-10-07): the resource-failure reroute"
-    " unconditionally re-executes as CLI, so a host next rung raises"
-    " ORXError \"no adapter for harness 'zcode'\" instead of parking a host"
-    " assignment"
-    " (docs/diagnostics/cursor-2026-10-07/replay_cli_to_host.py). Remove"
-    " this marker with the CLI->host dispatch fix, never by weakening the"
-    " test."))
 def test_rate_limited_cli_falls_back_to_host_parking(tmp_path, monkeypatch):
     """G009 T001 (2026-10-07 incident): replay_cli_to_host.py as a regular
     regression. The sibling test above covers CLI->CLI fallback; this one

@@ -362,3 +362,306 @@ def test_zcode_preset_registers_host_context_on_host_profiles():
     for profile in profiles.values():
         assert profile.driver.value == "host"
         assert routing.HOST_CONTEXT_CAPABILITY in profile.capabilities
+
+
+# ---------------------------------------------------------------------------
+# Resource-failure reroute dispatches by the NEXT rung's driver (G009 T003).
+#
+# The incident (2026-10-07, docs/diagnostics/cursor-2026-10-07/
+# replay_cli_to_host.py): a rate-limited CLI worker's reroute unconditionally
+# re-executed as CLI, so a HOST next rung raised ORXError "no adapter for
+# harness 'zcode'" instead of parking a host assignment. The branch matrix,
+# each destination following its own execution contract:
+#
+#   CLI -> CLI      existing fallback rungs (test_health.py
+#                   test_failing_worker_flips_health_and_routing_falls_back;
+#                   the hop bound is pinned below)
+#   CLI -> host     the incident: park a host assignment (waiting_host) with
+#                   its OWN nonce/attempt; the failed CLI attempt stays history
+#   CLI -> external the formal external contract only (waiting_external) —
+#                   never an adapter masquerade
+#   host -> CLI     host task's formal end fact (task fail) + operator health
+#                   fact, then retry re-dispatches by driver through run_slice
+#   host -> host    same, landing on the next HOST rung as a fresh assignment
+
+# The incident shape: cli-fake's stand-in always fails with a rate limit, so
+# the reroute fires in the same slice and the next rung decides the branch.
+RATE_LIMIT_PROFILES_TOML = HOST_PROFILES_TOML.replace(
+    'executable = "true"',
+    'executable = "/bin/sh"\n'
+    'args = ["-c", "echo rate limit exceeded >&2; exit 1"]',
+)
+
+
+def _worker_attempts(project):
+    rows = project.store.conn.execute(
+        "SELECT id,profile,driver,result,failure_reason,nonce FROM attempts"
+        " WHERE role='worker' ORDER BY id"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def test_reroute_to_host_rung_parks_host_assignment(tmp_path, monkeypatch):
+    """CLI -> host (the incident). A rate-limited CLI worker whose next rung
+    is a host profile must PARK a host assignment — host_required with a
+    prompt file whose ORX_ASSIGNMENT nonce is the parked attempt's own —
+    never raise "no adapter for harness 'zcode'". Identity stays bound: the
+    failed CLI attempt keeps its recorded history, the parked host attempt is
+    a NEW attempt."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-fake", "host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=RATE_LIMIT_PROFILES_TOML)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="rate limit falls to host", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        outcome = dispatch.run_slice(project)
+
+        # The dispatch never crashed and the task is neither failed nor
+        # claimed by a fake CLI execution.
+        assert outcome["failed"] == []
+        assert outcome["started"] == []
+        [entry] = [e for e in outcome["host_required"] if e["task"] == "T001"]
+        assert entry["profile"] == "host-worker"
+        assert entry["fallback_from"] == "cli-fake"
+        assert entry["claim"] == "orx task claim T001 --discover-session"
+        assert active_task(project, "T001").status == "waiting_host"
+
+        # The parked assignment carries its own identity: the nonce in the
+        # prompt file's machine anchor is the parked attempt's nonce.
+        prompt = (tmp_path / entry["prompt_file"]).read_text()
+        assert prompt.startswith("ASSIGNMENT IDENTITY")
+        assert f"ORX_ASSIGNMENT={entry['execution']['nonce']}\n" in prompt
+        assert entry["execution"]["attempt"] == entry["attempt"]
+
+        # Identity binding: the failed CLI attempt stays history, the host
+        # attempt is new and still open.
+        attempts = {a["profile"]: a for a in _worker_attempts(project)}
+        assert attempts["cli-fake"]["result"] == "failed"
+        assert "rate limit" in attempts["cli-fake"]["failure_reason"]
+        assert attempts["host-worker"]["result"] is None
+        assert attempts["host-worker"]["id"] != attempts["cli-fake"]["id"]
+        assert attempts["host-worker"]["nonce"] != attempts["cli-fake"]["nonce"]
+
+        # The failed rung is an environment fact for routing.
+        row = project.store.resource_row("cli-fake")
+        assert row.status == "cooldown" and row.last_error_kind == "rate_limited"
+    finally:
+        project.close()
+
+
+def test_reroute_to_external_rung_parks_external_contract_only(tmp_path, monkeypatch):
+    """CLI -> external. A rate-limited CLI worker whose next rung is an
+    EXTERNAL profile parks the formal external contract (waiting_external,
+    finish_with `orx task complete --evidence`) — ORX never launches an
+    adapter for it and the entry never masquerades as a host assignment."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-fake", "host-external"]',
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=RATE_LIMIT_PROFILES_TOML)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="rate limit falls to external", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        outcome = dispatch.run_slice(project)
+
+        assert outcome["failed"] == [] and outcome["started"] == []
+        assert outcome["host_required"] == []
+        [entry] = [e for e in outcome["waiting_external"] if e["task"] == "T001"]
+        assert entry["profile"] == "host-external"
+        assert entry["fallback_from"] == "cli-fake"
+        assert entry["finish_with"] == "orx task complete T001 --evidence <file>"
+        assert "claim" not in entry  # external is not dispatched or claimed
+        assert active_task(project, "T001").status == "waiting_external"
+        assert (tmp_path / entry["prompt_file"]).exists()
+
+        attempts = {a["profile"]: a for a in _worker_attempts(project)}
+        assert attempts["cli-fake"]["result"] == "failed"
+        assert attempts["host-external"]["driver"] == "external"
+        assert attempts["host-external"]["result"] is None
+    finally:
+        project.close()
+
+
+def test_reroute_hop_is_bounded_once_per_slice(tmp_path, monkeypatch):
+    """The switch is bounded: at most ONE hop per task per slice. Two
+    rate-limited CLI rungs mean the second rung's own resource failure is NOT
+    re-hopped in the same slice (the task stays FAILED with exactly two
+    worker attempts); a later explicit retry reaches the healthy rung."""
+    monkeypatch.chdir(tmp_path)
+    profiles = RATE_LIMIT_PROFILES_TOML + """
+[profiles.cli-still-ratey]
+driver = "cli"
+harness = "shell"
+executable = "/bin/sh"
+args = ["-c", "echo rate limit exceeded >&2; exit 1"]
+prompt_transport = "stdin"
+model = "fake-model2"
+class = "economy"
+effort = "low"
+capabilities = ["coding"]
+"""
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-fake", "cli-still-ratey", "host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="bounded reroute", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        outcome = dispatch.run_slice(project)
+
+        # One hop only: two CLI attempts, then the task stays FAILED — the
+        # third rung is NOT tried in the same slice (no loop, no unbounded
+        # ladder walk), and no crash surfaced.
+        attempts = _worker_attempts(project)
+        assert [a["profile"] for a in attempts] == ["cli-fake", "cli-still-ratey"]
+        assert active_task(project, "T001").status == "failed"
+        [failed] = outcome["failed"]
+        assert failed["profile"] == "cli-still-ratey"
+        assert failed["fallback_from"] == "cli-fake"
+        assert outcome["host_required"] == [] and outcome["started"] == []
+
+        # The bound is per slice, not forever: an explicit retry routes the
+        # healthy host rung as a normal park (by driver).
+        dispatch.task_retry(project, "T001")
+        second = dispatch.run_slice(project)
+        [entry] = [e for e in second["host_required"] if e["task"] == "T001"]
+        assert entry["profile"] == "host-worker"
+        assert active_task(project, "T001").status == "waiting_host"
+    finally:
+        project.close()
+
+
+def test_host_resource_failure_redispatches_to_cli_by_driver(tmp_path, monkeypatch):
+    """host -> CLI through the formal machinery: the host task ends with a
+    formal fact (`task fail`), the operator records the resource fact, the
+    explicit retry re-enters run_slice — which dispatches by the surviving
+    rung's driver (execute as CLI), keeping the dead host attempt as
+    history."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker", "cli-fake"]',
+    )
+    project = make_project(tmp_path, config_toml=config)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="host quota death", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        parked = dispatch.run_slice(project)
+        assert [e["task"] for e in parked["host_required"]] == ["T001"]
+        host_attempt = parked["host_required"][0]["attempt"]
+
+        # The host worker dies on a quota error (GLM 1308 shape); the formal
+        # end fact is the explicit fail, and the operator records exhaustion.
+        dispatch.task_claim(project, "T001", session="sess-host-a")
+        dispatch.task_fail(project, "T001", "GLM 1308: quota exceeded on host")
+        project.store.resource_set("host-worker", ResourceStatus.EXHAUSTED,
+                                   "GLM 1308 quota death")
+
+        dispatch.task_retry(project, "T001")
+        outcome = dispatch.run_slice(project)
+
+        assert outcome["host_required"] == []
+        [started] = outcome["started"]
+        assert started["task"] == "T001"
+        assert started["profile"] == "cli-fake"
+        assert started["status"] == "passed"
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+
+        # Identity binding: the failed host attempt keeps its reason; the CLI
+        # execution is a distinct new attempt.
+        attempts = {a["id"]: a for a in _worker_attempts(project)}
+        assert attempts[host_attempt]["result"] == "failed"
+        assert "GLM 1308" in attempts[host_attempt]["failure_reason"]
+        cli_rows = [a for a in attempts.values() if a["profile"] == "cli-fake"]
+        assert len(cli_rows) == 1 and cli_rows[0]["result"] is not None
+    finally:
+        project.close()
+
+
+def test_host_resource_failure_redispatches_to_next_host_rung(tmp_path, monkeypatch):
+    """host -> host: the same formal end + operator facts, landing on the
+    next HOST rung — a FRESH assignment with its own attempt and nonce, the
+    dead attempt untouched in history."""
+    monkeypatch.chdir(tmp_path)
+    profiles = HOST_PROFILES_TOML + """
+[profiles.host-worker-b]
+driver = "host"
+harness = "zcode"
+model = "m-worker-b"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+"""
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker", "host-worker-b"]',
+    )
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="host to host switch", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        parked = dispatch.run_slice(project)["host_required"][0]
+        assert parked["profile"] == "host-worker"
+
+        dispatch.task_claim(project, "T001", session="sess-host-b")
+        dispatch.task_fail(project, "T001", "GLM 1308: quota exceeded on host")
+        project.store.resource_set("host-worker", ResourceStatus.EXHAUSTED,
+                                   "GLM 1308 quota death")
+
+        dispatch.task_retry(project, "T001")
+        outcome = dispatch.run_slice(project)
+
+        [entry] = [e for e in outcome["host_required"] if e["task"] == "T001"]
+        assert entry["profile"] == "host-worker-b"
+        assert active_task(project, "T001").status == "waiting_host"
+        assert entry["attempt"] != parked["attempt"]
+        prompt = (tmp_path / entry["prompt_file"]).read_text()
+        assert f"ORX_ASSIGNMENT={entry['execution']['nonce']}\n" in prompt
+
+        # The dead host attempt stays recorded; the new one is open.
+        attempts = {a["profile"]: a for a in _worker_attempts(project)}
+        assert attempts["host-worker"]["result"] == "failed"
+        assert "GLM 1308" in attempts["host-worker"]["failure_reason"]
+        assert attempts["host-worker-b"]["result"] is None
+    finally:
+        project.close()

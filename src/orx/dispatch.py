@@ -1531,19 +1531,26 @@ def run_slice(project: Project) -> dict:
                 continue
             outcome = _execute_cli_task(project, goal, run, revision, current, result, request, profile)
             started += 1
+            bucket = "failed" if outcome.get("status") == "failed" else "started"
             # Immediate rung fallback (G005): a quota/rate failure has already
             # marked the profile non-routable in health, so one re-route now
             # lands the next configured rung instead of parking the task as
-            # FAILED until a manual `orx task retry`.
-            if (outcome.get("status") == "failed"
+            # FAILED until a manual `orx task retry`. The next rung is
+            # dispatched by ITS OWN driver (G009 T003): a CLI rung executes
+            # in this slice, a HOST rung parks a host assignment (with its
+            # own attempt and nonce), an EXTERNAL rung parks the formal
+            # external contract.
+            if (bucket == "failed"
                     and outcome.get("error_kind") in RESOURCE_FALLBACK_KINDS):
-                outcome = (_reroute_resource_failure(
+                rerouted = _reroute_resource_failure(
                     project, goal, run, revision, task.task_id, caps, outcome)
-                    or outcome)
-            if outcome["status"] == "failed":
-                out["failed"].append(outcome)
-            else:
-                out["started"].append(outcome)
+                if rerouted is not None:
+                    bucket, outcome = rerouted
+                    # The reroute's parked entry is reported below as a fresh
+                    # park; keep the re-surface loop from duplicating it.
+                    if bucket in ("host_required", "waiting_external"):
+                        parked_this_slice.add(task.task_id)
+            out[bucket].append(outcome)
 
     # Re-surface parked assignments: a resumed Controller (or a brand-new host
     # session) recovers the exact prompt file from state alone — no chat
@@ -2085,13 +2092,29 @@ RESOURCE_FALLBACK_KINDS = ("quota_exhausted", "rate_limited")
 
 
 def _reroute_resource_failure(project, goal, run, revision, task_id, caps,
-                              failed) -> dict | None:
-    """One immediate hop down the worker ladder for a resource failure.
+                              failed) -> tuple[str, dict] | None:
+    """One immediate hop down the worker ladder for a resource failure,
+    dispatched by the NEXT rung's driver (G009 T003).
 
     The failed profile is already non-routable (health learned from the same
     launch), so a fresh route picks the next rung; when nothing else is
     routable the task stays FAILED exactly as before. The hop is bounded by
-    construction — callers invoke it at most once per task per slice."""
+    construction — callers invoke it at most once per task per slice, and the
+    failed rung is non-routable so it cannot be re-selected (no loop).
+
+    Each destination follows its own execution contract, exactly as the main
+    run_slice loop would treat the same profile: a CLI rung executes in this
+    slice; a HOST rung parks a host assignment (waiting_host, prompt file
+    carrying its own ORX_ASSIGNMENT nonce and attempt — hosts have no
+    adapter, so this is the only legal path, never an adapter masquerade);
+    an EXTERNAL rung parks the formal external contract (waiting_external).
+    Identity stays bound in every branch: the rerouted work is a NEW attempt
+    and the failed CLI attempt keeps its recorded history.
+
+    Returns (bucket, entry) — the run_slice output bucket the outcome
+    belongs to ("started", "failed", "host_required", or
+    "waiting_external") and its entry — or None when no reroute happened.
+    """
     store = project.store
     task = store.task_get(revision.id, task_id)
     if task is None or TaskStatus(task.status) is not TaskStatus.FAILED:
@@ -2101,17 +2124,29 @@ def _reroute_resource_failure(project, goal, run, revision, task_id, caps,
     if not result.ok or result.selected == failed.get("profile"):
         routing.persist_decision(store, request, result)
         return None
+    profile = result.profile
+    assert profile is not None
     machine.transition(
         store, revision.id, task_id, "retry", TaskStatus.RUNNABLE,
         reason=(f"resource fallback: profile '{failed.get('profile')}'"
                 f" {failed.get('error_kind')}"),
     )
-    outcome = _execute_cli_task(
-        project, goal, run, revision, store.task_get(revision.id, task_id),
-        result, request, result.profile,
-    )
-    outcome["fallback_from"] = failed.get("profile")
-    return outcome
+    task = store.task_get(revision.id, task_id)
+    driver = profile.driver.value
+    if driver == "host":
+        entry = _park_task(project, goal, run, revision.id, task, result,
+                           request, profile, "host")
+        bucket = "host_required"
+    elif driver == "external":
+        entry = _park_task(project, goal, run, revision.id, task, result,
+                           request, profile, "external")
+        bucket = "waiting_external"
+    else:
+        entry = _execute_cli_task(project, goal, run, revision, task,
+                                  result, request, profile)
+        bucket = "failed" if entry.get("status") == "failed" else "started"
+    entry["fallback_from"] = failed.get("profile")
+    return bucket, entry
 
 
 # How many retained failed checks a retry prompt spells out before folding
