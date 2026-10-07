@@ -1,0 +1,23 @@
+{
+  "kind": "handoff-goal-draft",
+  "status": "planned_not_started",
+  "objective": "系统修复 ORX 在 CLI 交付、权限诊断、退避切换、宿主故障恢复和用量观测上的缺陷，建立大型任务前可执行的小任务验证链，并以实测约束上下文与重复尝试成本。",
+  "acceptance": [
+    "CLI 的进程成功、结构化交付和验收门禁相互区分；blocked、failed、缺失或非法交付均不能因 exit 0 或控制器绿测试被判 passed。",
+    "CLI、host、external 的路由切换遵循各自执行契约；资源失败后的 CLI→host 切换产生有效宿主指派，不再报 no adapter for harness zcode。",
+    "权限、认证、额度、限流、代码检查失败分别诊断；相同条件下的同一 blocker 不反复启动，退避和修复预算有界，人工 override 不被自动清除。",
+    "宿主恢复区分真实故障、观察时间和关闭时间；保留 claim、改动及原始时区信息，不由心跳静默认定死亡，不允许两个 writer 或旧 nonce 交付覆盖新 attempt。",
+    "配置预检、确定性故障注入和真实微任务形成可复用验证入口；至少一条真实 CLI worker 和一条真实 host worker 完成读写、内部检查、正式交付及独立门禁闭环，其余启用 profile 均有明确验证状态和证据。",
+    "用量区分 provider 原始字段、归一化处理量、缓存、未缓存输入、输出和缺失数据；同一 token 不重复累计，controller、worker、verifier、probe 分账，不能把处理量冒充账单。",
+    "用可重复的代表性任务对照证明上下文成本治理效果；保留正确率、验收和恢复能力，公布原始指标及限制，并设置可配置的软提示与有界预算行为。",
+    "新增回归、既有全量测试和受影响的打包或迁移检查通过；交付完整实现、可重取证据、修正后的事故结论、独立验收与逐阶段本地提交。"
+  ],
+  "constraints": [
+    "遵循仓库既有工具链与测试习惯，先读现有实现、再写行为回归、最小实现、验证后逐阶段提交。",
+    "同一问题最多连续尝试三次；仍失败时停止该路径，记录具体错误、研究替代方案并重新评估。",
+    "不得绕过提交检查、禁用测试或提交不编译的代码。"
+  ],
+  "context": "用户要求基于 sess_7c667fa0-9206-4ffc-bd55-8d6b0f19b4ee 的事故讨论形成长期执行 Goal。本文件仅供交接，不是已创建的 ORX Goal。原始结论已被取证纠正：a130 运行约一小时并修改代码后遇到 GLM 1308；三个 Cursor attempts 都报告内部 shell 审批拒绝；两个真实 dispatch 回放为红；归一化处理量约155836133，不能解释为计费 token。证据和实施边界见 docs/recovery-execution-goal-2026-10-07.md。",
+  "baseline_commit": "ab6a240cb856b0856b538d8890b5d5c1fda1c55e",
+  "plan_template": "docs/diagnostics/recovery-hardening-2026-10-07/plan.template.json"
+}

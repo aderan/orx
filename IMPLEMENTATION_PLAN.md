@@ -1,3 +1,37 @@
+# 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
+
+仅交接计划，尚未创建live Goal或启动实施。权威Goal与IR见 `docs/diagnostics/recovery-hardening-2026-10-07/`，任务细节见 `docs/recovery-execution-goal-2026-10-07.md`。接手后写入真实Goal ID；保留以上历史章节。
+
+## Stage 1: 先修复交付与driver分发
+**Goal**: 完成 T001–T003。
+**Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
+**Tests**: 详见IR verification，实施时先red再green。
+**Status**: Not Started
+
+## Stage 2: 有界退避、修复及宿主恢复
+**Goal**: 完成 T004–T006。
+**Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
+**Tests**: 详见IR verification，实施时先red再green。
+**Status**: Not Started
+
+## Stage 3: 建立提前验证能力
+**Goal**: 完成 T007–T009。
+**Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
+**Tests**: 详见IR verification，实施时先red再green。
+**Status**: Not Started
+
+## Stage 4: 观测、上下文与预算治理
+**Goal**: 完成 T010–T011。
+**Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
+**Tests**: 详见IR verification，实施时先red再green。
+**Status**: Not Started
+
+## Stage 5: 兼容终验与交付
+**Goal**: 完成 T012–T013。
+**Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
+**Tests**: 详见IR verification，实施时先red再green。
+**Status**: Not Started
+
 # IMPLEMENTATION_PLAN — orx-pbv（替换 StockMate pbv-loop）
 
 创建：2026-10-03。任务 Goal 原文由用户会话给出；替换契约见 `docs/pbv-mapping.md`（Stage 1 冻结基线）。

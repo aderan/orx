@@ -1,0 +1,24 @@
+{
+  "status": "planning_verified_implementation_not_started",
+  "plan_ir_validation": {
+    "errors": [],
+    "tasks": 13,
+    "goal_acceptance_coverage": 8,
+    "capabilities_checked": [
+      "coding",
+      "host_context"
+    ],
+    "live_routing_checked": false
+  },
+  "preread_paths_exist": true,
+  "full_test_suite": {
+    "command": ".venv/bin/python -m pytest -q",
+    "passed": 887,
+    "duration_sec": 86.31
+  },
+  "known_diagnostic_replays": "Two red dispatch reproductions remain unfixed; intentionally outside the normal pytest suite.",
+  "production_code_changed": false,
+  "paid_model_microtasks_run": false,
+  "live_orx_goal_created": false,
+  "note": "Tests regenerated docs/m1.2-report.md; that unrelated generated difference was restored to its initially clean HEAD contents."
+}
