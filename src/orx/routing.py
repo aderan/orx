@@ -45,6 +45,11 @@ class RouteRequest:
     required_capabilities: tuple[str, ...] = ()
     pinned_profile: str | None = None
     allow_class_downgrade: bool = False
+    # G009 T004: task-scoped candidate exclusions (same-condition blocker
+    # suppression). Unlike resource status, which is a profile-global fact,
+    # a suppressed (task, profile) pair must not remove the profile for
+    # other tasks — so the exclusion rides the request, not the store.
+    exclude_profiles: tuple[str, ...] = ()
 
     def describe(self) -> dict:
         out: dict = {"role": self.role.value}
@@ -54,6 +59,8 @@ class RouteRequest:
             out["required_capabilities"] = sorted(self.required_capabilities)
         if self.pinned_profile:
             out["pinned_profile"] = self.pinned_profile
+        if self.exclude_profiles:
+            out["exclude_profiles"] = sorted(self.exclude_profiles)
         return out
 
 
@@ -119,7 +126,14 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             continue
         resource = store.resource_get(name)  # missing row -> unknown, still routable
         reject: str | None = None
-        if resource in NON_ROUTABLE_RESOURCE_STATUSES:
+        if name in req.exclude_profiles:
+            # Task-scoped exclusion (G009 T004): the same-condition blocker
+            # streak for THIS task on THIS profile reached the configured
+            # bound. The profile stays routable for every other task; here
+            # it is skipped with the same candidate/reject audit shape the
+            # resource gates use.
+            reject = f"suppressed_blocker:{name}"
+        elif resource in NON_ROUTABLE_RESOURCE_STATUSES:
             reject = resource.value  # 'unavailable' | 'exhausted' | 'auth_required'
             if resource is ResourceStatus.EXHAUSTED:
                 # Time-bounded gate (G005): an exhaustion whose reset time is

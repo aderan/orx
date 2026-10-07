@@ -538,16 +538,65 @@ _CLASSIFICATION_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-def classify_failure(run_result) -> str:
-    """Best-effort ErrorKind for a failed launch. Anything unrecognized is
-    PROCESS_FAILURE — the safe default that never auto-retries."""
-    text = captured_stderr(run_result) + "\n" + captured_stdout(run_result)
-    lowered = text.lower()
+def error_kind_from_text(text: str) -> str:
+    """Best-effort ErrorKind for one blob of harness/process text (the
+    shared pattern pass `classify_failure` applies to a launch's captured
+    output; G009 T004 also feeds it recorded failure reasons, so recovery
+    decisions classify history and live launches with one vocabulary).
+    Anything unrecognized is PROCESS_FAILURE — the safe default that never
+    auto-retries."""
+    lowered = (text or "").lower()
     if lowered.strip():
         for needle, kind in _CLASSIFICATION_PATTERNS:
             if needle in lowered:
                 return kind
     return "process_failure"
+
+
+def classify_failure(run_result) -> str:
+    """Best-effort ErrorKind for a failed launch. Anything unrecognized is
+    PROCESS_FAILURE — the safe default that never auto-retries."""
+    return error_kind_from_text(
+        captured_stderr(run_result) + "\n" + captured_stdout(run_result)
+    )
+
+
+# G009 T004 — same-session continuation capability, verified 2026-10-07 from
+# each CLI's own help output (read-only invocations; no paid calls):
+#
+#   cursor agent --help      (3.23.12): "--resume [chatId]  Select a session
+#                                     to resume" and "--continue  Continue
+#                                     previous session"
+#   codex exec resume --help (0.160.0): "Resume a previous session by id or
+#                                     pick the most recent with --last"
+#                                     (works in exec mode: [SESSION_ID]
+#                                     [PROMPT])
+#   shell                    a plain executable — no session exists at all,
+#                                     so there is nothing to resume
+#
+# zcode is a HOST harness (driver = 'host'): continuation is the host
+# session model itself, not a CLI resume flag, so it maps to None
+# ("not a CLI-launch question"). Unknown values also map to None — the
+# guidance never claims a capability that was not verified.
+HARNESS_RESUME_SUPPORT: dict[str, bool] = {
+    "cursor": True,
+    "codex": True,
+    "shell": False,
+}
+
+# The exact continuation command per resume-capable harness, from the same
+# help output — the retry guidance quotes what the operator can actually run.
+HARNESS_RESUME_COMMAND: dict[str, str] = {
+    "cursor": "cursor agent --resume <session id>",
+    "codex": "codex exec resume <session id>",
+}
+
+
+def harness_resume_supported(harness: str) -> bool | None:
+    """Whether a CLI harness can continue an existing session. True/False
+    for the verified CLI harnesses; None when the question does not apply
+    (host harnesses, unknown names)."""
+    return HARNESS_RESUME_SUPPORT.get(harness)
 
 
 # Quota reset extraction (G005). Codex embeds the exact reset moment in its

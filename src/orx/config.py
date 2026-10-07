@@ -70,6 +70,13 @@ BUILTIN_DEFAULTS: dict = {
     "plan.deep.profiles": [],
     "worker.profiles": [],
     "worker.max_check_rounds": 3,
+    # G009 T004: bounded re-launches for a same-condition blocker. Once a
+    # (task, profile) has this many consecutive same-fingerprint
+    # permission/environment failures, that profile is not re-launched for
+    # that task (the ladder falls through or dispatch stops with a recorded
+    # reason). Default 3 = the Goal constraint: at most three consecutive
+    # attempts on the same problem.
+    "worker.max_same_blocker_attempts": 3,
     # G006 (docs/host-progress-contract.md §8): the long-silence threshold
     # for host worker progress reports, in minutes. Observation only — an
     # overdue report produces a check-the-original-session hint, never a
@@ -94,6 +101,7 @@ WRITABLE_SPEC: dict[str, str] = {
     "plan.deep.profiles": "profile names (comma-separated or a JSON array)",
     "worker.profiles": "profile names (comma-separated or a JSON array)",
     "worker.max_check_rounds": "integer >= 1",
+    "worker.max_same_blocker_attempts": "integer >= 1",
     "worker.progress_timeout_min": "integer >= 1",
     "verify.profiles": "profile names (comma-separated or a JSON array)",
     "runtime.max_parallel": "integer >= 1",
@@ -227,6 +235,12 @@ class Config:
     # kills a session; the value bounds what prompts prescribe and what
     # task_check reports.
     worker_max_check_rounds: int = 3
+    # G009 T004: bounded re-launches for a same-condition blocker. Once a
+    # (task, profile) trailing same-fingerprint blocker streak reaches this
+    # count, the profile is excluded from that task's routing (fall through
+    # to the next rung, or stop with a recorded reason). Code failures are
+    # never counted — the repair path stays open.
+    worker_max_same_blocker_attempts: int = 3
     # G006 §8: host worker progress-report timeout in minutes (>= 1).
     # Long silence over this bound only raises an observation hint.
     worker_progress_timeout_min: int = 60
@@ -345,6 +359,19 @@ def load_config(path: Path) -> Config:
         errors.append("config.toml: [worker] max_check_rounds must be an integer >= 1")
         check_rounds = 3
 
+    blocker_limit = (
+        worker.get("max_same_blocker_attempts", 3)
+        if isinstance(worker, dict) else 3
+    )
+    if (
+        not isinstance(blocker_limit, int) or isinstance(blocker_limit, bool)
+        or blocker_limit < 1
+    ):
+        errors.append(
+            "config.toml: [worker] max_same_blocker_attempts must be an integer >= 1"
+        )
+        blocker_limit = 3
+
     progress_timeout = (
         worker.get("progress_timeout_min", 60) if isinstance(worker, dict) else 60
     )
@@ -387,6 +414,7 @@ def load_config(path: Path) -> Config:
         worker_profiles=worker_profiles,
         verify_profiles=verify_profiles,
         worker_max_check_rounds=check_rounds,
+        worker_max_same_blocker_attempts=blocker_limit,
         worker_progress_timeout_min=progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
@@ -694,6 +722,7 @@ def load_effective(
     worker_profiles = layered("worker.profiles") or []
     verify_profiles = layered("verify.profiles") or []
     worker_check_rounds = layered("worker.max_check_rounds")
+    worker_blocker_limit = layered("worker.max_same_blocker_attempts")
     worker_progress_timeout = layered("worker.progress_timeout_min")
     inbox_labels = layered("inbox.github_labels") or []
     inbox_auto_accept = layered("inbox.auto_accept")
@@ -727,6 +756,15 @@ def load_effective(
     ):
         errors.append("config.toml: [worker] max_check_rounds must be an integer >= 1")
         worker_check_rounds = 3
+    if (
+        not isinstance(worker_blocker_limit, int)
+        or isinstance(worker_blocker_limit, bool)
+        or worker_blocker_limit < 1
+    ):
+        errors.append(
+            "config.toml: [worker] max_same_blocker_attempts must be an integer >= 1"
+        )
+        worker_blocker_limit = 3
     if (
         not isinstance(worker_progress_timeout, int)
         or isinstance(worker_progress_timeout, bool)
@@ -784,6 +822,7 @@ def load_effective(
         worker_profiles=worker_profiles,
         verify_profiles=verify_profiles,
         worker_max_check_rounds=worker_check_rounds,
+        worker_max_same_blocker_attempts=worker_blocker_limit,
         worker_progress_timeout_min=worker_progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
@@ -848,6 +887,7 @@ def config_entries(effective: EffectiveConfig) -> list[dict]:
         "plan.deep.profiles": list(cfg.depth_profiles.get("deep") or []),
         "worker.profiles": list(cfg.worker_profiles),
         "worker.max_check_rounds": cfg.worker_max_check_rounds,
+        "worker.max_same_blocker_attempts": cfg.worker_max_same_blocker_attempts,
         "worker.progress_timeout_min": cfg.worker_progress_timeout_min,
         "verify.profiles": list(cfg.verify_profiles),
         "runtime.max_parallel": cfg.max_parallel,
@@ -956,6 +996,11 @@ def parse_config_value(key: str, raw: str, *, profile_names: set[str] | None = N
         _require_known_profiles(key, names, profile_names)
         return names
     if key == "worker.max_check_rounds":
+        number = _parse_int(key, raw)
+        if number < 1:
+            raise ConfigError([f"{key} must be an integer >= 1"])
+        return number
+    if key == "worker.max_same_blocker_attempts":
         number = _parse_int(key, raw)
         if number < 1:
             raise ConfigError([f"{key} must be an integer >= 1"])

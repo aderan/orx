@@ -10,6 +10,41 @@
 
 ### G009/R009 轮次记录
 
+- **T004（2026-10-07 交付）**：建立失败类型、同条件 blocker 抑制与有界 check-fix 机制。
+  恢复词汇 `health.failure_class`（permission/environment/code/resource/other，仅从已记录
+  事实分类：blocked 交付 + 权限标记 → permission；blocked 其余 → environment；delivery
+  failed / 红门禁 → code；quota/rate 文本 → resource（T005 域，仅归类不处置）；protocol_error
+  与无模式崩溃 → other 永不抑制）；blocker 条件指纹 = sha256(归一化 reason 核心 + profile +
+  harness + class)[:16]，归一化剥离 ORX 交付前缀与 `exit N:` transport 前缀（同一条件经不同
+  信封记录指纹相等）；`health.blocker_streak` 数 (task, profile) 尾部同指纹 blocker 连续数，
+  遇该 profile 的成功/异类失败/异指纹即断（条件确变则诚实重置）。
+  有界启动门：新配置 `worker.max_same_blocker_attempts`（默认 3，逐层校验、`orx config set`
+  可写），达限后 run_slice 以任务级 `exclude_profiles` 排除该 profile（routing.RouteRequest
+  新增任务域排除，candidate reject_reason=`suppressed_blocker:<name>` 入 routing_decisions
+  审计；profile 对其他任务仍可路由），梯次照常下落到下一 rung（含 T003 的按 driver 分发与
+  `_reroute_resource_failure` 同样尊重排除）；无可路由档时停止并三处留痕——run 输出
+  `routing_errors[].suppressed`（class/fingerprint/count/limit/blocker/remedy）、
+  `dispatch_suppressed` task event、以及 task_retry 载荷 `suppressed_blockers`（重试转换仍
+  可用，操作者意图不变，但控制器预先得知 run 不会再启动该 profile）。remedy 文案只指向
+  条件变更：config change / routing change / human，绝不"再试一次"。代码红（code 类）永不
+  计入抑制——修复路径完整保留（既有 max_check_rounds 会话内循环 + 带修复包的 retry）。
+  同会话延续为实测事实（2026-10-07 只读 help 取证，零付费调用）：cursor 3.23.12
+  `cursor agent --resume [chatId]`/`--continue`；codex-cli 0.160.0 `codex exec resume
+  [SESSION_ID] [PROMPT]`（非交互可用）；shell harness 为裸可执行文件无会话概念；zcode 为
+  host harness（会话延续即宿主会话模型）。`adapters.base.harness_resume_supported` 携带该
+  事实，blocker 类失败的重试提示追加能力诚实行：可 resume 的 harness 指明可续同会话并给出
+  命令；无会话 harness 明言每次都是新进程、修复包即全部上下文（a132 无行 blocker 同样获得
+  分类指导——无 retained 行的 legacy 块仅对 blocker 类例外追加指导，code/other 保持字节兼容）。
+  `_classify_prior_failure` 改用共享分类法（单一分类器）。tests/test_health.py 新增分类真值表
+  （13 例）、指纹确定性/条件键控、streak 尾部计数与重置矩阵；tests/test_routing.py 新增
+  事故端到端复刻（3 次 blocked 后第 4 轮不启动：attempt 仍 3、task 留 runnable、三处留痕
+  断言）、下一 rung 下落（oksh 执行通过且不触第 4 次 cursor）、代码红永不抑制（4+1 次照常
+  启动）、限额可配置（=2 时第 3 轮即抑制）、task_retry 载荷、RouteRequest 排除单元；tests/
+  test_delivery_gate_e2e.py 新增 cursor/shell 两分支的 resume 能力提示契约。docs/
+  routing-strategy.md 新增 Recovery 章节；skills/orx-controller 补抑制停止信号（不是代码
+  问题，改变条件而非重试）。门禁 4 文件 114 passed；全量 948 passed、0 xfail（原 924 +
+  24 新增）。
+
 - **T003（2026-10-07 交付）**：资源失败后的下一档按 driver 分发，补齐有界切换与身份绑定。
   `dispatch._reroute_resource_failure` 由无条件 `_execute_cli_task` 改为按下一 rung 的 driver
   分发：cli → 本 slice 执行（原路径不变）；host → `_park_task` 正式宿主指派（waiting_host +
@@ -53,7 +88,7 @@
 **Goal**: 完成 T004–T006。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: Not Started
+**Status**: In Progress（R009：T004 已交付，见上方轮次记录；T005–T006 待做）
 
 ## Stage 3: 建立提前验证能力
 **Goal**: 完成 T007–T009。

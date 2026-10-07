@@ -543,9 +543,9 @@ def test_passed_cli_delivery_with_red_gate_keeps_profile_healthy(tmp_path, monke
 
 
 def test_passed_cli_delivery_clears_the_failure_streak(tmp_path, monkeypatch):
-    """Learning still works when the capability IS proven: a passed
-    delivery on a served, gated-green request clears the failure streak —
-    the success transition requires the delivery fact, and got it."""
+    """Learning still works when the capability IS proven: a passed delivery
+    on a served, gated-green request clears the failure streak — the
+    success transition requires the delivery fact, and got it."""
     def prepare(project):
         health.record_attempt_outcome(project.store, "cli-fake", ok=False,
                                       error_kind="temporary_failure")
@@ -560,5 +560,197 @@ def test_passed_cli_delivery_clears_the_failure_streak(tmp_path, monkeypatch):
         assert row.status == "available"
         assert row.failure_streak == 0
         assert row.last_error_kind is None
+    finally:
+        project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T004: recovery failure classes, same-condition blocker fingerprints,
+# and the bounded same-blocker streak. The incident (a131/a132/a133): three
+# consecutive CLI attempts on the SAME profile hit the SAME permission
+# blocker (shell approval denied); ORX kept re-launching with retry prompts
+# that misdiagnosed it as code failure. Recovery decisions must key on
+# (task, profile, blocker class, condition fingerprint): a blocker whose
+# conditions have not changed must not be re-launched after a bounded
+# number of attempts, while code-red failures keep every repair path open.
+#
+# Quota/rate-limit facts stay resource facts (health + the G005 reroute,
+# T005's domain): they are classified here only so the taxonomy can tell
+# them apart from blockers.
+
+
+@pytest.mark.parametrize("result,reason,expected", [
+    # The incident's shape: an exit-0 blocked delivery whose summary names
+    # the permission system.
+    ("blocked",
+     "delivery blocked (environment/tool blocked): shell approval denied;"
+     " every shell invocation was rejected before execution",
+     "permission"),
+    ("blocked",
+     "delivery blocked (environment/tool blocked): command was rejected by"
+     " the sandbox policy",
+     "permission"),
+    # A blocked delivery that is environmental but not a permission fact.
+    ("blocked",
+     "delivery blocked (environment/tool blocked): pytest binary missing"
+     " from PATH",
+     "environment"),
+    # Worker-reported code failures and red controller gates: repairable.
+    ("failed",
+     "delivery failed (worker-reported failure): cannot produce c.marker"
+     " within this scope",
+     "code"),
+    ("failed",
+     "delivery gate: 2 of 3 command check(s) red: pytest -q exit 1",
+     "code"),
+    # Resource facts (T005's domain): transport text carrying the standard
+    # vocabulary.
+    ("failed", "exit 1: rate limit exceeded", "resource"),
+    ("failed", "exit 1: usage limit reached; try again at Oct 8th, 2026", "resource"),
+    # Environment facts from transport text: auth and model availability.
+    ("failed", "exit 1: Error: Not logged in", "environment"),
+    ("failed", "exit 1: cannot use this model on this plan", "environment"),
+    # A permission blocker that surfaces as a transport failure instead of
+    # a delivery document.
+    ("failed", "exit 1: internal shell approval denied by policy", "permission"),
+    # Unproven facts stay unclassified: no suppression either way.
+    ("protocol_error", "delivery protocol_error (no delivery document)", "other"),
+    ("failed", "exit 1: segfault somewhere unrelated", "other"),
+    (None, None, "other"),
+])
+def test_failure_class_taxonomy(result, reason, expected):
+    """Truth table for the recovery classification: permission/environment
+    are blocker classes (same-condition re-launch cannot help), code keeps
+    every repair path open, resource belongs to the health/reroute seam,
+    anything unproven is 'other' and never suppresses."""
+    assert health.failure_class(result, reason) == expected
+
+
+def test_blocker_classes_are_permission_and_environment_only():
+    assert health.BLOCKER_CLASSES == ("permission", "environment")
+
+
+def test_blocker_fingerprint_is_deterministic_and_condition_keyed():
+    """The fingerprint names the CONDITION, not the wording: identical
+    blocker facts hash identically across calls (deterministic), the
+    transport 'exit N:' prefix and the delivery-result prefix are noise,
+    and a different profile, harness, class, or core reason is a different
+    condition."""
+    a = health.blocker_fingerprint(
+        "cursor-strong", "cursor", "permission",
+        "delivery blocked (environment/tool blocked): shell approval denied"
+        " before execution")
+    b = health.blocker_fingerprint(
+        "cursor-strong", "cursor", "permission",
+        "exit 1: shell approval denied   before execution")
+    c = health.blocker_fingerprint(
+        "cursor-strong", "cursor", "permission",
+        "delivery blocked (environment/tool blocked): shell approval denied"
+        " before execution")
+    assert a == b == c
+    assert len(a) == 16  # a stable, displayable digest
+
+    # Different profile / harness / class / core reason: different condition.
+    assert health.blocker_fingerprint(
+        "cursor-frontier", "cursor", "permission", "shell approval denied"
+    ) != a
+    assert health.blocker_fingerprint(
+        "cursor-strong", "codex", "permission", "shell approval denied"
+    ) != a
+    assert health.blocker_fingerprint(
+        "cursor-strong", "cursor", "environment", "shell approval denied"
+    ) != a
+    assert health.blocker_fingerprint(
+        "cursor-strong", "cursor", "permission", "pytest binary missing"
+    ) != a
+
+
+def _blocker_attempt(store, revision_id, task_id, *, profile, harness="cursor",
+                     result="blocked", reason="delivery blocked (environment/tool"
+                     " blocked): shell approval denied before execution"):
+    attempt = store.attempt_create(
+        revision_row_id=revision_id, role="worker", profile=profile,
+        driver="cli", harness=harness, model_id="m", requested_effort="medium",
+        task_id=task_id,
+    )
+    store.attempt_update(attempt.id, ended_at="2026-10-07T00:00:00+00:00",
+                         result=result, failure_reason=reason)
+    return attempt
+
+
+def _planned_single_task(project, task_id="T001"):
+    goal = dispatch.create_goal(project, "blocker streaks", ["a1"])[0]
+    dispatch.submit_plan(project, __import__("conftest").ir_for(goal, [
+        __import__("conftest").task_spec(task_id, acceptance=["a1"],
+                                         verification=["true"]),
+    ]))
+    from conftest import active_task
+    return active_task(project, task_id)
+
+
+def test_blocker_streak_counts_trailing_same_fingerprint_per_profile(
+        tmp_path, monkeypatch):
+    """The streak is the trailing run of blocker failures with the SAME
+    fingerprint on ONE profile of ONE task — exactly the fact the incident
+    lacked. A different fingerprint, class, or an intervening success on
+    that profile breaks the run; another profile's attempts are that
+    profile's own streak, never this one's."""
+    monkeypatch.chdir(tmp_path)
+    from conftest import make_project
+    project = make_project(tmp_path)
+    try:
+        task = _planned_single_task(project)
+        rid = task.revision_id
+
+        for _ in range(3):
+            _blocker_attempt(project.store, rid, "T001", profile="cursor-strong")
+        streak = health.blocker_streak(project.store, rid, "T001", "cursor-strong")
+        assert streak is not None
+        assert streak.count == 3
+        assert streak.failure_class == "permission"
+        assert streak.profile == "cursor-strong"
+        assert "shell approval denied" in streak.latest_reason
+
+        # A success on the profile breaks the trailing run.
+        ok = project.store.attempt_create(
+            revision_row_id=rid, role="worker", profile="cursor-strong",
+            driver="cli", harness="cursor", model_id="m",
+            requested_effort="medium", task_id="T001")
+        project.store.attempt_update(ok.id, ended_at="2026-10-07T01:00:00+00:00",
+                                     result="completed")
+        assert health.blocker_streak(
+            project.store, rid, "T001", "cursor-strong") is None
+
+        # A code failure after two blockers also breaks the run.
+        _blocker_attempt(project.store, rid, "T001", profile="cursor-strong")
+        _blocker_attempt(project.store, rid, "T001", profile="cursor-strong")
+        code = project.store.attempt_create(
+            revision_row_id=rid, role="worker", profile="cursor-strong",
+            driver="cli", harness="cursor", model_id="m",
+            requested_effort="medium", task_id="T001")
+        project.store.attempt_update(
+            code.id, ended_at="2026-10-07T02:00:00+00:00", result="failed",
+            failure_reason="delivery gate: 1 of 1 command check(s) red")
+        assert health.blocker_streak(
+            project.store, rid, "T001", "cursor-strong") is None
+
+        # A DIFFERENT blocker condition starts its own streak at 1.
+        _blocker_attempt(
+            project.store, rid, "T001", profile="cursor-strong",
+            reason="delivery blocked (environment/tool blocked): pytest"
+                   " binary missing from PATH")
+        streak = health.blocker_streak(project.store, rid, "T001", "cursor-strong")
+        assert streak.count == 1
+        assert streak.failure_class == "environment"
+
+        # Another profile's blockers never count for this profile.
+        _blocker_attempt(project.store, rid, "T001", profile="codex-frontier",
+                         harness="codex")
+        other = health.blocker_streak(
+            project.store, rid, "T001", "codex-frontier")
+        assert other is not None and other.count == 1
+        own = health.blocker_streak(
+            project.store, rid, "T001", "cursor-strong")
+        assert own.count == 1
     finally:
         project.close()

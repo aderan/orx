@@ -665,3 +665,286 @@ capabilities = ["coding"]
         assert attempts["host-worker-b"]["result"] is None
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T004: same-condition blocker suppression — bounded launches with an
+# explainable stop. The incident (a131/a132/a133, 2026-10-07): three
+# consecutive CLI attempts on the SAME profile hit the SAME permission
+# blocker (shell approval denied in Cursor); every retry re-launched the
+# profile and misdiagnosed the blocker as code failure, burning ~10M tokens.
+# Recovery must key on (task, profile, blocker class, condition
+# fingerprint): once the trailing same-fingerprint blocker streak on a
+# profile reaches worker.max_same_blocker_attempts, that profile is not
+# re-launched for that task — the ladder falls through, or dispatch stops
+# with a recorded, explainable reason. Code-red failures are never
+# suppressed: the repair path stays fully open.
+
+import json as _json
+
+from orx import adapters as _adapters
+from orx import runtime as _runtime
+from orx.adapters.base import Launch as _Launch, ProbeReport as _ProbeReport
+
+
+BLOCKED_CURSOR_PROFILES_TOML = HOST_PROFILES_TOML.replace(
+    '[profiles.cli-fake]\ndriver = "cli"\nharness = "shell"\nexecutable = "true"',
+    '[profiles.cursor-blocked]\ndriver = "cli"\nharness = "cursor"',
+) + """
+
+[profiles.oksh]
+driver = "cli"
+harness = "shell"
+executable = "/bin/true"
+prompt_transport = "argument"
+model = "m-ok"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+"""
+
+_BLOCKED_ENVELOPE = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "session_id": "t004-session",
+    "result": (
+        "blocked: the start gate cannot run in this environment.\n\n"
+        '```json\n{"status":"blocked","summary":"internal shell approval'
+        ' denied: every shell invocation was rejected",'
+        '"checks":[],"artifacts":[]}\n```'
+    ),
+    "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 50},
+}
+
+_CODE_FAILED_ENVELOPE = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "session_id": "t004-session",
+    "result": (
+        '```json\n{"status":"failed","summary":"tests still red: import'
+        ' error in orx example","checks":[],"artifacts":[]}\n```'
+    ),
+    "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 50},
+}
+
+
+def _t004_project(tmp_path, monkeypatch, envelope: dict, *, ladder, worker_extra=""):
+    """A project whose first worker rung is a cursor-harness CLI stand-in
+    pinned to one captured result envelope (only the model process is
+    replaced), plus an optional healthy shell rung. Returns the project."""
+    monkeypatch.chdir(tmp_path)
+    worker_section = f'profiles = {ladder}\n{worker_extra}' if worker_extra \
+        else f'profiles = {ladder}'
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', worker_section
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=BLOCKED_CURSOR_PROFILES_TOML)
+    adapter = _adapters.get_adapter("cursor")
+    monkeypatch.setattr(adapter, "probe",
+                        lambda: _ProbeReport(True, "captured CLI stand-in"))
+    monkeypatch.setattr(
+        adapter, "build_worker_launch",
+        lambda **kwargs: _Launch(argv=["captured-agent"], cwd=tmp_path,
+                                  timeout=5))
+    monkeypatch.setattr(
+        _runtime, "run_launch",
+        lambda launch: _runtime.CommandResult(
+            command="captured-agent", exit_code=0,
+            stdout=_json.dumps(envelope), stderr="",
+            duration_sec=0.01, timed_out=False))
+    goal = dispatch.create_goal(
+        project, objective="same-condition blocker suppression",
+        acceptance=["done"], constraints=[], context="",
+    )[0]
+    dispatch.submit_plan(project, ir_for(goal, [task_spec(
+        "T001", acceptance=goal.acceptance, verification=["true"],
+        complexity="low",
+    )]))
+    return project
+
+
+def _run_rounds(project, rounds: int, retry_last: bool = True):
+    """run -> failed (blocked delivery) -> retry, `rounds` times. Returns
+    the outcome of the final run_slice. retry_last=False leaves the task
+    FAILED after the final round (for tests that drive the retry
+    themselves)."""
+    outcome = None
+    for index in range(rounds):
+        outcome = dispatch.run_slice(project)
+        assert active_task(project, "T001").status == "failed"
+        if retry_last or index < rounds - 1:
+            dispatch.task_retry(project, "T001")
+    return outcome
+
+
+def _cursor_attempts(project):
+    return project.store.conn.execute(
+        "SELECT id,result,failure_reason FROM attempts"
+        " WHERE role='worker' AND profile='cursor-blocked' ORDER BY id"
+    ).fetchall()
+
+
+def test_route_excludes_profiles_with_recorded_reason(project):
+    """Routing-level unit: exclude_profiles rejects exactly those candidates
+    with a suppress reason and lets the ladder fall through — the same
+    candidate/reject audit shape every other gate uses."""
+    result = route(project, role=Role.WORKER,
+                   exclude_profiles=("host-worker",))
+    assert result.ok
+    assert result.selected == "host-external"
+    assert result.fallback_used is True
+    rejected = {c.profile: c.reject_reason for c in result.candidates
+                if not c.kept}
+    assert "suppressed_blocker" in rejected["host-worker"]
+    # A pinned profile that is also excluded is an honest error, never a
+    # silent launch past the suppression.
+    pinned = route(project, role=Role.WORKER, pinned_profile="host-worker",
+                   exclude_profiles=("host-worker",))
+    assert not pinned.ok
+    assert "suppressed_blocker" in pinned.error
+
+
+def test_same_permission_blocker_is_not_relaunched_after_limit(
+        tmp_path, monkeypatch):
+    """The incident, replayed end to end: after the configured number of
+    consecutive same-fingerprint permission blockers, the profile is not
+    launched again for this task. The 4th round launches nothing (no 4th
+    attempt, no paid call), the task stays runnable, and the stop is
+    recorded and explained: routing decision, task event, and a structured
+    entry naming the blocker, the count, and the remedy."""
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _run_rounds(project, 3)
+        assert len(_cursor_attempts(project)) == 3
+
+        outcome = dispatch.run_slice(project)
+
+        # Nothing was launched: the attempt count stands at 3.
+        assert len(_cursor_attempts(project)) == 3
+        assert outcome["started"] == [] and outcome["failed"] == []
+        # The task stays runnable — nothing failed, nothing was paid for.
+        assert active_task(project, "T001").status == "runnable"
+
+        # The stop is explained in the run output ...
+        [error] = [e for e in outcome["routing_errors"] if e["task"] == "T001"]
+        assert "suppressed_blocker" in error["error"]
+        [suppressed] = error["suppressed"]
+        assert suppressed["profile"] == "cursor-blocked"
+        assert suppressed["failure_class"] == "permission"
+        assert suppressed["count"] == 3
+        assert suppressed["limit"] == 3
+        assert len(suppressed["fingerprint"]) == 16
+        assert "shell approval denied" in suppressed["blocker"]
+        for word in ("config", "routing", "human"):
+            assert word in suppressed["remedy"]
+
+        # ... in the routing audit trail ...
+        decision = project.store.conn.execute(
+            "SELECT candidates_json FROM routing_decisions"
+            " WHERE role='worker' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        candidates = _json.loads(decision["candidates_json"])
+        [candidate] = [c for c in candidates if c["profile"] == "cursor-blocked"]
+        assert candidate["kept"] is False
+        assert "suppressed_blocker" in candidate["reject_reason"]
+
+        # ... and in the task's own event history.
+        task = active_task(project, "T001")
+        events = [e for e in project.store.task_events(task.revision_id, "T001")
+                  if e.event == "dispatch_suppressed"]
+        assert events
+        assert "shell approval denied" in events[-1].reason
+        assert "cursor-blocked" in events[-1].reason
+    finally:
+        project.close()
+
+
+def test_suppressed_rung_falls_through_to_next_profile(tmp_path, monkeypatch):
+    """Suppression is per (task, profile): the ladder still serves the task
+    on the next rung, dispatched by that rung's own driver. The healthy
+    shell rung executes in the same slice — a real repair path, not a dead
+    stop, while the blocked rung is never re-launched."""
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked", "oksh"]')
+    try:
+        _run_rounds(project, 3)
+        assert len(_cursor_attempts(project)) == 3
+        task_row = active_task(project, "T001")
+        assert task_row.status == "runnable"
+
+        outcome = dispatch.run_slice(project)
+
+        assert outcome["routing_errors"] == []
+        [started] = [e for e in outcome["started"] if e["task"] == "T001"]
+        assert started["profile"] == "oksh"
+        assert started.get("fallback_from") == "cursor-blocked"
+        assert started["status"] == "passed"
+        assert project.store.task_get(task_row.revision_id, "T001").status == "passed"
+        # The blocked rung was not touched a 4th time.
+        assert len(_cursor_attempts(project)) == 3
+        profiles = [row["profile"] for row in project.store.conn.execute(
+            "SELECT profile FROM attempts WHERE role='worker' ORDER BY id"
+        ).fetchall()]
+        assert profiles.count("oksh") == 1
+    finally:
+        project.close()
+
+
+def test_code_red_failures_are_never_suppressed(tmp_path, monkeypatch):
+    """The other half of the incident lesson: a CODE failure (worker-reported
+    failed delivery, red checks) is a real repair opportunity. No number of
+    repeated code failures ever suppresses the profile — every retry routes
+    a fresh attempt exactly as before."""
+    project = _t004_project(tmp_path, monkeypatch, _CODE_FAILED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _run_rounds(project, 4)
+        # Four rounds, four fresh launches: the repair path is unbounded by
+        # the blocker mechanism (the per-attempt check budget and the
+        # controller bound it instead).
+        assert len(_cursor_attempts(project)) == 4
+        assert active_task(project, "T001").status == "runnable"
+        outcome = dispatch.run_slice(project)
+        assert outcome["routing_errors"] == []
+        assert len(_cursor_attempts(project)) == 5
+    finally:
+        project.close()
+
+
+def test_suppression_limit_is_configurable(tmp_path, monkeypatch):
+    """worker.max_same_blocker_attempts is a config knob: at 2, the third
+    round already suppresses (bounded launch count follows configuration,
+    not a hardwired constant)."""
+    project = _t004_project(
+        tmp_path, monkeypatch, _BLOCKED_ENVELOPE, ladder='["cursor-blocked"]',
+        worker_extra="max_same_blocker_attempts = 2\n")
+    assert project.config.worker_max_same_blocker_attempts == 2
+    try:
+        _run_rounds(project, 2)
+        assert len(_cursor_attempts(project)) == 2
+        outcome = dispatch.run_slice(project)
+        assert len(_cursor_attempts(project)) == 2  # no third launch
+        [error] = [e for e in outcome["routing_errors"] if e["task"] == "T001"]
+        assert error["suppressed"][0]["count"] == 2
+        assert error["suppressed"][0]["limit"] == 2
+    finally:
+        project.close()
+
+
+def test_task_retry_reports_the_suppressed_blocker(tmp_path, monkeypatch):
+    """The retry surface tells the controller up front what `orx run` will
+    refuse to re-launch: the transition still happens (operator intent),
+    but the payload carries the same explainable suppression facts."""
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _run_rounds(project, 3, retry_last=False)
+        result = dispatch.task_retry(project, "T001")
+        assert result["status"] == "runnable"
+        [suppressed] = result["suppressed_blockers"]
+        assert suppressed["profile"] == "cursor-blocked"
+        assert suppressed["failure_class"] == "permission"
+        assert suppressed["count"] == 3
+        assert "routing" in suppressed["remedy"]
+    finally:
+        project.close()

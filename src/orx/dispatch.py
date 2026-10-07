@@ -87,6 +87,13 @@ profiles = ["orx-host"]
 # kills a session); it bounds what the worker prompt prescribes and what
 # `orx task check` reports as check_rounds.
 max_check_rounds = 3
+# G009 T004: bounded re-launches for a same-condition blocker. After this
+# many consecutive permission/environment failures with an unchanged
+# condition fingerprint on one (task, profile), that profile is not
+# re-launched for the task: the ladder falls through to the next rung, or
+# dispatching stops with a recorded reason naming the blocker and what
+# must change. Code failures never count — the repair path stays open.
+max_same_blocker_attempts = 3
 # Long-silence threshold for host worker progress reports
 # (`orx task heartbeat`), in minutes. Observation only: past this bound
 # status/task list/recovery raise a check-the-original-session hint —
@@ -1472,6 +1479,80 @@ def submit_plan(project: Project, ir_data: dict,
 # Run slice (route runnable tasks; M0 parks host/external work)
 
 
+# G009 T004: the remedy sentence every suppression surface carries. It
+# names what must CHANGE, never "try again" — the incident's failure was
+# exactly retry prompts that treated a permission blocker as red tests.
+_SUPPRESSION_REMEDY = (
+    "change the conditions, not the attempt count: fix the underlying"
+    " setup (config change: harness approval/sandbox settings or the"
+    " profile definition), route a different profile (routing change:"
+    " reorder [worker] profiles, or take the task over as host/external),"
+    " or investigate manually (human); within this revision the"
+    " (task, profile) pair stays excluded until a different failure"
+    " signature, a success on the profile, or a replan resets the"
+    " recorded streak"
+)
+
+
+def _suppression_payload(streak, limit: int) -> dict:
+    """The structured explanation for one suppressed (task, profile): the
+    blocker class, the condition fingerprint, the bounded count, the
+    normalized blocker text, and the remedy. Every surface (run output,
+    task_retry, task event) carries the same dict."""
+    return {
+        "profile": streak.profile,
+        "failure_class": streak.failure_class,
+        "fingerprint": streak.fingerprint,
+        "count": streak.count,
+        "limit": limit,
+        "blocker": health.normalize_blocker_reason(streak.latest_reason),
+        "remedy": _SUPPRESSION_REMEDY,
+    }
+
+
+def _suppression_reason(payload: dict, task_id: str) -> str:
+    return (
+        f"dispatch stopped for task {task_id}: profile '{payload['profile']}'"
+        f" hit the same {payload['failure_class']} blocker"
+        f" {payload['count']}/{payload['limit']} consecutive times"
+        f" (fingerprint {payload['fingerprint']}; blocker:"
+        f" {payload['blocker']}). {payload['remedy']}"
+    )
+
+
+def _suppressed_blockers(store: Store, config, revision_id: int,
+                         task_id: str) -> dict[str, dict]:
+    """Actively suppressed profiles for one task: every profile whose
+    trailing same-fingerprint blocker streak on this task reached the
+    configured worker.max_same_blocker_attempts. Keyed by profile name,
+    valued by the explanation payload; empty when nothing is suppressed.
+    Only profiles with recorded attempts on this task can qualify — the
+    streak is a recorded fact, never a prediction."""
+    limit = config.worker_max_same_blocker_attempts
+    profiles = {
+        a.profile for a in store.attempts_for_task(revision_id, task_id)
+        if a.role == "worker"
+    }
+    out: dict[str, dict] = {}
+    for name in sorted(profiles):
+        streak = health.blocker_streak(store, revision_id, task_id, name)
+        if streak is not None and streak.count >= limit:
+            out[name] = _suppression_payload(streak, limit)
+    return out
+
+
+def _annotate_suppression(entry: dict, suppressed: dict[str, dict],
+                          result: routing.RouteResult) -> None:
+    """Note on a dispatched entry which rungs were skipped and why. The
+    full payload rides the routing_errors stop entry; dispatched entries
+    get the compact form (which rung the fallback replaces)."""
+    if not suppressed:
+        return
+    entry["suppressed_rungs"] = sorted(suppressed)
+    if result.fallback_used and len(suppressed) == 1:
+        entry["fallback_from"] = next(iter(suppressed))
+
+
 def run_slice(project: Project) -> dict:
     """Route runnable tasks. Host/external work is parked; CLI work is
     executed through adapters, at most `effective_parallelism` (1) process
@@ -1505,24 +1586,49 @@ def run_slice(project: Project) -> dict:
         if TaskStatus(current.status) is not TaskStatus.RUNNABLE:
             continue
         caps = tuple(current.routing.get("required_capabilities", []))
-        request = routing.RouteRequest(role=Role.WORKER, required_capabilities=caps)
+        # G009 T004: same-condition blocker suppression. Profiles whose
+        # trailing same-fingerprint blocker streak on THIS task reached the
+        # configured bound are excluded from this route — a re-launch that
+        # recorded evidence already proved futile is never paid for again.
+        # The exclusion is task-scoped (the profile stays routable for
+        # other tasks) and the ladder falls through exactly like a resource
+        # gate; when nothing is routable the stop is recorded and explained.
+        suppressed = _suppressed_blockers(
+            store, project.config, revision.id, task.task_id)
+        request = routing.RouteRequest(
+            role=Role.WORKER,
+            required_capabilities=caps,
+            exclude_profiles=tuple(suppressed),
+        )
         result = routing.route(store, project.config, project.profiles, request)
         if not result.ok:
             routing.persist_decision(store, request, result)
-            out["routing_errors"].append({"task": current.task_id, "error": result.error})
+            entry = {"task": current.task_id, "error": result.error}
+            if suppressed:
+                # The explainable stop: the run output, the routing audit
+                # row above, and the task's own event history all name the
+                # blocker, the bounded count, and the remedy.
+                entry["suppressed"] = list(suppressed.values())
+                payloads = [suppressed[name] for name in sorted(suppressed)]
+                for payload in payloads:
+                    store.task_event_add(
+                        revision.id, task.task_id, current.status, current.status,
+                        "dispatch_suppressed", _suppression_reason(payload, task.task_id),
+                    )
+            out["routing_errors"].append(entry)
             continue
         profile = result.profile
         assert profile is not None
         if profile.driver.value == "host":
             parked_this_slice.add(task.task_id)
-            out["host_required"].append(
-                _park_task(project, goal, run, revision.id, current, result, request, profile, "host")
-            )
+            parked = _park_task(project, goal, run, revision.id, current, result, request, profile, "host")
+            _annotate_suppression(parked, suppressed, result)
+            out["host_required"].append(parked)
         elif profile.driver.value == "external":
             parked_this_slice.add(task.task_id)
-            out["waiting_external"].append(
-                _park_task(project, goal, run, revision.id, current, result, request, profile, "external")
-            )
+            parked = _park_task(project, goal, run, revision.id, current, result, request, profile, "external")
+            _annotate_suppression(parked, suppressed, result)
+            out["waiting_external"].append(parked)
         else:
             if started >= cap:
                 out["deferred"].append(
@@ -1531,6 +1637,7 @@ def run_slice(project: Project) -> dict:
                 continue
             outcome = _execute_cli_task(project, goal, run, revision, current, result, request, profile)
             started += 1
+            _annotate_suppression(outcome, suppressed, result)
             bucket = "failed" if outcome.get("status") == "failed" else "started"
             # Immediate rung fallback (G005): a quota/rate failure has already
             # marked the profile non-routable in health, so one re-route now
@@ -1663,7 +1770,8 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     prompt = worker_prompt(
         goal, task,
         prior_failure=_prior_failure_context(
-            store, revision_row_id, task.task_id, project.root
+            store, revision_row_id, task.task_id, project.root,
+            harness=profile.harness.value,
         ),
         check_budget=project.config.worker_max_check_rounds,
         replan_context=_replan_reference_context(
@@ -1856,7 +1964,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     prompt = worker_prompt(
         goal, task,
         prior_failure=_prior_failure_context(
-            store, revision.id, task.task_id, project.root
+            store, revision.id, task.task_id, project.root,
+            harness=profile.harness.value,
         ),
         check_budget=project.config.worker_max_check_rounds,
         replan_context=_replan_reference_context(
@@ -2119,7 +2228,15 @@ def _reroute_resource_failure(project, goal, run, revision, task_id, caps,
     task = store.task_get(revision.id, task_id)
     if task is None or TaskStatus(task.status) is not TaskStatus.FAILED:
         return None
-    request = routing.RouteRequest(role=Role.WORKER, required_capabilities=caps)
+    # The hop must respect this task's blocker suppressions too (G009
+    # T004): a rung whose same-condition streak is at the bound is not a
+    # legal destination, exactly as in the main run_slice route.
+    suppressed = _suppressed_blockers(store, project.config, revision.id, task_id)
+    request = routing.RouteRequest(
+        role=Role.WORKER,
+        required_capabilities=caps,
+        exclude_profiles=tuple(suppressed),
+    )
     result = routing.route(store, project.config, project.profiles, request)
     if not result.ok or result.selected == failed.get("profile"):
         routing.persist_decision(store, request, result)
@@ -2183,16 +2300,58 @@ _RETRY_GUIDANCE = {
 
 
 def _classify_prior_failure(reason: str, attempt) -> str:
-    """'blocked' | 'code' | 'other', from the failure markers ORX recorded:
-    the attempt's independent delivery result, the delivery-result prefixes
-    on the failure reason, and the delivery gate's red-row signature."""
-    if attempt is not None and attempt.result == "blocked":
+    """'blocked' | 'code' | 'other' for the retry guidance, classified by
+    the shared recovery taxonomy (health.failure_class, G009 T004): the
+    attempt's recorded result plus the reason text. Blocker classes
+    (permission/environment) get the environment-block guidance; code
+    facts get fix-the-checks; everything unproven gets the generic text.
+    The taxonomy is the single classifier — delivery prefixes, transport
+    text, and permission markers are handled once, there."""
+    recorded_result = attempt.result if attempt is not None else None
+    cls = health.failure_class(recorded_result, reason)
+    if cls in health.BLOCKER_CLASSES:
         return "blocked"
-    if reason.startswith("delivery blocked"):
-        return "blocked"
-    if reason.startswith("delivery failed") or "delivery gate:" in reason:
+    if cls == "code":
         return "code"
     return "other"
+
+
+def _resume_capability_line(harness: str | None) -> str | None:
+    """The capability-honest session sentence for blocker guidance (G009
+    T004). Resume support is a VERIFIED fact per harness (adapters.base:
+    cursor `--resume`/`--continue`, codex `exec resume`, read from each
+    CLI's own help output 2026-10-07; a shell profile is a plain
+    executable with no session notion). None when the question does not
+    apply (host harnesses, unknown names) — the guidance never claims a
+    capability that was not verified."""
+    if not harness:
+        return None
+    from orx.adapters.base import (
+        HARNESS_RESUME_COMMAND,
+        harness_resume_supported,
+    )
+    supported = harness_resume_supported(harness)
+    if supported is None:
+        return None
+    if supported:
+        command = HARNESS_RESUME_COMMAND.get(harness)
+        tail = f" (`{command}`)" if command else ""
+        return (
+            f"Session capability (verified from the {harness} CLI help):"
+            f" this harness supports same-session resume{tail} — once the"
+            " blocker's conditions actually changed, a repair can continue"
+            " the SAME session instead of restarting cold; until then a"
+            " new launch will hit the same blocker (bounded by"
+            " worker.max_same_blocker_attempts)."
+        )
+    return (
+        f"Session capability (verified from the harness contract): a"
+        f" {harness}-harness profile has no session or resume capability —"
+        " every attempt is a new process with no memory of the last one;"
+        " the facts above are its full context. Do not expect a retry to"
+        " remember anything: fix the conditions, or report blocked with"
+        " the structured delivery."
+    )
 
 
 def _retained_failure_rows(store: Store, revision_id: int, task_id: str):
@@ -2251,7 +2410,8 @@ def _retained_check_detail(project_root: Path | None, row: Verification):
 
 
 def _prior_failure_context(store: Store, revision_id: int, task_id: str,
-                           project_root: Path | None = None) -> str:
+                           project_root: Path | None = None,
+                           harness: str | None = None) -> str:
     """The most recent recorded failure for a task, for retry prompts. The
     task row itself clears failure_reason on retry, so history is the
     source. Empty string for a first attempt.
@@ -2261,8 +2421,15 @@ def _prior_failure_context(store: Store, revision_id: int, task_id: str,
     attempt (command, exit code, error summary, log path — the same row
     shape a delivery-gate refusal reports), plus repair guidance classified
     from the recorded delivery result (environment/tool blocked vs code
-    failure vs unmarked). Without retained rows the block is byte-compatible
-    with the reason-line-only form that predates per-attempt history."""
+    failure vs unmarked). Without retained rows the block stays
+    byte-compatible with the reason-line-only form that predates per-attempt
+    history — except for blocker-class failures, which keep the classified
+    guidance even rowless (the incident's misdiagnosed rounds had no rows).
+
+    G009 T004: blocker-class failures additionally carry the harness's
+    VERIFIED session capability (same-session resume vs a sessionless new
+    process), so the next worker's recovery plan matches what the harness
+    can actually do."""
     reason: str | None = None
     for event in reversed(store.task_events(revision_id, task_id)):
         if event.to_status == "failed" and (event.reason or ""):
@@ -2271,12 +2438,27 @@ def _prior_failure_context(store: Store, revision_id: int, task_id: str,
     if reason is None:
         return ""
     attempt, failed_rows = _retained_failure_rows(store, revision_id, task_id)
+    guidance_key = _classify_prior_failure(reason, attempt)
+    resume_line = (
+        _resume_capability_line(harness) if guidance_key == "blocked" else None
+    )
     if not failed_rows:
-        return (
+        block = (
             f"\nA previous attempt at this task FAILED with:\n"
             f"  {reason}\n"
             f"Fix that specific problem; do not redo the task blindly.\n"
         )
+        if guidance_key == "blocked":
+            # The incident's a132 shape: a blocker delivery with no retained
+            # check rows is exactly the round the old retry prompts
+            # misdiagnosed as code failure. Blocker-class failures therefore
+            # carry the classified guidance (and the verified session
+            # capability) even in the rowless form; code and unclassified
+            # failures keep the byte-compatible legacy block.
+            block += f"\n{_RETRY_GUIDANCE['blocked']}\n"
+            if resume_line:
+                block += f"{resume_line}\n"
+        return block
     lines = [
         "\nA previous attempt at this task FAILED with:",
         f"  {reason}",
@@ -2298,7 +2480,9 @@ def _prior_failure_context(store: Store, revision_id: int, task_id: str,
     if hidden > 0:
         lines.append(f"  (+{hidden} more failed check(s) not listed)")
     lines.append("")
-    lines.append(_RETRY_GUIDANCE[_classify_prior_failure(reason, attempt)])
+    lines.append(_RETRY_GUIDANCE[guidance_key])
+    if resume_line:
+        lines.append(resume_line)
     lines.append("")
     return "\n".join(lines)
 
@@ -3408,7 +3592,13 @@ def task_retry(project: Project, task_id: str) -> dict:
     Verification history is retained: rows from earlier attempts stay in the
     table and stay queryable per attempt. The retry routes a fresh worker
     attempt, which opens a new current window — verdicts and 'current
-    result' views read that window, never the superseded rows."""
+    result' views read that window, never the superseded rows.
+
+    G009 T004: the transition is the operator's call and stays available,
+    but when a (task, profile) pair is already blocker-suppressed the
+    payload says so up front — `orx run` will skip that profile (falling
+    through the ladder or stopping with the recorded reason), and the
+    controller should change conditions instead of expecting a re-launch."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -3419,7 +3609,13 @@ def task_retry(project: Project, task_id: str) -> dict:
         reason="operator requested retry; new attempt will be routed by `orx run`",
     )
     refresh_run(store, goal, run)
-    return {"task": task.task_id, "status": "runnable"}
+    result = {"task": task.task_id, "status": "runnable"}
+    suppressed = _suppressed_blockers(store, project.config, revision.id, task.task_id)
+    if suppressed:
+        result["suppressed_blockers"] = [
+            suppressed[name] for name in sorted(suppressed)
+        ]
+    return result
 
 
 # ---------------------------------------------------------------------------

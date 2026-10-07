@@ -1389,3 +1389,107 @@ def test_cli_worker_prompt_carries_the_final_delivery_contract(tmp_path, monkeyp
         assert "FINAL DELIVERY MESSAGE" not in host_entry["prompt"]
     finally:
         host_project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T004: recovery guidance is capability-honest. When the prior failure
+# is a blocker (permission/environment), the next worker's prompt must say
+# what the harness can ACTUALLY do about sessions, verified from CLI help
+# output (2026-10-07, read-only): cursor 3.23.12 ships `--resume [chatId]`
+# and `--continue`; codex-cli 0.160.0 ships `codex exec resume <session
+# id>`; a shell-harness profile is a plain executable with no session
+# notion at all. A resume-capable harness points the repair at the SAME
+# session; a sessionless harness says plainly that every attempt is a new
+# process and the repair package is its full context. Code-red failures
+# keep the pure fix-the-checks guidance with no resume line.
+
+
+def _t004_retry_prompt_after_blocker(tmp_path, monkeypatch, *, harness):
+    """One failed blocker round through the real dispatch stack, then the
+    retried round's archived worker prompt. The cursor stand-in replays the
+    incident's blocked delivery; the shell stand-in fails its process with
+    the same permission text (the transport-flavored twin of the blocker).
+    Returns (project, prompt_text)."""
+    monkeypatch.chdir(tmp_path)
+    if harness == "cursor":
+        profiles = HOST_PROFILES_TOML.replace(
+            '[profiles.cli-fake]\ndriver = "cli"\nharness = "shell"\nexecutable = "true"',
+            '[profiles.cli-fake]\ndriver = "cli"\nharness = "cursor"')
+    else:
+        profiles = HOST_PROFILES_TOML.replace(
+            'executable = "true"',
+            'executable = "/bin/sh"\n'
+            'args = ["-c", "echo internal shell approval denied >&2; exit 1"]')
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', 'profiles = ["cli-fake"]')
+    project = make_project(tmp_path, config, profiles)
+    if harness == "cursor":
+        adapter = adapters.get_adapter("cursor")
+        monkeypatch.setattr(
+            adapter, "probe", lambda: ProbeReport(True, "captured CLI stand-in"))
+        monkeypatch.setattr(
+            adapter, "build_worker_launch",
+            lambda **kwargs: Launch(argv=["captured-agent"], cwd=tmp_path,
+                                    timeout=5))
+        monkeypatch.setattr(
+            runtime, "run_launch",
+            lambda launch: runtime.CommandResult(
+                command="captured-agent", exit_code=0,
+                stdout=json.dumps(_captured_envelope(
+                    "blocked: start gate cannot run.\n\n"
+                    '```json\n{"status":"blocked","summary":"internal shell'
+                    ' approval denied","checks":[],"artifacts":[]}\n```'
+                )), stderr="", duration_sec=0.01, timed_out=False))
+    goal = dispatch.create_goal(
+        project, objective="resume capability guidance", acceptance=["a1"],
+        constraints=[], context="",
+    )[0]
+    dispatch.submit_plan(project, ir_for(goal, [task_spec(
+        "T310", acceptance=goal.acceptance, verification=["true"],
+        complexity="low",
+    )]))
+    dispatch.run_slice(project)
+    assert active_task(project, "T310").status == "failed"
+    dispatch.task_retry(project, "T310")
+    entry = dispatch.run_slice(project)
+    assert entry["routing_errors"] == []
+    # The retry round launches and fails blocked again — the prompt under
+    # test is the retried round's archived assignment file.
+    candidates = [
+        e for e in entry["failed"] + entry["started"]
+        if e.get("task") == "T310" and e.get("prompt_file")
+    ]
+    assert candidates, entry
+    prompt = (tmp_path / candidates[0]["prompt_file"]).read_text()
+    return project, prompt
+
+
+def test_blocker_retry_prompt_names_resume_capability_cursor(
+        tmp_path, monkeypatch):
+    """cursor supports same-session resume (verified from `cursor agent
+    --help`): the blocker guidance tells the next worker the repair can
+    continue the SAME CLI session and names the exact command."""
+    project, prompt = _t004_retry_prompt_after_blocker(
+        tmp_path, monkeypatch, harness="cursor")
+    try:
+        assert "environment/tool block, not a code defect" in prompt
+        assert "supports same-session resume" in prompt
+        assert "cursor agent --resume" in prompt
+    finally:
+        project.close()
+
+
+def test_blocker_retry_prompt_names_sessionless_fallback_shell(
+        tmp_path, monkeypatch):
+    """A shell-harness profile has no session notion (a plain executable —
+    nothing to resume): the guidance says so plainly and bounds the repair
+    to the check budget instead of pretending a session can continue."""
+    project, prompt = _t004_retry_prompt_after_blocker(
+        tmp_path, monkeypatch, harness="shell")
+    try:
+        assert "environment/tool block, not a code defect" in prompt
+        assert "no session or resume capability" in prompt
+        assert "new process" in prompt
+        assert "--resume" not in prompt
+    finally:
+        project.close()

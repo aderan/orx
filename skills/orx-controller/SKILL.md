@@ -132,6 +132,13 @@ Rules:
 - **Retry** (`orx task retry <id>`) is for a failed attempt of a correct
   task: test failures, crashes, incomplete implementations. Same plan, next
   attempt; the recorded failure reason feeds the next prompt automatically.
+  Bound: after `worker.max_same_blocker_attempts` (default 3) consecutive
+  permission/environment failures with an UNCHANGED condition fingerprint on
+  one (task, profile), `orx run` will not re-launch that profile for that
+  task — the retry payload says so (`suppressed_blockers`). That is a stop
+  signal, not a code problem: change the conditions (harness/approval
+  config, routing, or human investigation) instead of retrying again; the
+  ladder still serves the task on the next configured rung.
 - **Replan** (`orx replan`) is for a wrong plan: failed assumptions, wrong
   dependency graph, scope drift, plan/verification disagreement.
 - **Ask the user** for Goal-level changes: new objective, changed

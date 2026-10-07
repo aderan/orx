@@ -103,6 +103,57 @@ retry. Triggers, from the controller contract:
 - plan/verification disagreement, scope drift, wrong dependency graph →
   `orx replan` (frontier pool), never another blind retry.
 
+## Recovery failure classes and bounded blocker suppression (G009, 2026-10-07)
+
+The 2026-10-07 incident (a131/a132/a133, ~10M tokens): three consecutive CLI
+attempts on the SAME profile hit the SAME permission blocker (Cursor's
+internal shell approval denial); every retry re-launched the profile and the
+retry prompts misdiagnosed the blocker as code failure ("fix the red
+tests"). Recovery decisions never keyed on the blocker's identity. The fix
+is a recovery vocabulary (`health.failure_class`) read from recorded facts
+only, plus a bounded re-launch gate keyed on the blocker's condition:
+
+| class | meaning | re-launch? |
+|---|---|---|
+| `permission` | approval/permission/sandbox denial | suppressed after the bound |
+| `environment` | environment cannot serve the task as configured (tool missing, auth, model unavailable) | suppressed after the bound |
+| `code` | worker-reported code failure or red controller gate | never suppressed — the repair path stays open |
+| `resource` | quota/rate facts (health + the G005 reroute; T005's domain) | handled by resource gates, not here |
+| `other` | unproven (protocol errors, unpatterned crashes) | never suppressed |
+
+**Fingerprint.** A blocker condition fingerprints deterministically over
+(normalized reason core + profile + harness + class) — the delivery-result
+envelope and the `exit N:` transport prefix are stripped, so the same
+condition recorded through different envelopes fingerprints equal while a
+genuinely different condition does not.
+
+**Suppression.** `worker.max_same_blocker_attempts` (config, default 3 — the
+Goal's "at most three consecutive attempts on the same problem") bounds the
+trailing same-fingerprint blocker streak per (task, profile). At the bound,
+`orx run` excludes that profile for THAT task (task-scoped — the profile
+stays routable for other tasks): the ladder falls through to the next rung
+exactly like a resource gate, or dispatching stops with a recorded reason —
+in the run output, the routing decision row, and a `dispatch_suppressed`
+task event — naming the blocker, the count, the fingerprint, and the remedy
+(config change / routing change / human). `orx task retry` stays available
+(operator intent) but reports the suppression in its payload. A different
+failure signature, a success on the profile, or a replan resets the streak.
+
+**Same-session continuation (verified facts).** Resume support was verified
+2026-10-07 from each CLI's own help output, read-only (no paid calls):
+cursor 3.23.12 ships `--resume [chatId]` / `--continue`; codex-cli 0.160.0
+ships `codex exec resume [SESSION_ID] [PROMPT]` (works non-interactively);
+a shell-harness profile is a plain executable — no session exists, nothing
+to resume; `zcode` is a host harness where continuation IS the host session
+model. Retry guidance is capability-honest (`adapters.base.
+harness_resume_supported`): a resume-capable harness is told the repair can
+continue the SAME session once conditions changed; a sessionless harness is
+told plainly that every attempt is a new process and the repair package is
+its full context. The bounded fallback for a harness without resume is a
+NEW attempt carrying the compact repair package (the prior-failure block:
+reason, failed checks with logs, classified guidance) — never a claim of
+same-session continuation.
+
 ## Host-exclusive capability routing (`host_context`) — 2026-10-04
 
 R002 lesson: the report/global-acceptance task (T005) burned two CLI worker

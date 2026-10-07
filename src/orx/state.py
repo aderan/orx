@@ -1868,6 +1868,17 @@ class Store:
         ).fetchone()
         return _attempt(r) if r else None
 
+    def attempts_for_task(self, revision_row_id: int, task_id: str) -> list[Attempt]:
+        """Every attempt of one task, oldest first — the full per-task
+        history recovery decisions walk (G009 T004's same-condition blocker
+        streaks read the whole trailing run, not just the latest row)."""
+        rows = self.conn.execute(
+            "SELECT * FROM attempts WHERE revision_id = ? AND task_id = ?"
+            " ORDER BY id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [_attempt(r) for r in rows]
+
     def attempt_update(
         self,
         attempt_id: int,
