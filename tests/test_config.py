@@ -782,3 +782,243 @@ def test_set_progress_timeout_validates_and_writes(tmp_path):
         with pytest.raises(ConfigError):
             set_config_value(path, "worker.progress_timeout_min", bad, create=True)
     assert path.read_bytes() == before  # refused before any write
+
+
+# -- G008: semantic ModelSpec profiles ---------------------------------------
+#
+# `model` is either a bare string (legacy, opaque, passed through with no
+# spec attached) or a semantic TOML table parsed into a ModelSpec. The
+# profile-level effort stays the single effort source; Profile.model is
+# always the stable identity string.
+
+SEMANTIC_PROFILES_TOML = """\
+schema_version = 1
+
+[profiles.opus-sem]
+driver = "cli"
+harness = "cursor"
+model = { provider = "anthropic", family = "claude-opus", version = "5.5", context = "1m", fast = true }
+class = "frontier"
+effort = "high"
+capabilities = ["coding"]
+
+[profiles.grok-sem]
+driver = "host"
+harness = "zcode"
+class = "strong"
+effort = "xhigh"
+capabilities = ["coding"]
+
+[profiles.grok-sem.model]
+family = "grok"
+version = "4.7"
+"""
+
+
+def _semantic_profile_toml(model_line: str) -> str:
+    return (
+        "schema_version = 1\n"
+        '[profiles.bad]\ndriver = "host"\nharness = "zcode"\n'
+        f"{model_line}\n"
+        'class = "strong"\neffort = "high"\ncapabilities = ["coding"]\n'
+    )
+
+
+def test_semantic_model_table_loads_with_stable_identity(tmp_path):
+    _write(tmp_path, profiles=SEMANTIC_PROFILES_TOML)
+    profiles = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    opus = profiles["opus-sem"]
+    assert opus.model == "anthropic/claude-opus@5.5"
+    assert isinstance(opus.model, str)
+    spec = opus.model_spec
+    assert spec is not None
+    assert (spec.provider, spec.family, spec.version) == ("anthropic", "claude-opus", "5.5")
+    assert spec.context_tokens == 1_000_000  # '1m' normalized
+    assert spec.speed == "fast"  # fast=true normalized
+    assert spec.effort == "high"  # unified: the profile-level source, unchallenged
+    assert opus.effort.value == "high"
+    # sub-table spelling is the same declaration as an inline table
+    grok = profiles["grok-sem"]
+    assert grok.model == "grok@4.7"
+    assert grok.model_spec.family == "grok"
+    assert grok.model_spec.context_tokens is None
+    assert grok.effort.value == "xhigh" and grok.model_spec.effort == "xhigh"
+
+
+def test_semantic_profile_serializes_to_json_expressible_data(tmp_path):
+    import json
+
+    _write(tmp_path, profiles=SEMANTIC_PROFILES_TOML)
+    profiles = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    data = json.loads(json.dumps(profiles["opus-sem"].to_dict()))
+    assert data["model"] == "anthropic/claude-opus@5.5"
+    spec = data["model_spec"]
+    assert spec["context"] == 1_000_000
+    assert spec["speed"] == "fast"
+    assert spec["id"] is None
+    assert spec["capabilities"] == []
+    # no dataclass or dict ever leaks into the string contract
+    assert isinstance(data["model"], str)
+    assert isinstance(profiles["opus-sem"].model, str)
+
+
+def test_string_profiles_keep_their_legacy_shape(tmp_path):
+    _write(tmp_path)
+    profiles = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    assert profiles
+    for profile in profiles.values():
+        assert isinstance(profile.model, str)
+        assert profile.model_spec is None  # string form carries no spec
+        data = profile.to_dict()
+        assert data["model"] == profile.model
+        assert "model_spec" not in data  # legacy serialization byte-stable
+    # bracket syntax in a string model stays an opaque string, unparsed
+    _write(tmp_path, profiles=_semantic_profile_toml(
+        'model = "claude-opus-4-8[context=1m,effort=high,fast=false]"'
+    ))
+    legacy = load_profiles(tmp_path / ".orx" / "profiles.toml")["bad"]
+    assert legacy.model == "claude-opus-4-8[context=1m,effort=high,fast=false]"
+    assert legacy.model_spec is None
+
+
+def test_direct_profile_construction_stays_compatible():
+    from orx import records
+    from orx.config import Profile
+
+    profile = Profile(
+        name="direct",
+        driver=records.Driver("host"),
+        harness=records.Harness("zcode"),
+        model="m-direct",
+        model_class=records.ModelClass("strong"),
+        effort=records.Effort("high"),
+    )
+    assert profile.model == "m-direct"
+    assert profile.model_spec is None
+    data = profile.to_dict()
+    assert data["model"] == "m-direct"
+    assert "model_spec" not in data
+    assert data["host_mode"] == "self"  # other defaults unchanged
+
+
+def test_effort_restatement_identical_is_accepted(tmp_path):
+    _write(tmp_path, profiles=_semantic_profile_toml(
+        'model = { family = "x", effort = "high" }'
+    ))
+    profiles = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    assert profiles["bad"].model_spec.effort == "high"
+    assert profiles["bad"].effort.value == "high"
+    assert profiles["bad"].model == "x"
+
+
+@pytest.mark.parametrize("model_line,fragments", [
+    ('model = { family = "x", reasoning = "deep" }', ["model.reasoning"]),
+    ('model = { family = "x", speed = "fast", fast = true }', ["model.fast", "model.speed"]),
+    ('model = { family = "x", effort = "medium" }', ["model.effort", "conflicts"]),
+    ('model = { family = "x", effort = "ludicrous" }', ["model.effort", "invalid"]),
+    ('model = { family = 5 }', ["model.family"]),
+    ('model = { family = "x", fast = "yes" }', ["model.fast"]),
+    ('model = { family = "x", speed = "rapid" }', ["model.speed"]),
+    ('model = { family = "x", context = "1x" }', ["model.context"]),
+    ('model = { family = "x", context = true }', ["model.context"]),
+    ('model = { family = "x", capabilities = "coding" }', ["model.capabilities"]),
+    ('model = { id = "a", family = "b" }', ["ambiguous"]),
+    ('model = { id = "a", version = "1" }', ["ambiguous"]),
+    ('model = { version = "1" }', ["model.version", "family"]),
+    ('model = { provider = "p" }', ["family", "id"]),
+    ("model = 5", ["model must be a non-empty string or a model table"]),
+    ('model = ""', ["model must be a non-empty string or a model table"]),
+])
+def test_semantic_model_errors_carry_profile_and_field_location(
+    tmp_path, model_line, fragments
+):
+    _write(tmp_path, profiles=_semantic_profile_toml(model_line))
+    with pytest.raises(ConfigError) as excinfo:
+        load_profiles(tmp_path / ".orx" / "profiles.toml")
+    message = str(excinfo.value)
+    assert "[profiles.bad]" in message
+    for fragment in fragments:
+        assert fragment in message
+
+
+def test_semantic_profile_through_load_project_config(tmp_path):
+    _write(
+        tmp_path,
+        config='schema_version = 1\n[controller]\nprofile = "grok-sem"\n',
+        profiles=SEMANTIC_PROFILES_TOML,
+    )
+    config, profiles = load_project_config(
+        tmp_path / ".orx" / "config.toml", tmp_path / ".orx" / "profiles.toml"
+    )
+    assert config.controller_profile == "grok-sem"
+    assert profiles["grok-sem"].model == "grok@4.7"
+    assert profiles["grok-sem"].model_spec.version == "4.7"
+
+
+def test_layered_semantic_profile_complete_replacement(tmp_path):
+    uc, up = _write_user_layer(
+        tmp_path,
+        profiles_toml=(
+            'schema_version = 1\n[profiles.shared]\ndriver = "cli"\nharness = "cursor"\n'
+            'model = { family = "claude-opus", context = "1m", speed = "fast" }\n'
+            'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n'
+        ),
+    )
+    pc, pp = _project_files(tmp_path)
+    (pp).write_text((pp).read_text() +
+                    '[profiles.shared]\ndriver = "cli"\nharness = "cursor"\n'
+                    'model = { family = "gpt", version = "6.1" }\n'
+                    'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n')
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.profile_origins["shared"] == "project"
+    spec = eff.profiles["shared"].model_spec
+    assert (spec.family, spec.version) == ("gpt", "6.1")
+    # complete replacement: the user layer's dimensions did not merge in
+    assert spec.context_tokens is None
+    assert spec.speed is None
+    assert eff.profiles["shared"].model == "gpt@6.1"
+
+
+def test_layered_user_semantic_profile_fills_project_gap(tmp_path):
+    uc, up = _write_user_layer(
+        tmp_path,
+        profiles_toml=(
+            'schema_version = 1\n[profiles.user-sem]\ndriver = "cli"\nharness = "cursor"\n'
+            'model = { family = "claude-opus", version = "5.5", context = "512k" }\n'
+            'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n'
+        ),
+    )
+    pc, pp = _project_files(tmp_path)
+    (pc).write_text(
+        'schema_version = 1\n[controller]\nprofile = "user-sem"\n'
+    )
+    eff = load_effective(pc, pp, user_config=uc, user_profiles=up)
+    assert eff.profile_origins["user-sem"] == "user"
+    assert eff.profiles["user-sem"].model == "claude-opus@5.5"
+    assert eff.profiles["user-sem"].model_spec.context_tokens == 512_000
+
+
+def test_migrate_semantic_model_table_round_trips(tmp_path):
+    from orx.config import migrate_profiles_to_user
+
+    project = tmp_path / "profiles.toml"
+    user = tmp_path / "user" / "profiles.toml"
+    project.write_text(
+        'schema_version = 1\n'
+        '[profiles.sem]\ndriver = "cli"\nharness = "cursor"\n'
+        'model = { provider = "anthropic", family = "claude-opus", version = "5.5", '
+        'context = "1m", fast = true }\n'
+        'class = "frontier"\neffort = "high"\ncapabilities = ["coding"]\n'
+    )
+    report = migrate_profiles_to_user(project, user)
+    assert report["moved"] == ["sem"]
+    migrated = load_profiles(user)
+    spec = migrated["sem"].model_spec
+    assert spec is not None
+    assert spec.provider == "anthropic"
+    assert spec.context_tokens == 1_000_000
+    assert spec.speed == "fast"
+    assert migrated["sem"].model == "anthropic/claude-opus@5.5"
+    # identical re-merge stays conflict-free (dict equality on the table)
+    report2 = migrate_profiles_to_user(project, user)
+    assert report2["moved"] == ["sem"]

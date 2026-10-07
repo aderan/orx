@@ -14,6 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
+from orx.models import ModelSpec
+from orx.records import ORXError
+
 # ORX effort -> provider reasoning level (codex model_reasoning_effort,
 # cursor model bracket effort=). Defined once; adapters reference this.
 # The vocabularies currently coincide; the map stays as the seam so a
@@ -30,6 +33,118 @@ EFFORT_MAP: dict[str, str] = {
 EFFORT_PROVIDER_DEFAULT = "provider_default"
 EFFORT_SOURCE_REPORTED = "reported"
 EFFORT_SOURCE_REQUESTED_VALIDATED = "requested_validated"
+
+
+class ModelResolutionError(ORXError):
+    """A semantic model request cannot be satisfied by the local catalog.
+
+    Raised by adapter resolvers (G008 T003) instead of silently
+    substituting another model or dropping an explicitly requested
+    dimension. The message always names: the requested identity and
+    dimensions, the catalog state it was resolved against, and the
+    refresh command that would change that state. Callers record it as
+    the attempt failure reason — nothing was launched, so no completion
+    or pass result may be written for it.
+    """
+
+
+def effective_model_spec(profile) -> ModelSpec:
+    """The spec a resolver consumes for this profile (G008 T003).
+
+    A semantic model table is taken as declared. A bare model string is
+    the *id form* of the same contract: a self-contained, opaque id that
+    carries the profile effort (the single authoritative source) and is
+    never parsed — the legacy behavior expressed through the same
+    :class:`~orx.models.ModelSpec` surface, so both forms ride one
+    resolution path per adapter.
+    """
+    if profile.model_spec is not None:
+        return profile.model_spec
+    return ModelSpec(model_id=profile.model, effort=profile.effort.value)
+
+
+def identity_token(spec: ModelSpec) -> str:
+    """The primary catalog token a declaration names: the id verbatim, or
+    the family with the version attached as declared."""
+    if spec.model_id is not None:
+        return spec.model_id
+    token = spec.family or ""
+    if spec.version:
+        token = f"{token}-{spec.version}"
+    return token
+
+
+def identity_tokens(spec: ModelSpec) -> list[str]:
+    """Every catalog spelling a family+version declaration may take.
+
+    The CLIs are not consistent about version spelling: grok-4.7 and
+    composer-2.5 keep the dot, claude-opus-5-5 spells 5.5 with a dash.
+    Resolution therefore tries the declared spelling first, then the
+    dash-normalized one; the declared spelling is always the primary (it
+    is what a synthesized parameterized form uses). An id is opaque and
+    yields itself only.
+    """
+    primary = identity_token(spec)
+    if spec.model_id is not None or not spec.version:
+        return [primary]
+    tokens = [primary]
+    dashed = f"{spec.family}-{spec.version.replace('.', '-')}"
+    if dashed != primary:
+        tokens.append(dashed)
+    return tokens
+
+
+def requested_dims(spec: ModelSpec) -> str:
+    """The requested identity + dimensions, spelled for diagnostics."""
+    dims: list[str] = []
+    if spec.model_id is not None:
+        dims.append(f"id={spec.model_id}")
+    else:
+        ident = spec.family or ""
+        if spec.version:
+            ident = f"{ident}@{spec.version}"
+        if spec.provider:
+            ident = f"{spec.provider}/{ident}"
+        dims.append(f"family={ident}")
+    if spec.effort:
+        dims.append(f"effort={spec.effort}")
+    if spec.speed:
+        dims.append(f"speed={spec.speed}")
+    if spec.context_tokens is not None:
+        dims.append(f"context={spec.context_tokens}")
+    if spec.capabilities:
+        dims.append("capabilities=" + ",".join(spec.capabilities))
+    return " ".join(dims)
+
+
+def catalog_state(catalog, harness: str) -> str:
+    """The catalog a resolution was attempted against, spelled for
+    diagnostics: model count, generation stamp, and the family roster."""
+    from orx import model_catalog
+
+    if catalog is None:
+        return (
+            "catalog: none available locally (no persisted snapshot and the"
+            " local models probe returned nothing usable)"
+        )
+    families = list(catalog.families)
+    shown = ", ".join(families[:8]) + (", ..." if len(families) > 8 else "")
+    if catalog.generation == model_catalog.LAUNCH_DISCOVERY_GENERATION:
+        stamp = "in-process discovery"
+    else:
+        stamp = f"generation {catalog.generation} from {catalog.generated_at or '?'}"
+    return (
+        f"catalog: {len(catalog.models)} models ({stamp}),"
+        f" families: {shown or '(none)'}"
+    )
+
+
+def refresh_hint(harness: str) -> str:
+    """The one command that changes the catalog state a diagnostic names."""
+    return (
+        f"refresh the catalog with `orx agent probe {harness}`,"
+        f" inspect it with `orx agent info {harness}`"
+    )
 
 
 @dataclass(frozen=True)
@@ -173,6 +288,12 @@ class Launch:
     # None = the adapter makes no isolation claim; host/prompt-only
     # discipline is recorded by the caller, not the adapter.
     sandbox: str | None = None
+    # G008 T003: the resolution decision behind the model argument, as
+    # ResolvedModel.to_dict() — the full semantic request, the exact CLI
+    # slug, the strategy, and the catalog generation it resolved
+    # against. None when the adapter resolves no model (shell). Records
+    # the REQUEST; observed reality stays with the run result.
+    model_resolution: dict | None = None
 
 
 class Adapter(Protocol):

@@ -62,10 +62,12 @@ agent_app = typer.Typer(
         "Discover agent harnesses without launching a completion, and show "
         "per-profile health. list shows adapter harnesses (codex, cursor, "
         "shell) and marks zcode host-only. info reads the latest persisted "
-        "capability snapshot and the launch contract. probe runs the shared "
-        "local probes and writes the snapshot. status shows PROFILE, STATE, "
-        "SINCE, and REASON from resource_status. Exit 0 on success, 1 on a "
-        "domain error, 2 on usage errors."
+        "capability snapshot (including the refreshed model catalog, its "
+        "source, and discovery status) and the launch contract; it never "
+        "probes. probe runs the shared local probes, refreshes the model "
+        "catalog from local CLI output, and writes the snapshot. status "
+        "shows PROFILE, STATE, SINCE, and REASON from resource_status. "
+        "Exit 0 on success, 1 on a domain error, 2 on usage errors."
     ),
     no_args_is_help=True,
 )
@@ -409,6 +411,51 @@ def agent_list(json_out: bool = JsonOpt) -> None:
             typer.echo(_render_agent_row(row))
 
 
+def _render_model_catalog_lines(snap: dict) -> list[str]:
+    """Human rendering of a snapshot's model catalog (agent info).
+
+    Shows the catalog, its source, timestamp, generation, selection
+    markers, families, and parameterized-syntax evidence — or states the
+    honest unknown: no catalog recorded, or the recorded failure reason.
+    Old snapshots without catalog keys render as absent, never as an
+    error. Read-only: this never probes.
+    """
+    catalog = snap.get("model_catalog")
+    if not catalog:
+        error = snap.get("catalog_error")
+        if error:
+            return [f"  model catalog: discovery failed ({error})"]
+        return ["  model catalog: (none recorded)"]
+    models = catalog.get("models") or []
+    source = catalog.get("source") or "unknown source"
+    generated = catalog.get("generated_at") or "unknown"
+    generation = catalog.get("generation")
+    lines = [
+        f"  model catalog: {len(models)} model(s) from {source}"
+        f" (generated {generated}, generation {generation})"
+    ]
+    current = next((m["slug"] for m in models if m.get("is_current")), None)
+    default = next((m["slug"] for m in models if m.get("is_default")), None)
+    lines.append(f"    current: {current or '(unknown)'}  default: {default or '(unknown)'}")
+    families: list[str] = []
+    for model in models:
+        name = model.get("family") or model.get("slug")
+        if name and name not in families:
+            families.append(name)
+    lines.append(f"    families: {', '.join(families) or '(none)'}")
+    parameterized = catalog.get("parameterized")
+    if parameterized and parameterized.get("available"):
+        keys = ", ".join(parameterized.get("param_keys") or [])
+        example = parameterized.get("syntax_example") or "(no example captured)"
+        lines.append(f"    parameterized: bracket syntax available (params: {keys})")
+        lines.append(f"      example: {example}")
+        lines.append(
+            "      example families demonstrate the syntax only,"
+            " not an enumeration of supported models"
+        )
+    return lines
+
+
 @agent_app.command("info")
 @handle_errors
 def agent_info(
@@ -422,6 +469,11 @@ def agent_info(
     at probes/<harness>.json. Does not run probes and does not launch a
     completion. snapshot is null when no probe has been saved yet. shell
     and zcode have a launch contract and no probe; zcode is host-only.
+    The snapshot's model catalog (when present) shows the discovered
+    models, the local source command, generation, and timestamp, the
+    current/default selection markers, and Cursor parameterized
+    bracket-syntax evidence; a missing catalog is shown as absent or as
+    its recorded discovery failure — unknowns stay unknown.
 
     --json fields: harness, binary, adapter, host_only, snapshot, launch.
     launch has kind (adapter or host) and summary (the argv contract).
@@ -441,6 +493,8 @@ def agent_info(
             typer.echo(f"  version: {snap.get('version')}")
             typer.echo(f"  auth: {snap.get('auth')}")
             typer.echo(f"  models_discoverable: {snap.get('models_discoverable')}")
+            for line in _render_model_catalog_lines(snap):
+                typer.echo(line)
             features = snap.get("features") or {}
             rendered = ", ".join(f"{key}={value}" for key, value in features.items())
             typer.echo(f"  features: {rendered}")
@@ -461,13 +515,20 @@ def agent_probe(
     probes/<harness>.json under the user data directory. A missing binary
     is still success: the snapshot records binary null and auth unknown.
 
+    The model catalog is refreshed from the local models command
+    (cursor: `agent --list-models` plus the already-fetched --help;
+    codex: `codex debug models`) and persisted inside the snapshot with
+    a new generation. A discovery failure (binary missing, non-zero
+    exit, timeout, unparseable output) records catalog_error and no
+    catalog — an old catalog is never relabeled as a fresh success.
+
     codex and cursor are probeable. shell and zcode exit 1 (nothing to
     probe; zcode is host-only). An unknown harness exits 1. A missing
     HARNESS argument exits 2.
 
     --json fields: harness, snapshot, path. snapshot is the capability
     object (harness, binary, version, probed_at, features, auth,
-    models_discoverable).
+    models_discoverable, model_catalog, catalog_error).
     """
     data = dispatch.agent_probe(harness)
     _ok(json_out, **data)
@@ -477,6 +538,16 @@ def agent_probe(
         typer.echo(f"  binary: {snap.get('binary')}")
         typer.echo(f"  version: {snap.get('version')}")
         typer.echo(f"  auth: {snap.get('auth')}")
+        catalog = snap.get("model_catalog")
+        if catalog is not None:
+            typer.echo(
+                f"  models: {len(catalog.get('models') or [])} discovered"
+                f" (generation {catalog.get('generation')})"
+            )
+        elif snap.get("catalog_error"):
+            typer.echo(f"  models: discovery failed ({snap['catalog_error']})")
+        else:
+            typer.echo("  models: not discovered")
         typer.echo(f"  wrote {data['path']}")
 
 

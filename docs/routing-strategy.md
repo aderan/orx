@@ -39,6 +39,17 @@ each provider's catalog before passing a level.
 Plan depth (`light | standard | deep`) is a different axis — how much planning
 a Goal needs, not how hard a model thinks. It keeps its vocabulary.
 
+## Model declaration and resolution (mechanism, not policy)
+
+Since G008 (2026-10-07) a profile's `model` may be declared semantically
+(`model = { family = "grok", version = "4.7" }`) instead of a bare CLI slug.
+Both forms are equivalent at this policy layer: class, effort, and ladder
+order are properties of the profile, never of the spelling. Turning either
+form into the harness `--model` argument — baked slugs, bracket parameters,
+the refreshable catalog, evolution diagnostics — is mechanism and lives in
+[model selection](model-selection.md). The tier table and the role defaults
+below are unchanged by that layer.
+
 ## Role × class × effort defaults
 
 | Stage | Default | Escalation |

@@ -8,7 +8,9 @@ from .base import (  # re-exported vocabulary
     EFFORT_MAP,
     EffortOutcome,
     Launch,
+    ModelResolutionError,
     ProbeReport,
+    effective_model_spec,
 )
 from .shell import ShellAdapter
 from .codex import CodexAdapter
@@ -29,6 +31,7 @@ def get_adapter(harness: str) -> object:
 
 
 __all__ = [
-    "EFFORT_MAP", "EffortOutcome", "Launch", "ProbeReport",
-    "get_adapter", "ShellAdapter", "CodexAdapter", "CursorAdapter",
+    "EFFORT_MAP", "EffortOutcome", "Launch", "ModelResolutionError",
+    "ProbeReport", "effective_model_spec", "get_adapter",
+    "ShellAdapter", "CodexAdapter", "CursorAdapter",
 ]

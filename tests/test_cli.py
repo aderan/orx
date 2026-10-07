@@ -1274,6 +1274,12 @@ exit 99
     assert snap["auth"] == "logged_in"
     assert snap["models_discoverable"] is True
     assert snap["features"]["headless"] is True
+    # the structured catalog rides in the same snapshot
+    assert snap["catalog_error"] is None
+    catalog = snap["model_catalog"]
+    assert catalog["source"] == "codex debug models"
+    assert catalog["generation"] == 1
+    assert [m["slug"] for m in catalog["models"]] == ["m"]
     assert Path(body["path"]).is_file()
     assert json.loads(Path(body["path"]).read_text()) == snap
     calls = log.read_text().splitlines()
@@ -1293,6 +1299,12 @@ exit 99
     assert human.exit_code == 0
     assert "codex-cli 0.160.0" in human.stdout
     assert "logged_in" in human.stdout
+    # human output shows the catalog, its source, and discovery status
+    assert "model catalog: 1 model(s) from codex debug models" in human.stdout
+    assert "generation 1" in human.stdout
+    probed = invoke("agent", "probe", "codex")
+    assert probed.exit_code == 0
+    assert "models: 1 discovered (generation" in probed.stdout
 
 
 def test_agent_probe_cursor_fake_never_prints(tmp_path, monkeypatch):
@@ -1319,6 +1331,12 @@ exit 99
     assert snap["binary"].endswith("/agent")
     assert log.read_text().splitlines() == ["--version", "--help", "status", "--list-models"]
     assert all(not line.startswith("--print") for line in log.read_text().splitlines())
+    # catalog parsed from the list output; this help has no bracket
+    # example, so parameterized evidence is honestly absent
+    catalog = snap["model_catalog"]
+    assert [m["slug"] for m in catalog["models"]] == ["auto"]
+    assert catalog["parameterized"]["available"] is False
+    assert snap["catalog_error"] is None
 
 
 def test_agent_probe_missing_binary_is_success(tmp_path, monkeypatch):
@@ -1330,8 +1348,72 @@ def test_agent_probe_missing_binary_is_success(tmp_path, monkeypatch):
     assert snap["binary"] is None
     assert snap["auth"] == "unknown"
     assert snap["features"]["headless"] is False
+    assert snap["model_catalog"] is None
+    assert "not found" in snap["catalog_error"]
     info = payload(invoke("agent", "info", "--json", "codex"))
     assert info["snapshot"] == snap
+    human = invoke("agent", "info", "codex")
+    assert human.exit_code == 0
+    assert "discovery failed" in human.stdout and "not found" in human.stdout
+
+
+def test_agent_info_reads_old_format_snapshot_without_catalog(tmp_path, monkeypatch):
+    """Pre-G008 snapshots (no catalog keys) stay readable and honest."""
+    monkeypatch.setenv("ORX_DATA_DIR", str(tmp_path / "data"))
+    legacy = {
+        "harness": "codex",
+        "binary": "/opt/homebrew/bin/codex",
+        "version": "codex-cli 0.160.0",
+        "probed_at": "2026-01-01T00:00:00+00:00",
+        "features": {"headless": True, "json_output": True,
+                     "model_selection": True, "effort_selection": True,
+                     "resume": False},
+        "auth": "logged_in",
+        "models_discoverable": True,
+    }
+    path = tmp_path / "data" / "probes" / "codex.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(legacy))
+
+    result = invoke("agent", "info", "--json", "codex")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    assert body["snapshot"] == legacy  # verbatim; no crash, no invention
+    human = invoke("agent", "info", "codex")
+    assert human.exit_code == 0
+    assert "model catalog: (none recorded)" in human.stdout
+
+
+def test_agent_probe_catalog_failure_shows_reason_not_fake_success(tmp_path, monkeypatch):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    monkeypatch.setenv("PATH", str(bindir))
+    _install_logged_fake(bindir, "codex", """
+if [ "$1" = "--version" ]; then echo "codex-cli 0.160.0"; exit 0; fi
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\\n' 'usage: codex exec' '--json' '-m, --model' '-C, --cd' '--output-last-message' 'resume' 'model_reasoning_effort'
+  exit 0
+fi
+if [ "$1" = "login" ]; then echo "Logged in using ChatGPT"; exit 0; fi
+if [ "$1" = "debug" ]; then echo 'not json at all'; exit 0; fi
+exit 99
+""", tmp_path / "unused-log")
+    result = invoke("agent", "probe", "--json", "codex")
+    # the probe itself is still exit 0: a failed catalog discovery is a
+    # recorded state, not a domain error
+    assert result.exit_code == 0, result.stdout
+    snap = payload(result)["snapshot"]
+    assert snap["models_discoverable"] is False
+    assert snap["model_catalog"] is None
+    assert "not valid JSON" in snap["catalog_error"]
+    human = invoke("agent", "probe", "codex")
+    assert human.exit_code == 0
+    assert "models: discovery failed" in human.stdout
+    info = invoke("agent", "info", "codex")
+    assert info.exit_code == 0
+    assert "model catalog: discovery failed" in info.stdout
+    assert "not valid JSON" in info.stdout
 
 
 def test_agent_info_without_snapshot_and_host_only_contract():

@@ -13,7 +13,12 @@ from datetime import datetime
 from pathlib import Path
 
 from orx import adapters, machine, plan as plan_mod, probes, quota, routing, runtime, verify
-from orx.adapters.base import classify_failure, quota_reset_from, scan_marker
+from orx.adapters.base import (
+    ModelResolutionError,
+    classify_failure,
+    quota_reset_from,
+    scan_marker,
+)
 from orx import health
 from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
@@ -980,6 +985,52 @@ def _record_execution_log(project: Project, run_id: str, label: str,
     return str(path.relative_to(project.root))
 
 
+# G008 T003: the launch's model-resolution decision, persisted as attempt
+# evidence next to the execution log — the full semantic request and the
+# exact CLI slug/strategy are separately traceable per attempt.
+MODEL_RESOLUTION_KIND = "model_resolution"
+
+
+def _record_model_resolution(project: Project, run_id: str, label: str,
+                             launch, attempt) -> str | None:
+    """Persist the resolution decision behind a launch's model argument.
+
+    The JSON carries the complete semantic request (spec), the exact CLI
+    slug the adapter synthesized, the strategy, the encoded bracket
+    parameters, and the catalog generation the decision resolved against
+    — the traceable counterpart to the argv the execution log records.
+    Returns None (and writes nothing) when the adapter resolved no model
+    (shell transport) or the launch never carried a resolution.
+    """
+    if not getattr(launch, "model_resolution", None):
+        return None
+    directory = project.root / ".orx" / "runs" / run_id / "exec"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{label}.resolution.json"
+    payload = dict(launch.model_resolution)
+    payload["attempt"] = attempt.id
+    payload["recorded_at"] = db_now()
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    relative = str(path.relative_to(project.root))
+    project.store.evidence_add(attempt.id, MODEL_RESOLUTION_KIND, relative)
+    return relative
+
+
+def _fail_attempt_before_launch(store, attempt_id: int, reason: str, *,
+                                result: str = "failed") -> None:
+    """Close an attempt whose launch never started (model resolution
+    failed): no usage was possible, and the recorded result is the
+    diagnostic itself — never a completion or pass.
+
+    Workers and planners record ``failed``. Verifiers record ``fail``,
+    the same result vocabulary as a finished verifier attempt.
+    """
+    store.attempt_mark_usage_missing(attempt_id, "execution_failure")
+    store.attempt_update(
+        attempt_id, ended_at=db_now(), result=result, failure_reason=reason,
+    )
+
+
 def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
                      profile, request: routing.RouteRequest,
                      result: routing.RouteResult, *, prompt: str,
@@ -1001,14 +1052,34 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     schema_path.write_text(
         json.dumps(plan_mod.strict_json_schema(plan_mod.PlanIR.model_json_schema()), indent=2)
     )
-    launch = adapter.build_planner_launch(
-        root=project.root,
-        scratch=scratch,
-        profile=profile,
-        prompt=prompt,
-        timeout=project.config.command_timeout_sec,
-        schema_path=schema_path,
-    )
+    try:
+        launch = adapter.build_planner_launch(
+            root=project.root,
+            scratch=scratch,
+            profile=profile,
+            prompt=prompt,
+            timeout=project.config.command_timeout_sec,
+            schema_path=schema_path,
+        )
+    except ModelResolutionError as exc:
+        # The requested model cannot be resolved against the local
+        # catalog: no planner run happens, and the failed attempt is the
+        # record of the diagnostic (never a completion).
+        attempt = store.attempt_create(
+            revision_row_id=None,
+            role=Role.PLANNER.value,
+            profile=profile.name,
+            driver="cli",
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+            run_id=run.id,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        _fail_attempt_before_launch(store, attempt.id, str(exc))
+        raise
     attempt = store.attempt_create(
         revision_row_id=None,
         role=Role.PLANNER.value,
@@ -1027,6 +1098,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     # the file a later audit compares against what the model actually saw.
     prompt_path = scratch / f"prompt-{attempt.id}.md"
     prompt_path.write_text(prompt)
+    _record_model_resolution(project, run.id, f"plan-{attempt.id}", launch, attempt)
 
     run_result = runtime.run_launch(launch)
     # Always persist the raw transcript: paid planner calls need an audit
@@ -1070,6 +1142,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
         "replan": replan,
         "context_file": context_file,
         "prompt_file": str(prompt_path.relative_to(project.root)),
+        "model_resolution": launch.model_resolution,
         **submitted,
     }
 
@@ -1658,13 +1731,49 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     # artifact (prompt text with the static preflight baked in).
     prompt_file = _write_task_assignment_file(project, run.id, task.task_id, prompt)
     preflight = preflight_task_checks(task)
-    launch = adapter.build_worker_launch(
-        root=project.root,
-        scratch=scratch,
-        profile=profile,
-        prompt=prompt,
-        timeout=project.config.command_timeout_sec,
-    )
+    try:
+        launch = adapter.build_worker_launch(
+            root=project.root,
+            scratch=scratch,
+            profile=profile,
+            prompt=prompt,
+            timeout=project.config.command_timeout_sec,
+        )
+    except ModelResolutionError as exc:
+        # The requested model cannot be resolved: nothing is launched, no
+        # other model is substituted, and the diagnostic (requested
+        # dimensions + catalog state + refresh hint) is the recorded
+        # failure — never a completion or pass result.
+        reason = str(exc)
+        attempt = store.attempt_create(
+            revision_row_id=revision.id,
+            role=Role.WORKER.value,
+            profile=profile.name,
+            driver="cli",
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+            task_id=task.task_id,
+            started=True,
+            isolation=None,
+            run_id=run.id,
+            nonce=nonce,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        _fail_attempt_before_launch(store, attempt.id, reason)
+        # runnable -> failed is illegal; the task was selected, so it
+        # enters running and then fails without a launch or a pass.
+        machine.transition(
+            store, revision.id, task.task_id, "route_cli", TaskStatus.RUNNING,
+            reason=f"routed to cli profile '{profile.name}'",
+        )
+        machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+                           reason=reason, failure_reason=reason)
+        return {"task": task.task_id, "profile": profile.name, "status": "failed",
+                "reason": reason, "error_kind": "model_resolution",
+                "prompt_file": prompt_file}
     attempt = store.attempt_create(
         revision_row_id=revision.id,
         role=Role.WORKER.value,
@@ -1688,6 +1797,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         store, revision.id, task.task_id, "route_cli", TaskStatus.RUNNING,
         reason=f"routed to cli profile '{profile.name}'",
     )
+    _record_model_resolution(
+        project, run.id, f"{task.task_id}-{attempt.id}", launch, attempt)
 
     if not probe.ok:
         reason = f"capability_mismatch: {probe.detail}"
@@ -1765,6 +1876,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         "preflight": preflight,
         "actual_effort": effort.actual,
         "effort_source": effort.source,
+        "model_resolution": launch.model_resolution,
     }
     if verdict == "failed":
         result["reason"] = store.task_get(revision.id, task.task_id).failure_reason
@@ -3519,19 +3631,48 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
     scratch = _launch_dir(project, run.id, f"verify-{task.task_id}")
-    launch = adapter.build_verifier_launch(
-        root=project.root, scratch=scratch, profile=profile,
-        prompt=verifier_prompt(
-            goal, task, item,
-            gate_summary=_gate_summary(store, revision.id, task),
-            evidence_lines=_evidence_lines(store, revision.id, task.task_id),
-            prior_issues=_prior_issues(store, revision.id, task.task_id),
-            replan_context=_replan_reference_context(
-                store, project.root, revision.id, task.task_id, audience="verifier"
+    try:
+        launch = adapter.build_verifier_launch(
+            root=project.root, scratch=scratch, profile=profile,
+            prompt=verifier_prompt(
+                goal, task, item,
+                gate_summary=_gate_summary(store, revision.id, task),
+                evidence_lines=_evidence_lines(store, revision.id, task.task_id),
+                prior_issues=_prior_issues(store, revision.id, task.task_id),
+                replan_context=_replan_reference_context(
+                    store, project.root, revision.id, task.task_id, audience="verifier"
+                ),
             ),
-        ),
-        timeout=project.config.command_timeout_sec,
-    )
+            timeout=project.config.command_timeout_sec,
+        )
+    except ModelResolutionError as exc:
+        # No verifier run, no substituted model: the diagnostic is the
+        # recorded failure and the verification entry fails on it.
+        reason = str(exc)
+        attempt = store.attempt_create(
+            revision_row_id=revision.id,
+            role=Role.VERIFIER.value,
+            profile=profile.name,
+            driver="cli",
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+            task_id=task.task_id,
+            started=True,
+            isolation=None,
+            run_id=run.id,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        _fail_attempt_before_launch(store, attempt.id, reason, result="fail")
+        store.verification_add(
+            revision.id, task.task_id, "agent", item.raw, passed=False,
+            attempt_id=attempt.id, required_capabilities=list(item.capabilities),
+        )
+        verify.apply_verdict(store, revision.id, task, failure_hint=reason)
+        return {"task": task.task_id, "entry": item.raw, "verdict": "failed",
+                "reason": reason, "error_kind": "model_resolution"}
     attempt = store.attempt_create(
         revision_row_id=revision.id,
         role=Role.VERIFIER.value,
@@ -3548,6 +3689,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         run_id=run.id,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
+    _record_model_resolution(
+        project, run.id, f"verify-{task.task_id}-{attempt.id}", launch, attempt)
 
     if not probe.ok:
         reason = f"capability_mismatch: {probe.detail}"
@@ -3562,6 +3705,10 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
 
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
+    # The verifier's EffortOutcome is recorded like the planner's and the
+    # worker's (G008 T004): the catalog-validated slug confirms on success,
+    # brackets only on an echoed match — observed reality, never assumed.
+    effort = adapter.effort_outcome(launch, run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
     _record_attempt_health(store, profile.name, run_result)
@@ -3582,6 +3729,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     store.attempt_update(
         attempt.id, ended_at=db_now(),
         result="pass" if passed else "fail",
+        actual_effort=effort.actual if effort.actual else None,
+        effort_source=effort.source,
         failure_reason=None if passed else f"agent verifier: {detail}",
     )
     store.verification_add(
@@ -3596,6 +3745,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         "verdict": "pass" if passed else "fail",
         "detail": detail,
         "log": log,
+        "model_resolution": launch.model_resolution,
     }
 
 

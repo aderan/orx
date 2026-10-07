@@ -8,6 +8,13 @@ user `~/.config/orx/` > built-in defaults. Scalars take the highest layer
 that sets them; profiles merge by name with complete same-name replacement
 (project wins); role routing lists (plan.*/worker/verify) use the project
 section when the project config sets it, else the user's.
+
+G008: a profile's ``model`` is either a bare string (opaque to ORX,
+passed through unchanged — the legacy form) or a semantic model table
+parsed into a :class:`orx.models.ModelSpec`. The profile-level ``effort``
+stays the single effort source; ``Profile.model`` always remains a stable
+identity string for display and records, with the full spec carried
+alongside in ``model_spec``.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
+from orx import models
 from orx import records
 from orx.records import ConfigError
 
@@ -30,7 +38,7 @@ SCHEMA_VERSION = 1
 VALID_DRIVERS = "host | cli | external"
 VALID_HARNESSES = "zcode | codex | cursor | shell"
 VALID_CLASSES = "frontier | strong | economy"
-VALID_EFFORTS = "low | medium | high | xhigh | max"
+VALID_EFFORTS = " | ".join(models.EFFORTS)
 VALID_TRANSPORTS = "stdin | argument | file"
 VALID_DEPTHS = "light | standard | deep"
 VALID_HOST_MODES = "self | subagent"
@@ -176,9 +184,16 @@ class Profile:
     # native agent named by agent_ref (e.g. a ZCode subagent definition).
     host_mode: str = "self"
     agent_ref: str | None = None
+    # G008: the full semantic declaration when the profile's model was a
+    # TOML table. Bare-string profiles keep None — the string already is
+    # the whole declaration — so every pre-existing Profile construction
+    # and serialization shape is unchanged. ``model`` is ALWAYS a plain
+    # string (the spec's identity for table form, the raw string
+    # otherwise); a ModelSpec or dict never enters the string contract.
+    model_spec: models.ModelSpec | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "name": self.name,
             "driver": self.driver.value,
             "harness": self.harness.value,
@@ -193,6 +208,9 @@ class Profile:
             "host_mode": self.host_mode,
             "agent_ref": self.agent_ref,
         }
+        if self.model_spec is not None:
+            out["model_spec"] = self.model_spec.to_dict()
+        return out
 
 
 @dataclass(frozen=True)
@@ -424,8 +442,28 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
     if records.parse_enum(records.Effort, effort) is None:
         errors.append(f"{p} effort {effort!r} invalid ({VALID_EFFORTS})")
 
-    if not isinstance(raw.get("model"), str) or not raw.get("model"):
-        errors.append(f"{p} model must be a non-empty string")
+    # G008: `model` is a bare string (legacy, opaque) or a semantic table
+    # parsed by the shared contract. Table problems surface as errors that
+    # carry this profile's location plus the model.* field position. A
+    # table effort restatement must equal the profile effort (single
+    # source); the conflict check is skipped only when the profile-level
+    # effort itself already failed validation above.
+    raw_model = raw.get("model")
+    if isinstance(raw_model, str):
+        if not raw_model:
+            errors.append(f"{p} model must be a non-empty string or a model table")
+    elif isinstance(raw_model, dict):
+        try:
+            models.parse_model_spec(
+                raw_model,
+                profile_effort=effort
+                if records.parse_enum(records.Effort, effort) is not None
+                else None,
+            )
+        except models.ModelSpecError as exc:
+            errors.append(f"{p} {exc}")
+    else:
+        errors.append(f"{p} model must be a non-empty string or a model table")
 
     caps = raw.get("capabilities", [])
     if not isinstance(caps, list) or not all(isinstance(c, str) and c.strip() for c in caps):
@@ -478,11 +516,22 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
 
 
 def _build_profile(name: str, raw: dict) -> Profile:
+    # G008: a semantic table becomes the spec and its identity string
+    # becomes Profile.model; a bare string passes through untouched with
+    # no spec. Validation already ran (parse cannot fail here); the
+    # guard keeps a mid-flight contract change loud instead of silent.
+    raw_model = raw["model"]
+    model_spec: models.ModelSpec | None = None
+    if isinstance(raw_model, dict):
+        model_spec = models.parse_model_spec(raw_model, profile_effort=raw.get("effort"))
+        model = model_spec.identity
+    else:
+        model = raw_model
     return Profile(
         name=name,
         driver=records.Driver(raw["driver"]),
         harness=records.Harness(raw["harness"]),
-        model=raw["model"],
+        model=model,
         model_class=records.ModelClass(raw["class"]),
         effort=records.Effort(raw["effort"]),
         capabilities=tuple(raw.get("capabilities", [])),
@@ -492,6 +541,7 @@ def _build_profile(name: str, raw: dict) -> Profile:
         force=bool(raw.get("force", False)),
         host_mode=raw.get("host_mode", "self"),
         agent_ref=raw.get("agent_ref"),
+        model_spec=model_spec,
     )
 
 
@@ -1184,6 +1234,15 @@ def _toml_string(value: str) -> str:
     return "".join(pieces)
 
 
+def _toml_inline_table(data: dict) -> str:
+    """A flat table as a TOML inline table (semantic model blocks in
+    migrate_profiles_to_user). Values are scalars or string lists —
+    anything else is refused by _toml_value rather than mangled."""
+    return "{ " + ", ".join(
+        f"{_toml_key(key)} = {_toml_value(value)}" for key, value in data.items()
+    ) + " }"
+
+
 def migrate_profiles_to_user(project_profiles: Path,
                              user_profiles: Path | None = None) -> dict:
     """Collision-safe host procedure: move the project layer's profile
@@ -1226,7 +1285,13 @@ def migrate_profiles_to_user(project_profiles: Path,
     for name, entry in target_map.items():
         lines.append(f"\n[profiles.{name}]\n")
         for key in ("driver", "harness", "model", "class", "effort"):
-            lines.append(f'{key} = "{entry[key]}"\n')
+            value = entry[key]
+            if key == "model" and isinstance(value, dict):
+                # G008: semantic model tables migrate as TOML inline
+                # tables, never stringified dicts.
+                lines.append(f"model = {_toml_inline_table(value)}\n")
+            else:
+                lines.append(f'{key} = "{value}"\n')
         caps = ", ".join(f'"{c}"' for c in entry.get("capabilities", []))
         lines.append(f"capabilities = [{caps}]\n")
         for key in ("executable", "prompt_transport"):

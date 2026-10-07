@@ -369,3 +369,213 @@ aderan/orx push + tag v0.3.1；本地 editable 安装更新走 `orx skill update
       要求；README 观测版本改 v8/v9/v10/v11）；文档钉住回归 7 项；
       证据见 `.orx/runs/R007/check/T003/`。
 
+---
+
+# G008：模型选择抽象升级为语义化 ModelSpec（2026-10-07 起；2026-10-07 归档）
+
+目标：将 ORX 模型选择抽象从裸 slug 字符串升级为语义化 ModelSpec 能力
+元组 + 可刷新模型目录 + 运行时按 adapter 解析：配置表达语义（家族/
+版本/effort/speed/context），解析层吸收 Cursor CLI 的 slug 烘焙、
+参数化 bracket 语法与目录演化，执行直达、无需人工 /model/Tune。
+Run：R008；T001 起串行。背景实测（2026-10-07 控制器本机）：agent
+--list-models 只枚举烘焙 slug（grok-4.7-*/kimi-k3-*/glm-5.2-*/
+composer-2.5*/auto），参数化家族（claude-opus/gpt-5 等）可用但不被
+枚举，bracket 语法为参数化通道。
+
+范围外（明确不做，见 Goal 约束）：不依赖交互 UI（capability discovery
+只用 --list-models/--help/运行回显；Tune 仅背景解释，不写成操作步骤）；
+不重写 routing 策略（docs/routing-strategy.md 的分档与角色默认档位
+不在本 Goal 内）；不含版本发布（发布由用户另行决定，版本号/tag/发布
+材料零改动）。
+
+**归档状态（T005 终审时记录）**：五阶段全部交付。机制权威文档
+`docs/model-selection.md`（ModelSpec 形式、目录刷新/查看入口、各
+adapter 解析规则、证据登记 E1–E5 与样本标记、诊断规则）；文档示例
+经真实加载器与替身回放校验（`tests/test_model_docs.py`）；README 与
+routing-strategy 已链接且分档/默认档位未动（测试钉住）。T005 的独立
+agent 审查与 Goal 验收以 ORX verification 记录为准，此处不预支结论。
+
+## 五阶段实施记录
+
+### 阶段 1：ModelSpec 数据契约与语义配置加载边界 — Done（T001，R8）
+- [x] `src/orx/models.py`（新）：ModelSpec 能力元组——provider、
+      family+version 或语义 id（二选一，同时声明即身份不明错误）、
+      effort、speed（含 fast 布尔别名，两种拼写同一维度不得同时声明）、
+      context（'1m'/'128K'/'5000'/正整数归一为 token 数）、可选模型
+      能力要求；固定版本 vs 显式浮动版本策略（具体版本=钉定；缺省或
+      version = "latest"=浮动，一律归一为 None）；identity 稳定字符串
+      （provider/family@version、family、或原样 id）；to_dict 为
+      JSON 可表达的固定键集且可经 parse 往返；模块零 orx 内部依赖、
+      不承担 CLI slug/bracket 解析（id 字符串保持不透明，测试钉住）。
+      ResolvedModel 解析产物契约（spec/cli_slug/strategy/
+      bracket_params/catalog_generation）——本阶段只定契约，适配器
+      后续阶段填充。
+- [x] `src/orx/config.py`：model 双形态（裸字符串=旧行为原样透传、
+      语义 TOML 表）；effort 单一来源（表内 effort 必须与 profile
+      effort 一致，冲突报错）；未知字段/非法类型/身份不明/维度重复
+      声明错误全部带 profile 与 model.* 字段位置；Profile 增
+      model_spec 字段（默认 None，直接构造兼容），model 恒为稳定
+      身份字符串（无 dataclass/字典进入字符串契约的路径），
+      to_dict 仅语义形态追加 model_spec 键（旧序列化形状逐字节不变）；
+      配置分层与完整同名替换行为保持（语义 profile 整体替换测试）；
+      migrate_profiles_to_user 语义表以内联 TOML 表写回（不再把
+      dict 字符串化）；VALID_EFFORTS 改由 models.EFFORTS 单源派生。
+- [x] tests/test_model_spec.py 新增 46 例（契约/归一/版本策略/错误
+      词汇/不透明性/往返/ResolvedModel）；tests/test_config.py 新增
+      24 例（语义加载与身份、序列化 JSON、旧形状兼容、直接构造兼容、
+      错误定位参数化 16 形态、分层替换与补位、迁移往返）。
+- 证据：`uv run pytest -q tests/test_model_spec.py tests/test_config.py`
+  114 绿（44 存量 + 70 新增）；全量 `uv run pytest -q` 772 绿
+  （702 存量 + 70 新增）；`git diff --check` 干净；日志
+  `.orx/runs/R008/check/T001/`。
+
+### 阶段 2：可刷新模型目录 — Done（T002，R8）
+- [x] `src/orx/model_catalog.py`（新）：本地目录解析层——cursor 文本
+      （`agent --list-models`：ANSI/零宽字符清洗、header/空行/Tip/散文
+      永不成为模型、`(current)`/`(default)` 标记、`-fast`/`-<effort>`
+      变体解码保留原 slug）与 codex JSON（`codex debug models`：
+      非法 JSON/错误结构/全坏条目=发现失败，空目录=有效成功，
+      supported_reasoning_levels 原词汇原顺序（含 ultra）、
+      additional_speed_tiers、context/max_context_window、visibility）；
+      参数化 bracket 语法证据（`<family>[context=1m,effort=high,
+      fast=false]`）与枚举模型严格分开表达，示例家族仅为语法证据，
+      不冒充支持清单；CatalogEntry/ParameterizedSyntax/ModelCatalog
+      容器（source/generated_at/generation）可序列化往返；
+      catalog_from_snapshot 容忍旧快照与损坏数据（缺即 unknown）；
+      next_generation 只在成功刷新时递增；进程级 cached_catalog 按
+      持久化 generation 对账，成功刷新/失败刷新均使同进程旧缓存失效。
+      模块零模型名硬编码（测试钉住）。
+- [x] `src/orx/probes.py`：HarnessSpec 增 catalog_format；快照增量
+      新增 `model_catalog` 与 `catalog_error` 两键（位置不变
+      `<user data dir>/probes/<harness>.json`）；发现失败语义明确——
+      binary 缺失/非零退出/超时（MODELS_PROBE_TIMEOUT）/空输出/
+      不可解析输出记录 catalog_error 且不写目录，旧目录绝不重标为
+      新鲜成功；auth 与目录正交（互不伪造）；effort_selection 增加
+      目录信号（codex levels）；持久化后显式失效目录缓存；无新增
+      probe 调用（cursor 参数化证据复用已取的 help 文本）。
+- [x] `src/orx/cli.py`：agent info 人类输出展示目录（数量、来源、
+      时间、generation、current/default、families、参数化证据及
+      “示例非清单”声明）或如实展示失败原因/无记录；agent probe
+      人类输出加 models 行；--json envelope 与 0/1/2 退出码不变。
+- [x] fixtures：真实 CLI 输出捕获（cursor-list-models.txt 含零宽
+      字符与 Tip、agent-help.txt、真实形状裁剪的
+      codex-debug-models.json）；tests/test_model_catalog.py 新增
+      29 例（解析/变体/标记/参数化/失败与空目录区分/大目录 1200 条
+      全量/往返/generation/缓存失效/无硬编码）；test_probes.py
+      更新冻结形状并新增 8 例（invalid JSON、超时、空目录、auth
+      失败不伪造、cursor 标记+参数化、generation 递进、刷新失败
+      不重标旧目录+缓存失效、旧格式快照可读、1100 条 >256KiB 大
+      目录经 probe 全量）；test_cli.py 新增 3 例（旧格式快照
+      agent info 可读、目录失败展示原因非假成功、缺 binary 的
+      失败行）并加强 3 例既有断言。
+- 证据：`uv run pytest -q tests/test_model_catalog.py
+  tests/test_probes.py tests/test_cli.py` 绿；全量 `uv run pytest -q`
+  812 绿（772 存量 + 40 新增）；`git diff --check` 干净；真实 CLI
+  只读验证（agent --list-models/--help、codex debug models 600KB
+  全量解析往返）；日志 `.orx/runs/R008/check/T002/`。
+
+### 阶段 3：运行时按 adapter 解析 — Done（T003）
+- [x] cursor/codex resolver 消费 ModelSpec + 共享 launch_catalog：
+      枚举变体 slug、effort+fast、裸枚举、未枚举且 help 有 bracket
+      证据时合成参数；缺变体/不支持的 speed、context、capability
+      返回诊断，不静默换模型。EffortOutcome 仍以目录变体（成功）
+      或 bracket 回显（成功且匹配）确认。worker/planner/verifier
+      共用该路径；解析失败不启动、不写完成或通过。shell/host
+      身份字符串不变。决策（spec + cli_slug + strategy + generation）
+      与 argv 分开落记录。
+
+### 阶段 4：既有 profile 语义等价迁移与展示 — Done（T005，R8）
+- [x] profiles.toml 既有裸 slug（gpt-6.1-sol、claude-opus-5-5、
+      grok-4.7、composer-2.5、GLM account id 等）的语义等价表达与
+      迁移路径：`docs/model-selection.md` 迁移表（每行给出语义等价与
+      真实捕获目录上的同一解析目标，版本拼写 5-5/5.5 仅为表示差异；
+      account id 为不透明 host 身份、不设语义形态）。
+- [x] 展示/记录走身份字符串 + 完整 ModelSpec（T003 落地：Launch
+      model_resolution 决策记录与 attempt 身份字符串）；等价性由
+      T004 e2e（既有群体原样启动、语义表等价、routing 等价）+
+      T005 `tests/test_model_docs.py`（文档示例经真实加载器、
+      class/effort/capabilities/routing 顺序等价、EffortOutcome
+      证据规则）钉住；与 routing-strategy 既有档位兼容（只做等价
+      表达，不改档位——tier 表与角色默认档位原文由测试钉住未动）。
+
+### 阶段 5：端到端回归与终审 — Done（T005，R8）
+- [x] 本地替身端到端（语义配置 → 目录 → 解析 → 适配器 argv → 记录）：
+      `tests/test_model_evolution.py`（15 例独立演化矩阵——前缀改名+
+      版本升级的固定/浮动策略、变体增删、枚举↔参数化双向迁移、help
+      参数证据收窄、真实捕获目录上的多候选歧义、目录格式变化与发现
+      失败、codex 目录刷新演化、全程不换 auto/他族/他版本的扫掠）与
+      `tests/test_model_selection_e2e.py`（12 例——既有裸 slug 群体与
+      bracket 直写经真实加载器+真实捕获替身原样启动、语义表等价、五档
+      effort、三角色 dispatch 实际 argv/EffortOutcome/决策记录、同进程
+      与真子进程的刷新后启动、刷新失败/auth/超时/历史快照诊断、CLI
+      probe/info 0/1/2 契约、host account id 与 routing 等价性）。
+      揭示并修复两处 G008 缺陷：cursor resolver 此前对固定版本缺目录
+      匹配时会走 bracket 合成、浮动家族无法跟随版本演化（新增 stem
+      版本策略：固定=明确失败点名所提供版本、浮动唯一=跟随、多版本=
+      歧义诊断）；CLI verifier 路径此前不记录 EffortOutcome。
+- [x] README/docs 同步真实流程：`docs/model-selection.md` 成文——
+      ModelSpec 形式、目录刷新/查看仅可编程入口（orx agent probe/
+      info，Tune 仅背景段落且无任何操作步骤、测试钉住）、各 adapter
+      解析规则与严格失败边界、Claude/GPT 未枚举走参数化 bracket
+      （语法支持与具体模型/参数运行验证分开表述）、grok 前缀与版本
+      演化实例、旧配置兼容与迁移、effort 验证证据（目录变体成功/
+      bracket 回显/静默=provider_default）、证据登记 E1–E5（控制器
+      2026-10-07 背景、T002 会话 help 成功与一次瞬时 list-models
+      认证失败、T005 会话复测 2026.10.01-e373342、真实捕获/裁剪重建/
+      仿真样本分别标记、明确声明 G008 未执行任何真实模型运行）与
+      诊断规则表；README 启动说明改为与 resolver 实际行为一致并
+      链接；routing-strategy 仅增加抽象层说明与链接（分档与角色
+      默认档位不变，测试钉住）。`tests/test_model_docs.py` 13 例。
+- [x] 归档本节记录（五阶段全部 Done，临时状态图例行移除；其他
+      Goal 历史原样保留）；不含版本发布——版本号、tag、发布材料
+      零改动，发布由用户另行决定。
+
+## G008 轮次记录
+- 2026-10-07 R8 T001：阶段 1 交付（attempt 127）——models.py 数据
+      契约 + config.py 语义加载边界 + 70 例新增测试；证据见
+      `.orx/runs/R008/check/T001/`。
+- 2026-10-07 R8 T002：阶段 2 交付（attempt 128）——model_catalog.py
+      解析层（cursor 文本/codex JSON/参数化证据分离）+ probes.py
+      快照增量目录键与失败/刷新语义 + cli.py agent info/probe 展示；
+      40 例新增测试；证据见 `.orx/runs/R008/check/T002/`。
+
+- 2026-10-07 R8 T003：阶段 3 交付（attempt 134）——cursor/codex
+      resolver 消费 ModelSpec + 共享 launch_catalog（快照优先、无快照
+      时一次本地发现、进程内缓存）；base.py 增解析词汇
+      （effective_model_spec / identity_token(s) / requested_dims /
+      catalog_state / refresh_hint / ModelResolutionError），
+      Launch 增 model_resolution 决策记录；dispatch 三角色启动路径
+      接入并在解析失败时记录失败 attempt（不换模型、不写完成/通过），
+      决策 JSON + argv 日志分开落证据；shell/host 契约不变；
+      tests/test_model_resolution.py 34 例（语义→变体 slug / bracket
+      合成 / 诊断口径 / EffortOutcome 确认规则 / 共享目录与
+      generation 刷新 / 三角色与失败路径 / 身份字符串兼容）；
+      证据见 `.orx/runs/R008/check/T003/`。
+
+- 2026-10-07 R8 T004：阶段 5 测试面交付（attempt 136）——演化矩阵
+  + 替身 e2e 共 27 例新增；修复 resolver 版本策略（cursor.py：
+  `_stem_families`——cursor- 前缀剥离后的家族 stem 版本对账；固定
+  版本缺枚举且有他版本=诊断（不静默换固定版本/不 bracket 伪装）、
+  浮动唯一版本=跟随目录、多版本=歧义诊断）与 verifier
+  EffortOutcome 记录（dispatch.py `_run_cli_verifier` 补
+  actual_effort/effort_source）；全量 873 绿（846 存量 + 27 新增）；
+  证据见 `.orx/runs/R008/check/T004/`。
+
+- 2026-10-07 R8 T005：阶段 4+5 文档与终审交付（attempt 138）——
+  `docs/model-selection.md` 成文（机制权威：三层边界、ModelSpec
+  形式与版本策略、旧配置兼容迁移表、目录刷新/查看可编程入口与
+  generation/失败语义、cursor/codex/shell/host 解析规则与 EffortOutcome
+  证据通道、严格失败边界、Claude/GPT 参数化路径（语法支持 vs 运行
+  验证分开）、grok 前缀与版本演化三版本实例、证据登记 E1–E5 与
+  真实捕获/裁剪重建/仿真样本标记、无真实模型运行声明、诊断规则表、
+  不变项声明）；`tests/test_model_docs.py` 13 例（文档 TOML 示例经
+  真实加载器、语义/旧群体在回放真实捕获上等价——身份/class/effort/
+  capabilities/解析目标、EffortOutcome 规则、routing 顺序双形态等价、
+  来源与样本标记钉住、Tune 仅背景无操作步骤、README/routing 链接与
+  分档不变钉住、IMPLEMENTATION_PLAN G008 收口钉住）；README cursor/
+  codex 启动说明改为与 resolver 实际行为一致（旧 `<id>[effort=
+  <mapped>]` 单形态表述移除）并加 Docs 链接；routing-strategy 仅增
+  "Model declaration and resolution" 机制段与链接；本文件 G008 记录
+  归档（五阶段 Done、临时状态图例行清理、其余 Goal 历史保留）；
+  不含版本发布（版本号/tag/发布材料零改动）。证据见
+  `.orx/runs/R008/check/T005/`。

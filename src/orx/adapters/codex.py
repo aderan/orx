@@ -2,11 +2,20 @@
 
 - Required in `codex exec --help`: --json, -m, -C, --output-last-message.
   Anything missing -> the attempt fails with capability_mismatch.
-- Effort: map quick->low, standard->medium, deep->high, max->max, then check
-  the mapped level against `supported_reasoning_levels` for the configured
-  model in `codex debug models` (local catalog, no completion). Supported ->
-  pass `-c model_reasoning_effort=<level>`; unsupported or model unknown ->
-  pass nothing and record provider_default.
+- Model resolution (G008 T003): :func:`resolve_codex_model` consumes the
+  profile's :class:`~orx.models.ModelSpec` plus the shared refreshable
+  catalog (:func:`orx.model_catalog.launch_catalog`, fed by
+  `codex debug models` — local, free, no completion) and produces the
+  exact `-m` slug and, when the catalog's ``supported_reasoning_levels``
+  contain the mapped effort, the ``-c model_reasoning_effort=<level>``
+  flag (source=requested_validated). A bare-string profile is the id
+  form of the same spec and keeps the legacy contract verbatim: unknown
+  slug or unsupported level -> pass nothing, record provider_default.
+  A *semantic* declaration is strict: an unknown model, an unsupported
+  effort level, or an explicit speed/context/capability dimension (codex
+  exec has no launch channel for them) is a ModelResolutionError naming
+  the requested dimensions, the catalog state, and the refresh command —
+  never a silent substitution.
 - Sandbox (per-role contract, docs/pbv-mapping.md §4.5): worker launches run
   `-s workspace-write`; planner and verifier launches run `-s read-only`
   (planning and verification read the tree, they must not mutate it). The
@@ -32,6 +41,7 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 
+from orx import model_catalog
 from orx import runtime
 from orx.adapters.base import (
     EFFORT_MAP,
@@ -42,18 +52,29 @@ from orx.adapters.base import (
     Capture,
     EffortOutcome,
     Launch,
+    ModelResolutionError,
     ProbeReport,
     captured_stdout,
+    catalog_state,
+    effective_model_spec,
+    identity_token,
+    identity_tokens,
     miss_without_usage,
     native_usage,
     opaque_session_id,
+    refresh_hint,
+    requested_dims,
 )
+from orx.models import ModelSpec, ResolvedModel
 from orx.records import ORXError
 
 REQUIRED_FLAGS = ("--json", "-m", "-C", "--output-last-message")
 
 _probe_cache: dict[str, ProbeReport] = {}
-_catalog_cache: list | None = None
+
+# The effort dimension's launch channel: a -c config key that never
+# appears in --help; the catalog's own effort levels are the signal.
+EFFORT_FLAG_KEY = "model_reasoning_effort"
 
 
 def _help_text() -> str:
@@ -61,6 +82,98 @@ def _help_text() -> str:
     if result.exit_code != 0 and not result.stdout:
         raise ORXError(f"codex probe failed: exit {result.exit_code}")
     return result.stdout + "\n" + result.stderr
+
+
+def _resolution_error(detail: str, spec: ModelSpec, catalog) -> ModelResolutionError:
+    return ModelResolutionError(
+        f"codex model resolution failed: {detail};"
+        f" requested: {requested_dims(spec)};"
+        f" {catalog_state(catalog, 'codex')}; {refresh_hint('codex')}"
+    )
+
+
+def resolve_codex_model(spec: ModelSpec, *, catalog,
+                        strict: bool) -> ResolvedModel:
+    """Resolve one model declaration against the local codex catalog.
+
+    ``strict`` is true for semantic (model-table) declarations and false
+    for bare legacy strings. Legacy keeps today's contract exactly: an
+    unknown model or an unsupported effort level passes no effort flag
+    and records provider_default. Strict raises
+    :class:`ModelResolutionError` for an unknown model, an effort level
+    the catalog does not list, or an explicit speed/context/capability
+    dimension — codex exec has no channel for those, and a semantic
+    request is never silently narrowed.
+    """
+    token = identity_token(spec)
+    entry = None
+    if catalog is not None:
+        for candidate in identity_tokens(spec):
+            for row in catalog.models:
+                if row.slug == candidate:
+                    entry = row
+                    token = candidate
+                    break
+            if entry is not None:
+                break
+    generation = catalog.generation if catalog is not None else None
+    if entry is None:
+        if strict:
+            raise _resolution_error(
+                f"model {token!r} is not in the local codex catalog",
+                spec, catalog,
+            )
+        return ResolvedModel(
+            spec=spec, cli_slug=token, strategy="bare_unlisted",
+            bracket_params=(), catalog_generation=generation,
+        )
+    if strict:
+        if spec.speed is not None:
+            raise _resolution_error(
+                "codex exec has no launch channel for the speed dimension"
+                " (speed tiers are catalog metadata only)", spec, catalog,
+            )
+        if spec.context_tokens is not None:
+            raise _resolution_error(
+                "codex exec has no launch channel for the context dimension"
+                " (context windows are catalog metadata only)", spec, catalog,
+            )
+        if spec.capabilities:
+            raise _resolution_error(
+                "capability requirements cannot be verified against the"
+                " codex model catalog", spec, catalog,
+            )
+    mapped = EFFORT_MAP.get(spec.effort) if spec.effort else None
+    if mapped is not None and mapped in entry.efforts:
+        return ResolvedModel(
+            spec=spec, cli_slug=entry.slug, strategy="catalog_levels",
+            bracket_params=((EFFORT_FLAG_KEY, mapped),),
+            catalog_generation=generation,
+        )
+    if entry.efforts and mapped is not None and strict:
+        raise _resolution_error(
+            f"model {token!r} supports reasoning levels {list(entry.efforts)};"
+            " the requested effort is not among them", spec, catalog,
+        )
+    # No reasoning levels for this model (the dimension does not exist),
+    # no effort requested, or the legacy form's tolerated pass-through.
+    return ResolvedModel(
+        spec=spec, cli_slug=entry.slug, strategy="catalog_slug",
+        bracket_params=(), catalog_generation=generation,
+    )
+
+
+def _effort_flag(resolved: ResolvedModel, requested: str) -> tuple[list[str], EffortOutcome]:
+    level = dict(resolved.bracket_params).get(EFFORT_FLAG_KEY)
+    if level is not None:
+        return (
+            ["-c", f"{EFFORT_FLAG_KEY}={level}"],
+            EffortOutcome(
+                requested=requested, actual=level,
+                source=EFFORT_SOURCE_REQUESTED_VALIDATED,
+            ),
+        )
+    return [], EffortOutcome(requested=requested)
 
 
 class CodexAdapter:
@@ -87,53 +200,20 @@ class CodexAdapter:
         _probe_cache["codex"] = report
         return report
 
-    def _supported_levels(self, model: str) -> set[str] | None:
-        """Levels from the local catalog; None when the model is unknown or
-        the catalog cannot be read. The catalog exceeds the default 256 KiB
-        stream limit (verified in a real run, 2026-10-03: truncation silently
-        corrupted the JSON and degraded every model to provider_default), so
-        this read passes a larger limit."""
-        global _catalog_cache
-        if _catalog_cache is None:
-            result = runtime.run_argv(
-                ["codex", "debug", "models"], cwd=Path.cwd(), timeout=30,
-                stream_limit=4 * 1024 * 1024,
-            )
-            try:
-                _catalog_cache = json.loads(result.stdout).get("models", [])
-            except (json.JSONDecodeError, AttributeError):
-                _catalog_cache = []
-        for entry in _catalog_cache:
-            if entry.get("slug") == model:
-                return {level.get("effort") for level in entry.get("supported_reasoning_levels", [])}
-        return None
-
-    def _effort_flag(self, profile) -> tuple[list[str], EffortOutcome]:
-        requested = profile.effort.value
-        mapped = EFFORT_MAP.get(requested)
-        if mapped is None:
-            return [], EffortOutcome(requested=requested)
-        levels = self._supported_levels(profile.model)
-        if levels and mapped in levels:
-            return (
-                ["-c", f"model_reasoning_effort={mapped}"],
-                EffortOutcome(
-                    requested=requested,
-                    actual=mapped,
-                    source=EFFORT_SOURCE_REQUESTED_VALIDATED,
-                ),
-            )
-        return [], EffortOutcome(requested=requested)
-
     def _base_argv(self, *, root: Path, profile, prompt: str, scratch: Path,
-                   sandbox: str = "workspace-write") -> tuple[list[str], EffortOutcome, Path]:
-        effort_args, effort = self._effort_flag(profile)
+                   sandbox: str = "workspace-write") -> tuple[list[str], EffortOutcome, Path, ResolvedModel]:
+        catalog = model_catalog.launch_catalog("codex")
+        resolved = resolve_codex_model(
+            effective_model_spec(profile), catalog=catalog,
+            strict=profile.model_spec is not None,
+        )
+        effort_args, effort = _effort_flag(resolved, profile.effort.value)
         scratch.mkdir(parents=True, exist_ok=True)
         last_message = scratch / "last-message.txt"
         argv = [
             "codex", "exec",
             "--json",
-            "-m", profile.model,
+            "-m", resolved.cli_slug,
             "-C", str(root),
             "-s", sandbox,
             "--ephemeral",
@@ -141,10 +221,10 @@ class CodexAdapter:
             *effort_args,
             prompt,
         ]
-        return argv, effort, last_message
+        return argv, effort, last_message, resolved
 
     def _launch(self, *, root, scratch, profile, prompt, timeout, sandbox: str) -> Launch:
-        argv, effort, last_message = self._base_argv(
+        argv, effort, last_message, resolved = self._base_argv(
             root=root, profile=profile, prompt=prompt, scratch=scratch, sandbox=sandbox)
         return Launch(argv=argv, cwd=root, timeout=timeout,
                       last_message_path=last_message, planned_effort=effort,
@@ -155,7 +235,8 @@ class CodexAdapter:
                       stdin_text="",
                       # The CLI flag value is the isolation claim
                       # (read-only -> read_only; docs/pbv-mapping.md §4.5).
-                      sandbox=sandbox.replace("-", "_"))
+                      sandbox=sandbox.replace("-", "_"),
+                      model_resolution=resolved.to_dict())
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
         # Workers write code: they keep workspace-write (§4.5).
@@ -270,7 +351,6 @@ class CodexAdapter:
 
 
 def reset_caches() -> None:
-    """Test hook: forget cached probes and catalog reads."""
-    global _catalog_cache
+    """Test hook: forget cached probes and the shared model catalog."""
     _probe_cache.clear()
-    _catalog_cache = None
+    model_catalog.invalidate()

@@ -49,11 +49,19 @@ Every command takes `--json` for a machine envelope:
   `ORX_VERDICT=pass|fail`.
 - `driver = "cli", harness = "codex"` — `codex exec --json -m <model> -C <root>
   -s workspace-write --ephemeral --output-last-message <file> [-c
-  model_reasoning_effort=<validated>] <prompt>`; effort validated against the
-  local `codex debug models` catalog.
+  model_reasoning_effort=<validated>] <prompt>`; the model declaration is the
+  same dual form, resolved strictly — effort validated against the local
+  `codex debug models` catalog (see
+  [model selection](docs/model-selection.md)).
 - `driver = "cli", harness = "cursor"` — `agent --print --output-format json
-  --workspace <root> --trust --model '<id>[effort=<mapped>]' <prompt>`;
-  `force = true` opts into `--force`.
+  --workspace <root> --trust --model '<resolved>' <prompt>`. The model comes
+  from the profile's declaration — a legacy bare slug or a semantic `model`
+  table (`family` / `version` / `effort` / `speed` / `context`) — and is
+  resolved at launch against the refreshable local catalog into an
+  enumerated variant slug, a bracket parameter string for unlisted
+  families, or a pre-launch diagnostic that never substitutes another
+  model ([model selection](docs/model-selection.md)). `force = true` opts
+  into `--force`.
 - `driver = "external"` — parked at `waiting_external`; you finish it.
 
 ## Layout
@@ -304,6 +312,10 @@ update by checking out the release — no `uv tool upgrade`.
 - [CONTEXT.md](CONTEXT.md) — Goal, Run, Task, agent roles, and related terms
 - [Routing strategy](docs/routing-strategy.md) — model tiering convention,
   role × class × effort defaults, V0–V3 validation layers, escalation ladder
+- [Model selection](docs/model-selection.md) — the semantic `model`
+  declaration form, the refreshable model catalog (`orx agent probe` /
+  `orx agent info`), per-adapter resolution rules, evidence provenance, and
+  diagnostics
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
