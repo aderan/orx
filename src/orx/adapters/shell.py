@@ -16,6 +16,7 @@ import shutil
 from pathlib import Path
 
 from orx.adapters.base import (
+    DELIVERY_CHANNEL_EXIT,
     EFFORT_PROVIDER_DEFAULT,
     EFFORT_SOURCE_REPORTED,
     EffortOutcome,
@@ -27,6 +28,10 @@ from orx.adapters.base import (
 
 class ShellAdapter:
     harness = "shell"
+    # This adapter's standing contract: "Exit code is the result". The
+    # final-message delivery protocol is not applied to generic executables
+    # (G009 T002) — doing so would break every script-shaped profile.
+    delivery_channel = DELIVERY_CHANNEL_EXIT
 
     def probe(self) -> ProbeReport:
         return ProbeReport(ok=True, detail="shell adapter launches as-is")

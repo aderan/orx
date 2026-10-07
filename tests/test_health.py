@@ -369,3 +369,204 @@ def test_cooldown_expiry_exact_boundary(tmp_path, monkeypatch):
         assert health_mod.cooldown_active(store.resource_row("host-worker")) is False
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T002 (2026-10-07 incident): health learning semantics for CLI worker
+# deliveries. The health seam may only learn PROVEN facts: an exit-0 run
+# whose delivery is blocked — or missing/malformed/contradictory
+# (protocol_error) — proves neither a healthy profile nor an account
+# failure, so NOTHING is learned: an environment block must never clear
+# failure streaks or cooldowns, and must never gate the profile either.
+# A passed delivery with a red controller gate is a code fact: the profile
+# served the request and must not be marked unavailable.
+
+
+def _g009_cursor_payload(result_text: str) -> dict:
+    """A Cursor-shaped success envelope around an arbitrary worker result
+    text (the incident's transport shape: process exit 0, response ok)."""
+    return {
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": "g009-session",
+        "result": result_text,
+        "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 50},
+    }
+
+
+G009_BLOCKED_TEXT = (
+    "blocked: the start gate cannot run in this environment.\n\n"
+    '```json\n{"status":"blocked","summary":"shell rejected",'
+    '"checks":[],"artifacts":[]}\n```'
+)
+G009_PASSED_TEXT = (
+    '```json\n{"status":"passed","summary":"done",'
+    '"checks":[],"artifacts":[]}\n```'
+)
+
+
+def _g009_run_cursor_worker(tmp_path, monkeypatch, result_text: str,
+                            check: str = "true", prepare=None):
+    """One cursor-harness CLI worker attempt through the REAL dispatch stack
+    (routing, launch seam, health seam, delivery gate, state machine) with
+    only the model process replaced by a captured envelope. ``prepare`` runs
+    after the project exists but before ``run_slice`` — the hook the
+    health-state tests use to seed a failure streak or cooldown into the
+    very store the attempt will learn against. Returns the open project;
+    the caller closes it."""
+    import json as _json
+    from conftest import (HOST_CONFIG_TOML, HOST_PROFILES_TOML, ir_for,
+                          make_project, task_spec)
+    from orx import adapters, runtime
+    from orx.adapters.base import Launch, ProbeReport
+
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', 'profiles = ["cli-fake"]')
+    profiles = HOST_PROFILES_TOML.replace('harness = "shell"', 'harness = "cursor"')
+    project = make_project(tmp_path, config, profiles)
+    adapter = adapters.get_adapter("cursor")
+    monkeypatch.setattr(adapter, "probe",
+                        lambda: ProbeReport(True, "captured CLI stand-in"))
+    monkeypatch.setattr(
+        adapter, "build_worker_launch",
+        lambda **kwargs: Launch(argv=["captured-agent"], cwd=tmp_path, timeout=5))
+    monkeypatch.setattr(
+        runtime, "run_launch",
+        lambda launch: runtime.CommandResult(
+            command="captured-agent", exit_code=0,
+            stdout=_json.dumps(_g009_cursor_payload(result_text)),
+            stderr="", duration_sec=0.01, timed_out=False))
+    goal = dispatch.create_goal(project, "health replay", ["a1"])[0]
+    dispatch.submit_plan(project, ir_for(goal, [task_spec(
+        "T001", acceptance=goal.acceptance, verification=[check], complexity="low")]))
+    if prepare is not None:
+        prepare(project)
+    dispatch.run_slice(project)
+    return project
+
+
+def test_blocked_cli_delivery_never_clears_failure_state(tmp_path, monkeypatch):
+    """The incident's exact poisoning, pinned: an exit-0 response whose
+    worker delivery says blocked must not be learned as a success — the
+    failure streak, last error kind, and status are untouched."""
+    seen = {}
+
+    def prepare(project):
+        from orx import health as health_mod
+        # Two temporary failures: streak 2, still routable (threshold 3).
+        health_mod.record_attempt_outcome(project.store, "cli-fake", ok=False,
+                                          error_kind="temporary_failure")
+        health_mod.record_attempt_outcome(project.store, "cli-fake", ok=False,
+                                          error_kind="temporary_failure")
+        seen["before"] = project.store.resource_row("cli-fake")
+        assert seen["before"].failure_streak == 2
+
+    project = _g009_run_cursor_worker(
+        tmp_path, monkeypatch, G009_BLOCKED_TEXT, prepare=prepare)
+    try:
+        after = project.store.resource_row("cli-fake")
+        assert after.failure_streak == 2, (
+            "an exit-0 blocked delivery must not clear the failure streak")
+        assert after.last_error_kind == "temporary_failure"
+        assert after.status == seen["before"].status
+    finally:
+        project.close()
+
+
+def test_health_seam_preserves_cooldown_for_blocked_and_protocol_error(tmp_path, monkeypatch):
+    """Seam-level pin of the cooldown rule (a cooldown profile is not
+    routable, so the end-to-end replay cannot stage it): with a live
+    cooldown row, an exit-0 blocked or protocol_error delivery learns
+    NOTHING — the retry moment is untouched, the error kind stands — while
+    a passed delivery still clears it. The seam call is exactly the one
+    the CLI worker path makes (same arguments, same delivery facts)."""
+    from orx.runtime import CommandResult
+    project, store = _store_with(tmp_path, monkeypatch, profiles=("cli-fake",))
+    try:
+        ok_run = CommandResult(command="x", exit_code=0, stdout="", stderr="",
+                               duration_sec=0.0, timed_out=False)
+        for outcome in ("blocked", "protocol_error"):
+            health.record_attempt_outcome(store, "cli-fake", ok=False,
+                                          error_kind="rate_limited")
+            row = store.resource_row("cli-fake")
+            assert row.status == "cooldown" and row.cooldown_until, outcome
+            until = row.cooldown_until
+            dispatch._record_attempt_health(
+                store, "cli-fake", ok_run, delivery_outcome=outcome)
+            after = store.resource_row("cli-fake")
+            assert after.status == "cooldown", outcome
+            assert after.cooldown_until == until, outcome
+            assert after.last_error_kind == "rate_limited", outcome
+            store.resource_clear("cli-fake")  # reset for the next outcome
+
+        # The success transition still fires when the delivery proves it.
+        health.record_attempt_outcome(store, "cli-fake", ok=False,
+                                      error_kind="rate_limited")
+        dispatch._record_attempt_health(
+            store, "cli-fake", ok_run, delivery_outcome="passed")
+        cleared = store.resource_row("cli-fake")
+        assert cleared.status == "available"
+        assert cleared.cooldown_until is None
+        assert cleared.failure_streak == 0
+    finally:
+        project.close()
+
+
+def test_protocol_error_delivery_learns_nothing(tmp_path, monkeypatch):
+    """A missing delivery (a132's natural-language blocker) is a protocol
+    failure, not a resource fact: the seeded row is untouched — no success
+    learned, no failure streak, no gate."""
+    project = _g009_run_cursor_worker(
+        tmp_path, monkeypatch,
+        "I could not run the checks: every shell invocation was rejected.")
+    try:
+        row = project.store.resource_row("cli-fake")
+        # Nothing was learned in either direction: no success write (an
+        # "available" row), no failure write (a streak or an error kind).
+        # With no prior row, absence is itself the proof.
+        assert row is None or (
+            row.status == "unknown" and row.failure_streak == 0
+            and row.last_error_kind is None
+        ), row
+    finally:
+        project.close()
+
+
+def test_passed_cli_delivery_with_red_gate_keeps_profile_healthy(tmp_path, monkeypatch):
+    """Code red is not account red: a passed delivery whose controller gate
+    is red keeps the profile available — the request was served; the red
+    gate is a code fact for the task, never a resource transition."""
+    project = _g009_run_cursor_worker(tmp_path, monkeypatch, G009_PASSED_TEXT,
+                                      check="false")
+    try:
+        row = project.store.resource_row("cli-fake")
+        assert row.status == "available"
+        assert row.failure_streak == 0
+        assert row.last_error_kind is None
+        task = project.store.conn.execute(
+            "SELECT status FROM tasks WHERE task_id='T001'").fetchone()
+        assert task["status"] == "failed"
+    finally:
+        project.close()
+
+
+def test_passed_cli_delivery_clears_the_failure_streak(tmp_path, monkeypatch):
+    """Learning still works when the capability IS proven: a passed
+    delivery on a served, gated-green request clears the failure streak —
+    the success transition requires the delivery fact, and got it."""
+    def prepare(project):
+        health.record_attempt_outcome(project.store, "cli-fake", ok=False,
+                                      error_kind="temporary_failure")
+        health.record_attempt_outcome(project.store, "cli-fake", ok=False,
+                                      error_kind="temporary_failure")
+        assert project.store.resource_row("cli-fake").failure_streak == 2
+
+    project = _g009_run_cursor_worker(
+        tmp_path, monkeypatch, G009_PASSED_TEXT, prepare=prepare)
+    try:
+        row = project.store.resource_row("cli-fake")
+        assert row.status == "available"
+        assert row.failure_streak == 0
+        assert row.last_error_kind is None
+    finally:
+        project.close()

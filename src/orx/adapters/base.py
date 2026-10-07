@@ -8,6 +8,7 @@ record; no per-adapter copies.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -272,6 +273,162 @@ class Capture:
     miss_reason: str | None = None
 
 
+# G009 T002: how a harness's WORKER communicates its final delivery. The
+# process exit code is ALWAYS transport (the harness controls it; a blocked
+# run may still exit 0 — Cursor incident 2026-10-07). This names the
+# machine channel dispatch interprets on top of the transport fact:
+DELIVERY_CHANNEL_MESSAGE = "message"
+#   the worker's final message text carries the structured delivery
+#   document (extract_cli_delivery below); cursor and codex. Adapters
+#   declaring this channel should also implement
+#   ``response_error(launch, run_result) -> str | None`` — the harness
+#   response-level error fact (a cursor error envelope, a codex error
+#   event), which contradicts a passed delivery.
+DELIVERY_CHANNEL_EXIT = "exit"
+#   the exit code IS the documented delivery channel; the final-message
+#   protocol is not applied (generic executables, scripts — the shell
+#   adapter's standing contract "Exit code is the result").
+
+
+# ---------------------------------------------------------------------------
+# CLI final-message delivery extraction (G009 T002).
+#
+# A CLI worker's process exit code is transport, never a task verdict — the
+# harness controls it, and a blocked run may still exit 0 (Cursor incident
+# 2026-10-07: a131 delivered status=blocked in a fenced JSON block inside
+# the result text while the process exited 0). The worker's delivery is a
+# structured document in its final message, parsed here against the ONE
+# delivery schema `orx task complete --evidence` enforces (verify owns it;
+# this module never copies the rules). Shapes: a fenced ```json block (the
+# contract the worker prompt teaches), or a bare JSON object as the whole
+# message (a131-compatible tolerance). Natural-language statements are
+# never interpreted into a delivery: missing, malformed, and
+# self-contradictory documents are explicit protocol problems.
+
+_FENCED_JSON_RE = re.compile(r"```[ \t]*json[ \t]*\r?\n(.*?)```",
+                             re.DOTALL | re.IGNORECASE)
+_FENCED_BARE_RE = re.compile(r"```[ \t]*\r?\n(.*?)```", re.DOTALL)
+
+_DELIVERY_MISSING = (
+    "no machine-readable delivery document found in the worker result text"
+    " (expected one JSON object with status/summary/checks/artifacts,"
+    " fenced as the final block of the message)"
+)
+
+
+def _delivery_schema_errors(document: dict) -> list[str]:
+    """Field errors for one candidate delivery document, straight from the
+    schema owner: the document is validated through ``verify.
+    load_delivery_evidence`` — the exact path `orx task complete
+    --evidence` uses — so a CLI delivery and an evidence file can never
+    drift apart. The scratch file is the seam to verify's file-shaped
+    validator, not a second copy of the rules."""
+    import tempfile
+
+    from orx import verify
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix="-cli-delivery.json", delete=False
+    ) as handle:
+        handle.write(json.dumps(document))
+        scratch = Path(handle.name)
+    try:
+        _data, errors = verify.load_delivery_evidence(scratch)
+    finally:
+        scratch.unlink(missing_ok=True)
+    return errors
+
+
+def _iter_json_objects(text: str):
+    """Every balanced JSON object embedded in ``text``, with its span.
+    Objects the worker quoted for other reasons (check output, markers,
+    envelopes) are filtered by the caller — only a ``status`` key makes a
+    candidate a delivery attempt."""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            yield index, end, value
+
+
+def _choose_delivery(documents: list[dict]) -> tuple[dict | None, str | None]:
+    """One document from the candidate list: identical-status duplicates
+    take the last (the worker's final word); disagreeing statuses are an
+    explicit contradiction, never a silent pick."""
+    statuses = [document.get("status") for document in documents]
+    if len(set(statuses)) > 1:
+        return None, (
+            "multiple delivery documents disagree on status: "
+            + " vs ".join(repr(status) for status in statuses)
+            + " — exactly one final delivery is required"
+        )
+    return documents[-1], None
+
+
+def extract_cli_delivery(text: str) -> tuple[dict | None, list[str]]:
+    """The worker's structured delivery from a CLI worker's final message.
+
+    Returns ``(delivery, problems)``: ``delivery`` is the one valid
+    delivery document (None when there is none) and ``problems`` is the
+    protocol diagnosis (empty when a delivery was read). Exactly one of
+    the two is non-empty.
+
+    Priority: a valid fenced document beats everything; a fenced block
+    that fails to parse or validate is a malformed attempt (the worker
+    tried the protocol); otherwise bare JSON objects are considered the
+    same way; nothing delivery-shaped at all is a missing delivery.
+    """
+    fences = [m for m in _FENCED_JSON_RE.finditer(text)]
+    fences += [m for m in _FENCED_BARE_RE.finditer(text)]
+    spans = [(m.start(), m.end()) for m in fences]
+
+    def is_fenced(start: int, end: int) -> bool:
+        return any(fs <= start and end <= fe for fs, fe in spans)
+
+    fenced_valid: list[dict] = []
+    fenced_errors: list[str] = []
+    loose_valid: list[dict] = []
+    loose_errors: list[str] = []
+    for start, end, obj in _iter_json_objects(text):
+        if "status" not in obj:
+            continue  # JSON the worker quoted for other reasons
+        errors = _delivery_schema_errors(obj)
+        if errors:
+            target = fenced_errors if is_fenced(start, end) else loose_errors
+            target.extend(errors)
+        else:
+            target_list = fenced_valid if is_fenced(start, end) else loose_valid
+            target_list.append(obj)
+
+    # A fence whose content is not parseable JSON at all never reaches the
+    # object scan — diagnose it here, or the attempt reads as "missing".
+    for match in fences:
+        content = match.group(1).strip()
+        if not content:
+            continue
+        try:
+            json.loads(content)
+        except json.JSONDecodeError as exc:
+            fenced_errors.append(f"fenced JSON block does not parse: {exc}")
+
+    if fenced_valid:
+        delivery, problem = _choose_delivery(fenced_valid)
+        return (delivery, []) if problem is None else (None, [problem])
+    if fenced_errors:
+        return None, fenced_errors
+    if loose_valid:
+        delivery, problem = _choose_delivery(loose_valid)
+        return (delivery, []) if problem is None else (None, [problem])
+    if loose_errors:
+        return None, loose_errors
+    return None, [_DELIVERY_MISSING]
+
+
 @dataclass(frozen=True)
 class Launch:
     argv: list[str]
@@ -301,9 +458,16 @@ class Adapter(Protocol):
     usage_observation(launch, run_result) -> dict | None; None means the
     harness reports nothing (unknown is a legal, stored outcome). M1.2 adds
     optional interpret_capture() -> Capture so a miss records why, and so a
-    harness session id can be stored without being invented."""
+    harness session id can be stored without being invented. G009 T002 adds
+    the worker delivery vocabulary: adapters declare ``delivery_channel``
+    ("message" when the final message carries the structured delivery —
+    cursor/codex; "exit" when the exit code is the delivery channel —
+    shell) and message-channel adapters implement optional
+    response_error(launch, run_result) -> str | None, the harness
+    response-level error that contradicts a passed delivery."""
 
     harness: str
+    delivery_channel: str
 
     def probe(self) -> ProbeReport:
         """Local capability check (help text / binary presence). Never runs a

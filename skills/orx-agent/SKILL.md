@@ -153,6 +153,27 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
   - `summary` (required): a non-empty string.
   - The legacy `{ "summary", "commands", "artifacts" }` shape is REJECTED:
     `orx task complete` names every missing field and records nothing.
+- **CLI-launched workers (no `orx` CLI in your environment)**: your final
+  message IS the delivery channel. End it with exactly one fenced `json`
+  code block carrying the same structured delivery result (the schema
+  above), and write nothing after it:
+
+  ```json
+  {"status": "passed" | "failed" | "blocked",
+   "summary": "<non-empty: what was delivered, or why not>",
+   "checks": [{"command": "<cmd>", "exit_code": <integer or null>,
+              "log": "<path or null>"}],
+   "artifacts": ["<path>", ...]}
+  ```
+
+  The CLI process exit code is transport — the harness controls it, and a
+  blocked run may still exit 0. ORX parses that document as your delivery:
+  natural-language statements ("blocked: ...") are context for humans,
+  never a machine delivery; a final message without the document is
+  recorded as a delivery protocol error (never a pass), and two
+  disagreeing documents are a protocol error too. `status: "passed"`
+  enters the delivery gate; `status: "failed"`/`"blocked"` ends the
+  attempt as your recorded delivery without the gate.
 - Exit non-zero with the blocker in your output if you are blocked with no
   deliverable at all (`orx task fail`); make the blocker concrete (see
   Boundaries) — it becomes the recorded failure reason and the next

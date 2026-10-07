@@ -44,6 +44,7 @@ from pathlib import Path
 from orx import model_catalog
 from orx import runtime
 from orx.adapters.base import (
+    DELIVERY_CHANNEL_MESSAGE,
     EFFORT_MAP,
     EFFORT_PROVIDER_DEFAULT,
     EFFORT_SOURCE_REQUESTED_VALIDATED,
@@ -178,6 +179,30 @@ def _effort_flag(resolved: ResolvedModel, requested: str) -> tuple[list[str], Ef
 
 class CodexAdapter:
     harness = "codex"
+    # codex exec's exit code is transport; the worker's delivery is the
+    # structured document in the final message (--output-last-message).
+    delivery_channel = DELIVERY_CHANNEL_MESSAGE
+
+    def response_error(self, launch: Launch, run_result) -> str | None:
+        """The event stream's own error fact — distinct from the process
+        exit and from the worker's delivery. An ``error`` event in the
+        JSONL stream says the execution errored harness-side; a passed
+        delivery in the final message alongside it is a contradiction."""
+        for line in captured_stdout(run_result).splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "error":
+                message = event.get("message")
+                detail = (
+                    f": {message}" if isinstance(message, str) and message else ""
+                )
+                return f"codex event stream reports an error event{detail}"
+        return None
 
     def probe(self) -> ProbeReport:
         cached = _probe_cache.get("codex")

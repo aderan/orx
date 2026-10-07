@@ -53,10 +53,12 @@ run's next step from your report.
      each prescribed check command yourself) and confirm the tools exist,
      the commands are permitted, and the test baseline executes.
   2. **BLOCKED EXIT** — if the start gate shows the environment cannot run
-     the checks (tool missing, command rejected by the sandbox, baseline
-     not executable), stop immediately: leave the workspace unchanged,
-     exit non-zero, and report `blocked: <why the checks cannot run>` in
-     your output. Do NOT invest in implementation first — discovering this
+     the checks (tool missing, command rejected by the sandbox, baseline not
+     executable), stop immediately: leave the workspace unchanged, and
+     deliver `status: "blocked"` (the structured delivery result below —
+     for a CLI launch, the fenced `json` block in your final message).
+     Natural-language statements of blocked are context, never a machine
+     delivery. Do NOT invest in implementation first — discovering this
      only after finishing the work is exactly the failure this contract
      prevents.
   3. **CHECK-FIX LOOP** — when a check is red, repair it in THIS session:
@@ -114,6 +116,14 @@ run's next step from your report.
   - `summary` (required): a non-empty string.
   - The legacy `{ "summary", "commands", "artifacts" }` shape is REJECTED:
     `orx task complete` names every missing field and records nothing.
+- **CLI-launched workers (no `orx` CLI in your environment)**: your final
+  message IS the delivery channel — ORX parses it, not the process exit
+  code (the harness controls the exit code; a blocked run may still exit
+  0). End your final message with exactly one fenced `json` code block
+  carrying the same structured delivery result, and write nothing after
+  it. A final message without that document is recorded as a delivery
+  protocol error (never a pass), and two disagreeing documents are a
+  protocol error too.
 - Exit non-zero with the blocker in your output if you are blocked — name
   what you tried, what failed, and where; the Controller records it as the
   failure reason and it feeds the next attempt's prompt verbatim.

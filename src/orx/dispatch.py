@@ -14,8 +14,11 @@ from pathlib import Path
 
 from orx import adapters, machine, plan as plan_mod, probes, quota, routing, runtime, verify
 from orx.adapters.base import (
+    DELIVERY_CHANNEL_EXIT,
+    DELIVERY_CHANNEL_MESSAGE,
     ModelResolutionError,
     classify_failure,
+    extract_cli_delivery,
     quota_reset_from,
     scan_marker,
 )
@@ -1196,11 +1199,26 @@ def _captured(run_result, name: str) -> str:
     return getattr(run_result, name, "") or ""
 
 
-def _record_attempt_health(store, profile_name: str, run_result) -> str | None:
+def _record_attempt_health(store, profile_name: str, run_result,
+                           delivery_outcome: str | None = None) -> str | None:
     """The one health seam after every CLI launch (G005): classify the
     failure, learn the resource transition, and carry the quota reset the
     harness printed (codex names the exact moment) so an exhaustion can
-    self-release once the reset passes. Returns the ErrorKind."""
+    self-release once the reset passes. Returns the ErrorKind.
+
+    G009 T002: ``delivery_outcome`` is the worker's own delivery fact for
+    CLI worker launches on a message-channel harness ("passed" | "failed" |
+    "blocked" | "protocol_error"; None for planner/verifier launches and
+    exit-channel harnesses, whose exit code IS the delivery). Health learns
+    only from proven facts: an exit-0 run whose delivery is blocked or a
+    protocol_error proves neither a healthy profile nor an account failure,
+    so NOTHING is learned — an environment block never clears failure
+    streaks or cooldowns, and never gates the profile either. A failed
+    delivery completed a full work cycle (the request was served), so the
+    process success stands. A red controller gate is a code fact judged
+    after this seam and never marks the profile unhealthy."""
+    if run_result.ok and delivery_outcome in ("blocked", "protocol_error"):
+        return None
     error_kind = None if run_result.ok else classify_failure(run_result)
     health.record_attempt_outcome(
         store, profile_name, ok=run_result.ok, error_kind=error_kind,
@@ -1704,10 +1722,124 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     return entry
 
 
+# ---------------------------------------------------------------------------
+# CLI worker delivery interpretation (G009 T002). The worker's structured
+# delivery document rides the final message of a message-channel harness
+# (cursor: the --print envelope's result text; codex: --output-last-message)
+# and is parsed with the same schema `orx task complete --evidence`
+# validates. Five facts stay distinct: process result, harness response
+# result, worker delivery result, controller command gate, independent
+# verifier — later facts never overwrite earlier ones.
+
+
+def _interpret_cli_worker_delivery(adapter, launch, run_result) -> tuple[dict | None, list[str]]:
+    """(delivery, problems) from one CLI worker's final message.
+
+    ``delivery`` is the single valid delivery document (None when there is
+    none); ``problems`` is the protocol diagnosis (empty when a document
+    was read). Exactly one is non-empty. A passed delivery contradicted by
+    the harness response's own error fact (adapter.response_error — an
+    error envelope, an error event) is a protocol problem, never a pass."""
+    text = adapter.extract_text(launch, run_result)
+    delivery, problems = extract_cli_delivery(text)
+    if delivery is not None and delivery.get("status") == "passed":
+        response_error = getattr(adapter, "response_error", None)
+        error = response_error(launch, run_result) if response_error else None
+        if error:
+            delivery = None
+            problems = [f"harness response contradicts the passed delivery: {error}"]
+    return delivery, problems
+
+
+def _write_cli_delivery_record(project: Project, run_id: str, task_id: str,
+                               attempt_id: int, delivery: dict) -> str:
+    """Persist a CLI worker's parsed delivery document as the attempt's
+    completion evidence (the file counterpart of what the worker said),
+    next to the execution log. Returns the project-relative path."""
+    directory = project.root / ".orx" / "runs" / run_id / "exec"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{task_id}-{attempt_id}.delivery.json"
+    payload = dict(delivery)
+    payload["attempt"] = attempt_id
+    payload["channel"] = "cli_final_message"
+    payload["recorded_at"] = db_now()
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return str(path.relative_to(project.root))
+
+
+# How much of the unparsable result text rides the protocol-error reason —
+# enough for a retry prompt to recognize the round, never the whole blob.
+_PROTOCOL_ERROR_DETAIL_MAX = 400
+
+
+def _record_cli_protocol_error(project: Project, store: Store, goal: Goal,
+                               run: Run, revision: Revision, task: TaskRow,
+                               attempt, problems: list[str], *, adapter,
+                               launch, run_result, effort, profile_name: str,
+                               log: str, prompt_file: str) -> dict:
+    """Close a CLI worker attempt whose delivery could not be read.
+
+    A missing, malformed, or self-contradictory delivery is an explicit
+    protocol_error — never a silent pass, never a clean completed attempt.
+    The protocol problems (and a tail of the result text for context) are
+    persisted as completion evidence; the task fails with the protocol
+    problem as its cause, so a retry prompt quotes the protocol failure
+    instead of sending the next worker after fictional red tests."""
+    excerpt_lines = [
+        line for line in adapter.extract_text(launch, run_result).strip().splitlines()
+        if line.strip()
+    ]
+    record = {
+        "kind": "protocol_error",
+        "attempt": attempt.id,
+        "problems": list(problems),
+        "result_text_tail": " | ".join(excerpt_lines[-3:])[:_PROTOCOL_ERROR_DETAIL_MAX],
+        "recorded_at": db_now(),
+    }
+    directory = project.root / ".orx" / "runs" / run.id / "exec"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{task.task_id}-{attempt.id}.delivery-error.json"
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    relative = str(path.relative_to(project.root))
+    store.evidence_add(attempt.id, "completion", relative)
+
+    reason = "delivery protocol_error (" + "; ".join(problems)[:_PROTOCOL_ERROR_DETAIL_MAX] + ")"
+    store.attempt_update(
+        attempt.id, ended_at=db_now(), result="protocol_error",
+        actual_effort=effort.actual if effort.actual else None,
+        effort_source=effort.source,
+        failure_reason=reason,
+    )
+    machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+                       reason=reason, failure_reason=reason)
+    refresh(store, goal, run)
+    return {
+        "task": task.task_id,
+        "profile": profile_name,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "reason": reason,
+        "delivery": {"status": "protocol_error", "problems": list(problems)},
+        "attempt": attempt.id,
+        "log": log,
+        "prompt_file": prompt_file,
+    }
+
+
 def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision,
                       task: TaskRow, result, request, profile) -> dict:
     """One CLI task execution: probe, launch, record, verify. Execution
-    finished != passed — verification still decides."""
+    finished != passed — verification still decides.
+
+    G009 T002 keeps five facts separate, in this order: the process result
+    (exit code / timeout — transport), the harness response result
+    (adapter.response_error), the worker's own delivery document (parsed
+    from the final message on message-channel harnesses), the controller
+    command gate (runs only for a passed delivery), and the independent
+    verifier (unchanged). A blocked or failed delivery closes the attempt
+    as the worker's recorded delivery and fails the task without the gate;
+    a missing/malformed/contradictory delivery is an explicit
+    protocol_error — never a silent pass, never a clean completed attempt;
+    usage and session are recorded from the envelope in every case."""
     store = project.store
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
@@ -1724,6 +1856,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
             store, project.root, revision.id, task.task_id, audience="worker"
         ),
         identity=_identity_block(nonce),
+        delivery_channel=getattr(adapter, "delivery_channel", DELIVERY_CHANNEL_EXIT),
     )
     # Same contract as the host/external park path: the preflight-bearing
     # prompt is archived as the assignment file even though ORX itself
@@ -1813,25 +1946,82 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
+    # Usage and session ride the harness envelope and are recorded in every
+    # case — a delivery or protocol failure never destroys the observations.
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
-    error_kind = _record_attempt_health(store, profile.name, run_result)
-    store.evidence_add(attempt.id, "execution", log)
-    store.attempt_update(
-        attempt.id, ended_at=db_now(),
-        result="completed" if run_result.ok else "failed",
-        actual_effort=effort.actual if effort.actual else None,
-        effort_source=effort.source,
-        failure_reason=None if run_result.ok else _failure_excerpt(run_result),
+    # The worker's own delivery, interpreted independently of the process
+    # result (transport) and before any controller gate runs. Only the
+    # message-channel harnesses carry the final-message contract; the shell
+    # adapter's exit code IS its delivery channel and keeps today's flow.
+    message_channel = (
+        getattr(adapter, "delivery_channel", DELIVERY_CHANNEL_EXIT)
+        == DELIVERY_CHANNEL_MESSAGE
     )
+    delivery: dict | None = None
+    delivery_problems: list[str] = []
+    if message_channel and run_result.ok:
+        delivery, delivery_problems = _interpret_cli_worker_delivery(
+            adapter, launch, run_result)
+    delivery_outcome = None
+    if message_channel and run_result.ok:
+        delivery_outcome = (
+            "protocol_error" if delivery_problems
+            else (delivery["status"] if delivery is not None else None)
+        )
+    error_kind = _record_attempt_health(
+        store, profile.name, run_result, delivery_outcome=delivery_outcome)
+    store.evidence_add(attempt.id, "execution", log)
 
     if not run_result.ok:
+        # Transport failure: the process fact dominates the result text.
         reason = _failure_excerpt(run_result)
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result="failed",
+            actual_effort=effort.actual if effort.actual else None,
+            effort_source=effort.source,
+            failure_reason=reason,
+        )
         machine.transition(store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
                            reason=reason, failure_reason=reason)
         return {"task": task.task_id, "profile": profile.name, "status": "failed",
                 "reason": reason, "error_kind": error_kind,
                 "log": log, "prompt_file": prompt_file}
+
+    if delivery_problems:
+        return _record_cli_protocol_error(
+            project, store, goal, run, revision, task, attempt,
+            delivery_problems, adapter=adapter, launch=launch,
+            run_result=run_result, effort=effort, profile_name=profile.name,
+            log=log, prompt_file=prompt_file,
+        )
+
+    if delivery is not None and delivery["status"] in ("blocked", "failed"):
+        # The worker's own non-delivery claim: recorded exactly like the
+        # host `task complete` path records it — same reason prefixes, same
+        # evidence contract. There is no success claim, so no gate runs.
+        delivery_path = _write_cli_delivery_record(
+            project, run.id, task.task_id, attempt.id, delivery)
+        outcome = _record_failed_delivery(
+            project, store, goal, run, revision, store.task_get(revision.id, task.task_id),
+            attempt, delivery, Path(delivery_path), None,
+        )
+        outcome.update({"profile": profile.name, "log": log,
+                        "prompt_file": prompt_file})
+        return outcome
+
+    store.attempt_update(
+        attempt.id, ended_at=db_now(),
+        result="completed",
+        actual_effort=effort.actual if effort.actual else None,
+        effort_source=effort.source,
+    )
+    if delivery is not None:
+        # A passed CLI delivery is persisted like a host completion's
+        # evidence file: the audit trail of what the worker actually said.
+        delivery_path = _write_cli_delivery_record(
+            project, run.id, task.task_id, attempt.id, delivery)
+        store.evidence_add(attempt.id, "completion", delivery_path)
 
     # Delivery gate, shared with `orx task complete`: every command entry
     # runs fresh through the same `task check` runner, bound to this
@@ -1880,6 +2070,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     }
     if verdict == "failed":
         result["reason"] = store.task_get(revision.id, task.task_id).failure_reason
+    if delivery is not None:
+        result["delivery"] = {"status": "passed", "channel": "cli_final_message"}
     if replan_delivery is not None:
         result["replan_delivery"] = replan_delivery
     return result
@@ -2591,9 +2783,40 @@ def _identity_block(nonce: str | None) -> str:
     )
 
 
+# G009 T002: the machine contract for CLI workers on a message-channel
+# harness. The process exit code is transport — the harness controls it,
+# and a blocked run may still exit 0 (Cursor incident 2026-10-07) — so the
+# worker's verifiable delivery is the structured document in its final
+# message, the exact schema `orx task complete --evidence` validates.
+# Kept as a plain (non-f-) string: the JSON braces are literal.
+CLI_FINAL_DELIVERY_BLOCK = """
+5. FINAL DELIVERY MESSAGE (machine contract): the CLI process exit code is
+   transport, not your verdict — the harness controls it, and a blocked run
+   may still exit 0. End your FINAL message with exactly one fenced
+   ```json block carrying your structured delivery result, and write
+   nothing after it (the same schema `orx task complete --evidence`
+   validates):
+
+   {"status": "passed" | "failed" | "blocked",
+    "summary": "<non-empty: what was delivered, or why not>",
+    "checks": [{"command": "<cmd>", "exit_code": <integer or null>,
+               "log": "<path or null>"}],
+    "artifacts": ["<path>", ...]}
+
+   ORX parses that document as your delivery. Natural-language statements
+   ("blocked: ...") are diagnostic context for humans, never a machine
+   delivery: a final message without the document is recorded as a
+   delivery protocol error, never a pass, and two disagreeing documents
+   are a protocol error too. status=passed enters the delivery gate above;
+   status=failed|blocked ends the attempt as your recorded delivery
+   without the gate.
+"""
+
+
 def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
                   check_budget: int = 3, replan_context: str = "",
-                  identity: str = "") -> str:
+                  identity: str = "",
+                  delivery_channel: str | None = None) -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
@@ -2611,6 +2834,13 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
     # (confirm -> applicability + regression only; redo -> reason + scope).
     # Empty for first-plan tasks: the prompt is byte-identical to before.
     replan_block = replan_context if replan_context else ""
+    # The CLI machine contract rides only message-channel harnesses; host
+    # workers deliver through `orx task complete --evidence` and their
+    # prompt keeps the plain contract (byte-identical to before G009).
+    delivery_block = (
+        CLI_FINAL_DELIVERY_BLOCK
+        if delivery_channel == DELIVERY_CHANNEL_MESSAGE else ""
+    )
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
     return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
 
@@ -2643,6 +2873,8 @@ How your work will be checked (the prescribed checks):
    non-zero, and report `blocked: <why the checks cannot run>` in your
    output. Do NOT invest in implementation first — discovering this only
    after finishing the work is exactly the failure this contract prevents.
+   A CLI-launched worker does not control the process exit code — its
+   blocked delivery is the structured document of clause 5.
 3. CHECK-FIX LOOP (budget: {check_budget} check round(s) on this attempt):
    when a check is red, repair it in THIS session — check -> fix -> check
    again — while budget remains. `orx task check {task.task_id}` reports
@@ -2663,8 +2895,7 @@ How your work will be checked (the prescribed checks):
    before you may exit 0 or submit `orx task complete {task.task_id}
    --evidence <file>`. A green self-check is necessary, not sufficient: it
    never replaces the independent verifier — agent checks and independent
-   acceptance still judge the work afterwards.
-
+   acceptance still judge the work afterwards.{delivery_block}
 Rules:
 - do not modify the Goal text or other tasks' scope
 - if you are blocked, leave the workspace unchanged and exit non-zero with the

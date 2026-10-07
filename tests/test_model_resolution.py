@@ -122,7 +122,9 @@ def install_agent(bindir: Path, *, models: str | None = CURSOR_LISTING,
                   help_text: str = AGENT_HELP, echo_model: bool = False) -> Path:
     """A fake `agent`. `--help` prints help_text; `--list-models` prints the
     listing; a launch echoes its JSON envelope (optionally naming the model
-    it received, for bracket echo-confirmation)."""
+    it received, for bracket echo-confirmation). G009 T002: the worker
+    envelope's result text carries the structured delivery document — the
+    machine contract a real CLI worker follows."""
     calls = bindir / "agent-calls.txt"
     models_block = ""
     if models is not None:
@@ -133,13 +135,19 @@ L
   exit 0
 fi
 """
+    # Single-quoted for the shell: the delivery text contains backticks and
+    # double quotes, which must stay literal.
+    passed_delivery = (
+        '```json\n{"status":"passed","summary":"done",'
+        '"checks":[],"artifacts":[]}\n```'
+    )
     emit = (
         'prev=""\nfor a in "$@"; do\n'
         '  if [ "$prev" = "--model" ]; then'
-        ' echo "{\\"result\\": \\"done\\", \\"model\\": \\"$a\\"}"; exit 0; fi\n'
+        " echo '{\"result\": \"" + passed_delivery + "\", \"model\": \"$a\"}'; exit 0; fi\n"
         '  prev="$a"\ndone\n'
         if echo_model
-        else 'echo "{\\"result\\": \\"worker done\\"}"\nexit 0\n'
+        else "echo '{\"result\": \"" + passed_delivery + "\"}'\nexit 0\n"
     )
     script = f"""#!/bin/sh
 if [ "$1" = "--help" ]; then

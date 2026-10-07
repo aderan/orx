@@ -13,7 +13,7 @@ import pytest
 from orx import adapters, dispatch
 from orx.adapters import codex as codex_adapter
 from orx.adapters import cursor as cursor_adapter
-from orx.adapters.base import EFFORT_MAP
+from orx.adapters.base import EFFORT_MAP, extract_cli_delivery
 from orx.records import ORXError
 
 from conftest import HOST_PROFILES_TOML, ir_for, make_project, task_spec
@@ -29,6 +29,21 @@ FAKE_PLAN = json.dumps({
          "verification": [], "routing": {"complexity": "low"}},
     ],
 })
+
+# G009 T002: the machine delivery contract a CLI worker's final message
+# carries (the same schema `orx task complete --evidence` validates). The
+# default cursor envelope result is a conforming passed delivery, so the
+# standard fixtures model a contract-following worker.
+PASSED_DELIVERY_TEXT = (
+    "The work is finished.\n\n"
+    '```json\n{"status":"passed","summary":"done",'
+    '"checks":[],"artifacts":[]}\n```'
+)
+BLOCKED_DELIVERY_TEXT = (
+    "blocked: the start gate cannot run in this environment.\n\n"
+    '```json\n{"status":"blocked","summary":"shell rejected",'
+    '"checks":[],"artifacts":[]}\n```'
+)
 
 
 def make_bin(directory: Path, name: str, script: str) -> Path:
@@ -688,7 +703,10 @@ def test_codex_catalog_larger_than_stream_limit_still_validated(tmp_path, bindir
 
 
 def test_codex_reported_effort_in_jsonl_wins(tmp_path, bindir, monkeypatch):
-    install_fake_codex(bindir, effort_jsonl='{"type":"settings","model_reasoning_effort":"medium"}')
+    install_fake_codex(
+        bindir,
+        effort_jsonl='{"type":"settings","model_reasoning_effort":"medium"}',
+        plan=PASSED_DELIVERY_TEXT)
     project = make_codex_project(tmp_path, monkeypatch=monkeypatch)
     try:
         goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
@@ -754,7 +772,7 @@ fi
 {models_block}{LOG_ARGS.replace("CALLS", str(calls))}
 if [ "$1" = "-p" ] || [ "$1" = "--print" ]; then
   cat <<'J'
-{{"result": {json.dumps(plan_in_result and FAKE_PLAN or "worker done")}, "model": "fake-cursor[effort=high]"}}
+{{"result": {json.dumps(plan_in_result and FAKE_PLAN or PASSED_DELIVERY_TEXT)}, "model": "fake-cursor[effort=high]"}}
 J
   exit 0
 fi
@@ -965,10 +983,11 @@ def test_cursor_planner_with_narrative_wrapped_plan(tmp_path, bindir, monkeypatc
     wrapped = "I looked at the repo. Here is the plan:\n" + FAKE_PLAN + "\nDone."
     listing = "Available models\n\nfake-cursor - Fake Cursor\nfake-cursor-high - Fake Cursor High"
     install_fake_agent(bindir, plan_in_result=False, models=listing)
-    # The fake emits a fixed result payload; rewrite it to wrap the plan.
+    # The fake emits a fixed result payload; rewrite it to wrap the plan
+    # (the delivery text PASSED_DELIVERY_TEXT provides the replace anchor).
     agent_path = bindir / "agent"
     agent_path.write_text(agent_path.read_text().replace(
-        '"worker done"', json.dumps(wrapped)))
+        json.dumps(PASSED_DELIVERY_TEXT), json.dumps(wrapped)))
     project = make_cursor_project(tmp_path, monkeypatch=monkeypatch)
     try:
         dispatch.create_goal(project, "goal text", ["a1"])
@@ -1198,7 +1217,8 @@ exit {exit_code}
     cursor_adapter.reset_caches()
 
 
-def _cursor_envelope(result: str = "done", *, session_id=SESSION, usage=None, exit_note=""):
+def _cursor_envelope(result: str = PASSED_DELIVERY_TEXT, *, session_id=SESSION,
+                     usage=None, exit_note=""):
     payload = {
         "type": "result",
         "subtype": "success",
@@ -1461,7 +1481,9 @@ def test_usage_and_session_survive_launch_log_limit(tmp_path, bindir, monkeypatc
     pad = " " + ("y" * (runtime.LAUNCH_STREAM_LIMIT + 100))
     payload = {
         "type": "result",
-        "result": secret + pad,
+        # The delivery rides AFTER the pad: the log view is truncated but
+        # the full redacted stream still carries the worker's document.
+        "result": secret + pad + "\n" + PASSED_DELIVERY_TEXT,
         "session_id": SESSION,
         "request_id": REQUEST,
         "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 500},
@@ -1488,3 +1510,275 @@ def test_usage_and_session_survive_launch_log_limit(tmp_path, bindir, monkeypatc
         assert SESSION not in text
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T002: the CLI delivery contract per harness (cursor/codex carry the
+# final-message delivery channel; shell's exit code IS its delivery channel)
+# and the response-level error fact an adapter surfaces when the harness
+# envelope contradicts the worker's claim. Real incident shapes: a131-style
+# fenced deliveries, a132-style natural language, codex JSONL streams.
+
+
+def test_codex_worker_blocked_delivery_via_last_message(tmp_path, bindir, monkeypatch):
+    """A codex worker whose final message carries the blocked delivery while
+    the process exits 0: the delivery — not the exit code — closes the
+    attempt (blocked, environment/tool reason prefix), the task fails, the
+    controller gate never runs, and the JSONL stream's usage/session are
+    still recorded."""
+    install_codex_stdout(bindir, _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }), plan=BLOCKED_DELIVERY_TEXT)
+    project = make_codex_project(tmp_path, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=["a1"], verification=["true"])]))
+        result = dispatch.run_slice(project)
+        assert result["failed"], result
+        attempt = _role_attempt(project, "worker")
+        assert attempt.result == "blocked"
+        assert attempt.failure_reason.startswith(
+            "delivery blocked (environment/tool blocked):")
+        assert "shell rejected" in attempt.failure_reason
+        task = project.store.conn.execute(
+            "SELECT status, failure_reason FROM tasks WHERE task_id='T001'"
+        ).fetchone()
+        assert task["status"] == "failed"
+        assert task["failure_reason"].startswith(
+            "delivery blocked (environment/tool blocked):")
+        # No success claim -> the controller gate never ran.
+        assert project.store.verifications_for_attempt(attempt.id) == []
+        # The stream facts survive.
+        assert attempt.session_ref == THREAD
+        row = _usage_row(project, attempt.id)
+        assert (row["input_tokens"], row["output_tokens"]) == (10, 2)
+    finally:
+        project.close()
+
+
+def test_codex_worker_missing_delivery_is_protocol_error(tmp_path, bindir, monkeypatch):
+    """A codex final message with no delivery document (narrative only) is
+    an explicit protocol_error on exit 0 — never a silent pass, never a
+    clean completed attempt — while usage/session recording stands."""
+    install_codex_stdout(bindir, _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }), plan="I could not run the checks; every shell was rejected.")
+    project = make_codex_project(tmp_path, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=["a1"], verification=["true"])]))
+        result = dispatch.run_slice(project)
+        assert result["failed"], result
+        attempt = _role_attempt(project, "worker")
+        assert attempt.result == "protocol_error"
+        assert attempt.failure_reason and "delivery" in attempt.failure_reason
+        task = project.store.conn.execute(
+            "SELECT status FROM tasks WHERE task_id='T001'").fetchone()
+        assert task["status"] == "failed"
+        assert attempt.session_ref == THREAD
+        assert _usage_row(project, attempt.id)["input_tokens"] == 10
+    finally:
+        project.close()
+
+
+def test_codex_error_event_contradicts_a_passed_delivery(tmp_path, bindir, monkeypatch):
+    """The harness response fact is separate from the worker's claim: a
+    codex error event in the stream plus a passed delivery in the final
+    message is a protocol_error, not a pass."""
+    stream = _codex_stream(THREAD, {
+        "input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2,
+    }, extra=json.dumps({
+        "type": "error", "message": "stream error during execution",
+    }))
+    install_codex_stdout(bindir, stream, plan=PASSED_DELIVERY_TEXT)
+    project = make_codex_project(tmp_path, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=["a1"], verification=["true"])]))
+        result = dispatch.run_slice(project)
+        assert result["failed"], result
+        attempt = _role_attempt(project, "worker")
+        assert attempt.result == "protocol_error"
+        assert "contradict" in attempt.failure_reason, attempt.failure_reason
+    finally:
+        project.close()
+
+
+def test_shell_worker_exit_channel_is_the_delivery_contract(tmp_path, bindir, monkeypatch):
+    """The compatibility boundary: the shell adapter's documented delivery
+    channel is the process exit code, so an exit-0 shell worker whose
+    stdout happens to contain blocked-looking text still passes its gate —
+    the fenced-delivery protocol is not applied to exit-channel harnesses
+    (that would break every generic-executable profile and script)."""
+    make_bin(bindir, "fake-worker", f"cat > /dev/null\necho 'blocked: nope'\nexit 0\n")
+    project = make_cli_project(tmp_path, monkeypatch=monkeypatch)
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=["a1"], verification=["true"])]))
+        result = dispatch.run_slice(project)
+        assert result["started"][0]["status"] == "passed", result
+        attempt = _role_attempt(project, "worker")
+        assert attempt.result == "completed"
+    finally:
+        project.close()
+
+
+def test_adapter_delivery_channels_and_response_error_facts():
+    """The vocabulary itself: cursor and codex declare the message delivery
+    channel and surface response-level errors; shell declares the exit
+    channel and has no response-error hook (getattr default None — the
+    dispatch seam never assumes the method exists)."""
+    from orx.adapters.base import DELIVERY_CHANNEL_EXIT, DELIVERY_CHANNEL_MESSAGE
+
+    cursor = adapters.get_adapter("cursor")
+    codex = adapters.get_adapter("codex")
+    shell = adapters.get_adapter("shell")
+    assert cursor.delivery_channel == DELIVERY_CHANNEL_MESSAGE
+    assert codex.delivery_channel == DELIVERY_CHANNEL_MESSAGE
+    assert getattr(shell, "delivery_channel", DELIVERY_CHANNEL_EXIT) == DELIVERY_CHANNEL_EXIT
+    assert hasattr(cursor, "response_error") and hasattr(codex, "response_error")
+    assert getattr(shell, "response_error", None) is None
+
+    from orx.adapters.base import Launch
+    from orx.runtime import CommandResult
+
+    def run(text: str) -> CommandResult:
+        return CommandResult(command="x", exit_code=0, stdout=text, stderr="",
+                             duration_sec=0.0, timed_out=False)
+
+    launch = Launch(argv=["x"], cwd=Path("."), timeout=1)
+    ok_env = json.dumps({"type": "result", "subtype": "success",
+                         "is_error": False, "result": "done"})
+    bad_env = json.dumps({"type": "result", "subtype": "error_during_execution",
+                          "is_error": True, "result": PASSED_DELIVERY_TEXT})
+    assert cursor.response_error(launch, run(ok_env)) is None
+    flagged = cursor.response_error(launch, run(bad_env))
+    assert flagged and "error_during_execution" in flagged
+    assert codex.response_error(launch, run(ok_env)) is None
+    assert codex.response_error(launch, run(
+        json.dumps({"type": "thread.started", "thread_id": "t"}))) is None
+
+
+# ---------------------------------------------------------------------------
+# G009 T002: the CLI delivery parser (orx.adapters.base.extract_cli_delivery)
+# reads a CLI worker's final message and validates candidates against the
+# ONE delivery schema `orx task complete --evidence` enforces (via
+# verify.load_delivery_evidence — no copied rules). The shapes below are the
+# real incident outputs (a131's fenced block; a132/a133's natural language;
+# truncated/contradictory machine output as the neighboring hazards) — see
+# docs/cursor-system-analysis-2026-10-07.md Stage 1.
+
+
+def _fenced(document: str) -> str:
+    return f"work narrative\n\n```json\n{document}\n```"
+
+
+PASSED_DELIVERY_JSON = ('{"status":"passed","summary":"done",'
+                   '"checks":[],"artifacts":[]}')
+BLOCKED_DELIVERY_JSON = ('{"status":"blocked","summary":"shell rejected",'
+                    '"checks":[],"artifacts":[]}')
+
+
+def test_extract_cli_delivery_a131_fenced_blocked():
+    """The incident's compatible input: a fenced ```json delivery inside
+    narrative result text (attempt a131, 2026-10-07)."""
+    delivery, problems = extract_cli_delivery(_fenced(BLOCKED_DELIVERY_JSON))
+    assert problems == []
+    assert delivery == json.loads(BLOCKED_DELIVERY_JSON)
+
+
+def test_extract_cli_delivery_unfenced_object_is_accepted():
+    """A bare JSON object as the whole message is a legal delivery — the
+    parser does not require the fence when the document is unambiguous."""
+    delivery, problems = extract_cli_delivery(PASSED_DELIVERY_JSON)
+    assert problems == []
+    assert delivery["status"] == "passed"
+
+
+def test_extract_cli_delivery_natural_language_only_is_missing():
+    """a132/a133 delivered natural-language blockers only: that is NO
+    machine delivery — a missing-delivery diagnosis, never a fabricated
+    structured success."""
+    text = ("I could not run the checks: every shell invocation was rejected"
+            " before execution. No code was modified.")
+    delivery, problems = extract_cli_delivery(text)
+    assert delivery is None
+    assert len(problems) == 1
+    assert "no machine-readable delivery" in problems[0]
+
+
+def test_extract_cli_delivery_unparseable_fence_is_malformed():
+    """The worker tried the protocol but the JSON is broken: a malformed
+    diagnosis naming the parse problem."""
+    text = "blocked: start gate cannot run.\n\n```json\n{\"status\":\"blocked\"\n```"
+    delivery, problems = extract_cli_delivery(text)
+    assert delivery is None
+    assert problems and "parse" in problems[0]
+
+
+def test_extract_cli_delivery_schema_invalid_is_malformed():
+    """Parses as JSON, is delivery-shaped, but misses required fields: the
+    same per-field errors the evidence-file validator reports."""
+    text = _fenced('{"status":"passed"}')
+    delivery, problems = extract_cli_delivery(text)
+    assert delivery is None
+    assert any("'summary'" in problem for problem in problems), problems
+    assert any("'checks'" in problem for problem in problems), problems
+    assert any("'artifacts'" in problem for problem in problems), problems
+
+
+def test_extract_cli_delivery_unknown_status_is_malformed():
+    delivery, problems = extract_cli_delivery(
+        _fenced('{"status":"banana","summary":"x","checks":[],"artifacts":[]}'))
+    assert delivery is None
+    assert problems and "banana" in problems[0]
+
+
+def test_extract_cli_delivery_contradictory_documents_are_rejected():
+    """Two disagreeing deliveries cannot both be the worker's final
+    answer — an explicit contradiction, never a silent pick."""
+    text = (_fenced(PASSED_DELIVERY_JSON) + "\ncorrection:\n"
+            + _fenced(BLOCKED_DELIVERY_JSON))
+    delivery, problems = extract_cli_delivery(text)
+    assert delivery is None
+    assert problems and "disagree" in problems[0]
+    assert "passed" in problems[0] and "blocked" in problems[0]
+
+
+def test_extract_cli_delivery_duplicate_agreeing_documents_take_the_last():
+    """Repeated identical-status deliveries are protocol noise, not a
+    contradiction: the last document (the worker's final word) wins."""
+    text = (_fenced(PASSED_DELIVERY_JSON) + "\n" + _fenced(PASSED_DELIVERY_JSON))
+    delivery, problems = extract_cli_delivery(text)
+    assert problems == []
+    assert delivery["status"] == "passed"
+
+
+def test_extract_cli_delivery_ignores_non_delivery_json():
+    """JSON the worker quoted for other reasons (check output, markers,
+    envelopes without a status field) is not a delivery and never
+    interferes with the real one."""
+    text = ("ORX_ASSIGNMENT=orx-assignment:x\n"
+            '```json\n{"total": 3, "passed": 3}\n```\n'
+            + _fenced(PASSED_DELIVERY_JSON))
+    delivery, problems = extract_cli_delivery(text)
+    assert problems == []
+    assert delivery["status"] == "passed"
+
+
+def test_extract_cli_delivery_fenced_beats_loose_and_empty_text_is_missing():
+    """A broken fence is diagnosed as malformed even when a loose valid
+    object exists elsewhere (the explicit attempt dominates); empty text
+    is a missing delivery."""
+    text = ('```json\n{"status":"blocked"\n```\nnarrative ' + BLOCKED_DELIVERY_JSON)
+    delivery, problems = extract_cli_delivery(text)
+    assert delivery is None
+    assert problems and "parse" in problems[0]
+
+    delivery, problems = extract_cli_delivery("")
+    assert delivery is None
+    assert len(problems) == 1

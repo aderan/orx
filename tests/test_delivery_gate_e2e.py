@@ -26,6 +26,7 @@ contract they teach is the one the gate actually enforces.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -1044,12 +1045,6 @@ def _replay_cli_delivery(monkeypatch, tmp_path, payload: dict, check: str = "tru
         project.close()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "G009 red baseline (2026-10-07): exit 0 overrides the worker's blocked"
-    " delivery — the attempt closes completed and a green controller gate"
-    " passes the task"
-    " (docs/diagnostics/cursor-2026-10-07/replay.py). Remove this marker"
-    " with the Stage 1 CLI delivery fix, never by weakening the test."))
 def test_cli_blocked_delivery_survives_a_green_controller_gate(tmp_path, monkeypatch):
     """The incident's false pass, frozen: a CLI worker that explicitly
     delivers status=blocked while the process exits 0 must never pass —
@@ -1084,12 +1079,6 @@ def test_cli_blocked_delivery_survives_a_green_controller_gate(tmp_path, monkeyp
     assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "G009 red baseline (2026-10-07): exit 0 overrides the worker's blocked"
-    " delivery — the attempt closes completed with no failure reason and the"
-    " red gate is reclassified as a code failure"
-    " (docs/diagnostics/cursor-2026-10-07/replay.py). Remove this marker"
-    " with the Stage 1 CLI delivery fix, never by weakening the test."))
 def test_cli_blocked_delivery_survives_a_red_controller_gate(tmp_path, monkeypatch):
     """The incident's misclassification, frozen: with the controller gate
     red, the blocked delivery is still the worker's recorded fact — the
@@ -1154,12 +1143,6 @@ BOUNDARY_DELIVERIES = {
 
 
 @pytest.mark.parametrize("shape", sorted(BOUNDARY_DELIVERIES))
-@pytest.mark.xfail(strict=True, reason=(
-    "G009 red baseline (2026-10-07): a CLI result text with a missing,"
-    " malformed, or self-contradictory delivery silently passes today; the"
-    " boundary matrix demands an explicit protocol_error"
-    " (docs/cursor-system-analysis-2026-10-07.md Stage 1). Remove this"
-    " marker with the Stage 1 CLI delivery fix, never by weakening the test."))
 def test_cli_unparseable_delivery_is_an_explicit_protocol_error(
         tmp_path, monkeypatch, shape):
     """Missing, malformed, and mutually contradictory deliveries are an
@@ -1185,3 +1168,224 @@ def test_cli_unparseable_delivery_is_an_explicit_protocol_error(
     # Observations survive the protocol failure.
     assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
     assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+# G009 T002: the positive and transport sides of the same seam. A delivery
+# that says passed is exactly what the gate is FOR; a non-zero exit is a
+# transport fact that dominates the text; and the CLI worker prompt must
+# carry the machine contract (the fenced final-message delivery) so the
+# worker knows the protocol before it runs.
+
+
+def test_cli_passed_delivery_flows_to_gate_and_verdict(tmp_path, monkeypatch):
+    """An explicit passed delivery is the one claim the delivery gate
+    exists to judge: the attempt closes completed (the worker delivered),
+    the gate runs the controller checks, and with a green gate the task
+    passes. The three facts stay separately recorded: process exit 0
+    (transport), delivery passed (worker), gate green (controller)."""
+    payload = _captured_envelope(
+        "The work is finished.\n\n"
+        '```json\n{"status":"passed","summary":"all checks green",'
+        '"checks":[],"artifacts":[]}\n```'
+    )
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, payload, check="true")
+    assert attempt["result"] == "completed"
+    assert attempt["failure_reason"] is None
+    assert task["status"] == "passed", task["status"]
+    assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
+    assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+def test_cli_passed_delivery_with_red_gate_fails_on_the_gate(tmp_path, monkeypatch):
+    """A passed delivery with a red controller gate fails as a code
+    failure — the delivery result stays `completed` (the worker DID
+    deliver a success claim; the gate is what rejected it), and the task
+    failure names the red gate, not a protocol problem."""
+    payload = _captured_envelope(
+        '```json\n{"status":"passed","summary":"done",'
+        '"checks":[],"artifacts":[]}\n```'
+    )
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, payload, check="false")
+    assert attempt["result"] == "completed"
+    assert task["status"] == "failed", task["status"]
+    assert task["failure_reason"], "the red gate is the recorded cause"
+    assert "delivery gate" in task["failure_reason"], task["failure_reason"]
+
+
+def test_cli_failed_delivery_closes_failed_without_running_the_gate(tmp_path, monkeypatch):
+    """An explicit failed delivery has no success claim to gate: the
+    attempt closes with the worker-reported failure (the same prefix the
+    host delivery path records), the task fails, and the controller gate
+    is NOT run — no verification rows appear for the attempt."""
+    payload = _captured_envelope(
+        "Two checks stay red after the budget.\n\n"
+        '```json\n{"status":"failed","summary":"tests red after 3 rounds",'
+        '"checks":[{"command":"pytest -q","exit_code":1,"log":null}],'
+        '"artifacts":[]}\n```'
+    )
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, payload, check="true")
+    assert attempt["result"] == "failed"
+    assert attempt["failure_reason"].startswith("delivery failed (worker-reported failure):")
+    assert "tests red after 3 rounds" in attempt["failure_reason"]
+    assert task["status"] == "failed", task["status"]
+    assert task["failure_reason"].startswith("delivery failed (worker-reported failure):")
+    # No success claim -> no gate: the controller check ("true") never ran.
+    rows = _replay_verifications(tmp_path, attempt["id"])
+    assert rows == [], "a failed delivery must not run the controller gate"
+    # The worker's delivery document is persisted as attempt evidence —
+    # the audit trail the host path records for the same contract.
+    evidence = _replay_evidence(tmp_path, attempt["id"])
+    assert any(kind == "completion" for kind, _ in evidence), evidence
+    # Observations still recorded.
+    assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
+    assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+def test_cli_nonzero_exit_dominates_the_result_text(tmp_path, monkeypatch):
+    """A non-zero exit is a transport failure even when the result text
+    carries a delivery document: the process fact is primary, the attempt
+    fails with the process reason, and the text is neither parsed into a
+    structured success nor into a blocked verdict."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', 'profiles = ["cli-fake"]'
+    )
+    profiles = HOST_PROFILES_TOML.replace('harness = "shell"', 'harness = "cursor"')
+    project = make_project(tmp_path, config, profiles)
+    try:
+        adapter = adapters.get_adapter("cursor")
+        monkeypatch.setattr(
+            adapter, "probe", lambda: ProbeReport(True, "captured CLI stand-in"))
+        monkeypatch.setattr(
+            adapter, "build_worker_launch",
+            lambda **kwargs: Launch(argv=["captured-agent"], cwd=tmp_path, timeout=5))
+        monkeypatch.setattr(
+            runtime, "run_launch",
+            lambda launch: runtime.CommandResult(
+                command="captured-agent", exit_code=3,
+                stdout=json.dumps(CAPTURED_CURSOR_BLOCKED_DELIVERY),
+                stderr="harness crashed", duration_sec=0.01, timed_out=False,
+            ))
+        goal = dispatch.create_goal(
+            project, objective="Transport failure dominates",
+            acceptance=["checks runnable"], constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T310", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        dispatch.run_slice(project)
+        attempt = project.store.conn.execute(
+            "SELECT id,result,failure_reason FROM attempts WHERE role='worker'"
+        ).fetchone()
+        task = project.store.conn.execute(
+            "SELECT status,failure_reason FROM tasks WHERE task_id='T310'"
+        ).fetchone()
+        assert attempt["result"] == "failed"
+        assert "exit 3" in attempt["failure_reason"], attempt["failure_reason"]
+        assert not attempt["failure_reason"].startswith("delivery")
+        assert task["status"] == "failed", task["status"]
+    finally:
+        project.close()
+
+
+def _replay_verifications(tmp_path, attempt_id: int):
+    """Verification rows a replayed attempt recorded (helper: re-reads the
+    still-open project of the caller's replay — kept trivial by querying
+    the single state db under tmp_path)."""
+    conn = sqlite3.connect(tmp_path / ".orx" / "state.db")
+    try:
+        return conn.execute(
+            "SELECT command FROM verifications WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _replay_evidence(tmp_path, attempt_id: int):
+    """(kind, path) evidence rows a replayed attempt recorded."""
+    conn = sqlite3.connect(tmp_path / ".orx" / "state.db")
+    try:
+        return conn.execute(
+            "SELECT kind, path FROM evidence WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_cli_worker_prompt_carries_the_final_delivery_contract(tmp_path, monkeypatch):
+    """The machine contract rides in the prompt: a message-channel CLI
+    worker is told the exit code is transport and its final message must
+    end with the fenced delivery document — the protocol ORX actually
+    parses. A host worker's prompt keeps the plain contract (the host
+    delivers through `orx task complete --evidence`)."""
+    payload = _captured_envelope(
+        '```json\n{"status":"passed","summary":"done",'
+        '"checks":[],"artifacts":[]}\n```'
+    )
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', 'profiles = ["cli-fake"]'
+    )
+    profiles = HOST_PROFILES_TOML.replace('harness = "shell"', 'harness = "cursor"')
+    project = make_project(tmp_path, config, profiles)
+    try:
+        adapter = adapters.get_adapter("cursor")
+        monkeypatch.setattr(
+            adapter, "probe", lambda: ProbeReport(True, "captured CLI stand-in"))
+        monkeypatch.setattr(
+            adapter, "build_worker_launch",
+            lambda **kwargs: Launch(argv=["captured-agent"], cwd=tmp_path, timeout=5))
+        monkeypatch.setattr(
+            runtime, "run_launch",
+            lambda launch: runtime.CommandResult(
+                command="captured-agent", exit_code=0,
+                stdout=json.dumps(payload), stderr="",
+                duration_sec=0.01, timed_out=False,
+            ))
+        goal = dispatch.create_goal(
+            project, objective="Prompt contract", acceptance=["a1"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T310", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        dispatch.run_slice(project)
+        cli_prompt_files = list((tmp_path / ".orx" / "runs").rglob("T310.md"))
+        assert cli_prompt_files, "the CLI worker prompt must be archived"
+        prompt = cli_prompt_files[0].read_text()
+        assert "FINAL DELIVERY MESSAGE" in prompt
+        assert '"status"' in prompt
+        assert "transport, not your verdict" in prompt
+        assert "protocol error" in prompt
+        # The block sits inside the delivery contract, after the gate.
+        assert prompt.index("START GATE") < prompt.index("BLOCKED EXIT") \
+            < prompt.index("DELIVERY GATE") < prompt.index("FINAL DELIVERY MESSAGE")
+    finally:
+        project.close()
+
+    # A host worker's prompt keeps the plain contract: the machine block is
+    # CLI-only because the host delivers through `orx task complete`.
+    host_root = tmp_path / "host-project"
+    host_root.mkdir()
+    monkeypatch.chdir(host_root)
+    host_project = make_project(host_root, HOST_CONFIG_TOML, HOST_PROFILES_TOML)
+    try:
+        host_goal = dispatch.create_goal(
+            host_project, objective="Prompt contract", acceptance=["a1"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(host_project, ir_for(host_goal, [task_spec(
+            "T310", acceptance=host_goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        host_entry = dispatch.run_slice(host_project)["host_required"][0]
+        assert "FINAL DELIVERY MESSAGE" not in host_entry["prompt"]
+    finally:
+        host_project.close()

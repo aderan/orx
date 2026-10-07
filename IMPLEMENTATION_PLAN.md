@@ -6,7 +6,29 @@
 **Goal**: 完成 T001–T003。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: Not Started
+**Status**: In Progress（R009：T001 基线已冻结、T002 已交付，见下方轮次记录；T003 未开始）
+
+### G009/R009 轮次记录
+
+- **T002（2026-10-07 交付）**：接通 CLI 结构化 delivery 与正式门禁，修正健康学习语义。
+  五个事实分层落地：进程结果（transport）、harness 响应结果（adapter `response_error`：
+  cursor 错误信封 / codex error 事件）、worker 交付结果（`adapters.base.
+  extract_cli_delivery` 从最终消息解析；候选文档经 `verify.load_delivery_evidence`
+  校验——单一 schema 所有者，不复制规则）、控制器命令门禁（仅 passed 交付进入）、
+  独立 verifier（不变）。
+  机器契约写入 CLI worker 提示词（FINAL DELIVERY MESSAGE：末尾一个 fenced json 交付块；
+  退出码是 transport 不是判决）。行为：blocked/failed 交付按 host 同款
+  `delivery blocked (environment/tool blocked):` / `delivery failed (worker-reported failure):`
+  前缀关闭 attempt 并判 task 失败（不跑门禁，交付文档落盘为 completion evidence）；
+  缺失/畸形/自相矛盾/信封反驳 passed 的交付显式 `protocol_error`；usage/session 全程照常记录。
+  健康语义：exit-0 + blocked/protocol_error 不学习（不清 failure streak/cooldown、不判账号故障）；
+  代码红（passed 交付+红门禁）不影响 profile 健康；passed/failed 交付照常学习成功。
+  adapter 词汇：`DELIVERY_CHANNEL_MESSAGE`（cursor/codex）/`DELIVERY_CHANNEL_EXIT`（shell，
+  兼容边界：退出码即交付通道，不套消息协议）。T001 的三处 xfail(strict) 标记全部移除、
+  测试转常规绿；新增 e2e 正向/传输/提示词契约、解析器单元矩阵、健康语义、
+  codex/shell 边界与 response_error 事实测试，并按真实输出形状补齐 cursor/codex 替身 fixture。
+  skills/orx-agent 与 agents/orx-worker 同步 CLI 最终消息交付契约。全量 918 passed + 1 xfailed
+  （唯一 xfail 为 T003 范围的 CLI→host 退避切换基线，未动）。
 
 ## Stage 2: 有界退避、修复及宿主恢复
 **Goal**: 完成 T004–T006。

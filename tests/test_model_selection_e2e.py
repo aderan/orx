@@ -468,7 +468,12 @@ def test_dispatch_three_roles_argv_effort_and_records(tmp_path, bindir,
     EffortOutcome is requested_validated, and the resolution decision is
     recorded per attempt next to the execution logs."""
     plan_envelope = json.dumps({"result": FAKE_PLAN})
-    worker_envelope = json.dumps({"result": "worker done"})
+    # G009 T002: a CLI worker's verifiable delivery is the structured
+    # document in its final message — the fixture models a contract-
+    # following worker.
+    worker_envelope = json.dumps({"result": (
+        '```json\n{"status":"passed","summary":"done",'
+        '"checks":[],"artifacts":[]}\n```')})
     verdict_envelope = json.dumps({
         "result": "checked\nORX_VERDICT=pass\n"})
     stand_in = StandIn(bindir, tmp_path,

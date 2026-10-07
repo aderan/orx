@@ -51,6 +51,7 @@ from pathlib import Path
 from orx import model_catalog
 from orx import runtime
 from orx.adapters.base import (
+    DELIVERY_CHANNEL_MESSAGE,
     EFFORT_MAP,
     EFFORT_PROVIDER_DEFAULT,
     EFFORT_SOURCE_REQUESTED_VALIDATED,
@@ -398,6 +399,32 @@ def planned_effort(resolved: ResolvedModel, requested: str) -> EffortOutcome:
 
 class CursorAdapter:
     harness = "cursor"
+    # The --print exit code is transport: the agent CLI decides it, not the
+    # worker, and a blocked run may still exit 0 (2026-10-07 incident). The
+    # worker's delivery is the structured document in the result text.
+    delivery_channel = DELIVERY_CHANNEL_MESSAGE
+
+    def response_error(self, launch: Launch, run_result) -> str | None:
+        """The response envelope's own error fact — distinct from the
+        process exit and from the worker's delivery. A result envelope
+        reporting is_error=true or a subtype other than success says the
+        response itself failed; a passed delivery inside it is a
+        contradiction, never a pass."""
+        text = captured_stdout(run_result)
+        stripped = text.strip()
+        try:
+            data = json.loads(stripped) if stripped else None
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        subtype = data.get("subtype")
+        is_error = data.get("is_error")
+        if is_error is True or (
+            isinstance(subtype, str) and subtype and subtype != "success"
+        ):
+            return f"envelope subtype {subtype!r}, is_error={is_error!r}"
+        return None
 
     def probe(self) -> ProbeReport:
         cached = _probe_cache.get("cursor")
