@@ -10,6 +10,45 @@
 
 ### G009/R009 轮次记录
 
+- **T005（2026-10-07 交付）**：校准额度故障域、退避时间与未知状态的路由规则。
+  事故校准三线（docs/cursor-system-analysis-2026-10-07.md 的事实基线）：
+  (1) **时区诚实**——`quota.provider_quota_reset` 返回远端 provider 打印的重置时刻
+  逐字原文（无时区字符串保持无时区：不补 Z、不锚定本地时区；provider 自己印的
+  offset 原样保留；重置标记须在同行邻近，裸时间戳不算），`health.quota_reset_tz_source`
+  标注 offset/naive；`quota_exhaustion_active` 对 naive/缺失/不可解析的重置一律保持
+  门禁（恢复时刻未知=永不自动释放，虚拟时钟两侧均不释放），`_health_reason` 显示
+  "timezone unknown (explicit re-eligibility required)"。`orx resource clear` 在
+  exhausted 行上成为真正的显式恢复入口（override→0 且状态→unknown 候选，G005
+  docstring 承诺的语义落地）；live preflight 报健康窗口同样构成显式再合格。
+  (2) **探针成功≠额度充足**——`record_attempt_outcome(ok=True)` 命中"活动中的
+  exhaustion"（未来或不可比较的重置）时只记录成功事实（last_success_at/streak 清零/
+  last_error_kind 清空），不清门禁、不清 quota_reset_at；08:47 trivial 探针语义封死。
+  cooldown（限流）与 auth 为每请求二元事实，成功照常恢复（语义不变）。override 行
+  一切自动写入免疫（resource_learn 拒写，本次测试封口）。
+  (3) **共享账号故障域**——profiles.toml 可选 `quota_domain` 键（无则独立；空值/非串
+  报错），同域任意成员的活动 exhaustion 使整域不可路由：sibling 以
+  `reject_reason=quota_domain_exhausted:<domain>` 入 routing_decisions 审计（其自身
+  行健康——死的是共享额度，不伪装容量），域锚点重置过期（可比较且已过）时随锚点
+  一起放开为候选；候选自身 override 豁免域门（operator 明示换账号时操作者赢）。
+  provider 中文词汇进 `quota.provider_error_kind`（额度/配额/余额不足→quota、
+  请求过于频繁/限流→rate、未登录/登录已过期/鉴权失败→auth、1308 仅按错误码形状
+  匹配防数字误报），`health.resource_error_kind` 组合分类（adapters 英文模式优先，
+  process_failure 时才升级中文词汇；`failure_class` 同一分类器，T004 真值表补两行
+  中文 resource 例）。`dispatch._record_attempt_health`：分类升级 + 重置来源顺序
+  （本地 CLI 渲染的 offset 可比较形式优先，其次远端 provider 逐字原文）。
+  注入矩阵全部确定性（虚拟时钟=store 内伪造就绪值，零真实耗尽）：中文 GLM1308 端到端
+  （真实 dispatch 栈、原始消息进 failure_reason、逐字 naive reset、跨 slice 永不自动
+  放开、agent_status 时区标注、operator set 显式恢复）、共享域 sibling rung 跳过
+  （reroute 不落同域、路由审计留痕）、全部不可用有界可解释停止（单错误列每个
+  rung 原因、任务留 runnable、二次 slice 同样有界）、reset 前后（前不选、后仅候选
+  unknown 永不虚假 available）、override 优先（域门/探针/预检三路免疫）。
+  tests/test_quota.py 重校准 `test_success_clears_quota_reset` 为活动期保门禁+
+  过期恢复双段，新增 6 例；test_health.py 新增 5 例+真值表 2 行；test_routing.py
+  新增 6 例（域解析/非独立容量/域随 reset 过期放开/override 豁免/全不可用有界停止）；
+  test_config.py 新增 quota_domain 解析与校验 2 例。门禁三文件 110 passed；
+  全量 967 passed、0 xfail（原 948 + 19 新增）；docs/m1.2-report.md 全量重跑后
+  按约定还原。
+
 - **T004（2026-10-07 交付）**：建立失败类型、同条件 blocker 抑制与有界 check-fix 机制。
   恢复词汇 `health.failure_class`（permission/environment/code/resource/other，仅从已记录
   事实分类：blocked 交付 + 权限标记 → permission；blocked 其余 → environment；delivery
@@ -88,7 +127,7 @@
 **Goal**: 完成 T004–T006。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T004 已交付，见上方轮次记录；T005–T006 待做）
+**Status**: In Progress（R009：T004–T005 已交付，见上方轮次记录；T006 待做）
 
 ## Stage 3: 建立提前验证能力
 **Goal**: 完成 T007–T009。

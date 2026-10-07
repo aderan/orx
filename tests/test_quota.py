@@ -127,11 +127,26 @@ def test_quota_exhaustion_active_gate(project):
     assert health.quota_exhaustion_active(None) is False
 
 
-def test_success_clears_quota_reset(project):
+def test_success_during_active_exhaustion_keeps_gate_recovers_after_reset(project):
+    """G009 T005 recalibration of the G005 contract: one succeeded request
+    during an ACTIVE quota exhaustion proves only that request at that
+    moment (the incident's 08:47 trivial probe), never that the window
+    recovered — so the gate and the reset stand. Once the (comparable,
+    offset-carrying) reset has passed, a success re-learns available as
+    before: virtual clock via the forged reset value, no waiting."""
     store = project.store
     health.record_attempt_outcome(store, "cli-fake", ok=False,
                                   error_kind="quota_exhausted", quota_reset_at="2099-01-01T00:00:00+00:00")
     assert store.resource_row("cli-fake").quota_reset_at == "2099-01-01T00:00:00+00:00"
+    # A success while the exhaustion is still active (probe-shaped or real).
+    health.record_attempt_outcome(store, "cli-fake", ok=True)
+    row = store.resource_row("cli-fake")
+    assert row.status == "exhausted", "probe success must not lift a quota blocker"
+    assert row.quota_reset_at == "2099-01-01T00:00:00+00:00"
+    assert row.failure_streak == 0 and row.last_success_at  # the fact stands
+    # Virtual clock past the reset: the gate is gone, a success re-learns.
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    store.resource_learn("cli-fake", quota_reset_at=past)
     health.record_attempt_outcome(store, "cli-fake", ok=True)
     row = store.resource_row("cli-fake")
     assert row.status == "available" and row.quota_reset_at is None
@@ -510,3 +525,255 @@ def test_run_slice_keeps_non_resource_failures_failed(tmp_path, monkeypatch):
     assert project.store.resource_row("cli-quota").status != "exhausted"
     assert dispatch.status_data(project)["tasks"][0]["status"] == "failed"
     project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T005 (2026-10-07 incident): provider quota vocabulary, timezone-honest
+# reset strings, and the shared-account failure domain.
+#
+# The incident facts (docs/cursor-system-analysis-2026-10-07.md): the 02:05
+# GLM 1308 quota error carried the reset moment WITHOUT a timezone
+# ("2026-10-07 04:24:23"); later failure notes appended "Z" — turning a
+# provider-local time into an assumed UTC — and no evidence supports that
+# annotation. The same quota failure simultaneously hit controller and
+# worker (one shared provider account), and the 08:47 trivial probe that
+# succeeded proved only that one request at that moment.
+
+# The injected original shape: Chinese provider message, quota vocabulary,
+# the documented error code, and the timezone-less reset string verbatim.
+GLM_1308_MESSAGE = (
+    "1308: 当前套餐的5小时滚动窗口额度已用尽，重置时间 2026-10-07 04:24:23，"
+    "请稍后重试或升级套餐。"
+)
+NAIVE_RESET = "2026-10-07 04:24:23"
+
+
+def test_provider_error_kind_truth_table():
+    """Chinese provider vocabulary the generic English pattern pass cannot
+    see (quota/rate/auth told apart), plus the GLM 1308 code shapes from the
+    incident's own records; unrecognized text stays None."""
+    truth = [
+        (GLM_1308_MESSAGE, "quota_exhausted"),
+        ("您的账户余额不足，请充值后重试", "quota_exhausted"),
+        ("当前API密钥配额已耗尽", "quota_exhausted"),
+        ('{"error":{"code":"1308","message":"额度已用尽"}}', "quota_exhausted"),
+        ("platform error 1308, window exhausted", "quota_exhausted"),
+        ("请求过于频繁，请稍后再试", "rate_limited"),
+        ("已触发限流，当前请求被拒绝", "rate_limited"),
+        ("用户未登录或登录已过期", "auth_required"),
+        ("鉴权失败：无效的账户", "auth_required"),
+        ("ordinary crash: segfault in module", None),
+        ("", None),
+    ]
+    for text, expected in truth:
+        assert quota.provider_error_kind(text) == expected, text
+
+
+def test_provider_quota_reset_preserves_string_verbatim():
+    """The reset moment a REMOTE provider printed, kept exactly as printed —
+    a timezone-less string stays timezone-less (no invented Z, no local
+    anchoring), an explicit offset stays; the marker may sit on either side
+    (Chinese before/after, the incident's English note shape); a timestamp
+    with no reset marker nearby is not a reset."""
+    # The incident's original: naive, marker before (重置时间).
+    assert quota.provider_quota_reset(GLM_1308_MESSAGE) == NAIVE_RESET
+    # Marker after the token (将于 ... 重置).
+    assert quota.provider_quota_reset(
+        "额度耗尽，将于 2026-10-07 04:24:23 重置") == NAIVE_RESET
+    # The incident's worker-note shape (English, no "at"): still the bare
+    # token, never reformatted, never given a zone.
+    assert quota.provider_quota_reset(
+        "platform error 1308, resets 2026-10-07 04:24:23") == NAIVE_RESET
+    # An offset the provider itself printed is preserved verbatim.
+    assert quota.provider_quota_reset(
+        "额度耗尽，重置时间 2026-10-07T04:24:23+08:00") == "2026-10-07T04:24:23+08:00"
+    # No reset marker near the timestamp: not a reset.
+    assert quota.provider_quota_reset("logged at 2026-10-07 04:24:23 ok") is None
+    assert quota.provider_quota_reset("额度耗尽，请充值") is None
+    assert quota.provider_quota_reset("") is None
+
+
+def test_chinese_glm1308_end_to_end_naive_reset_never_self_releases(
+        tmp_path, monkeypatch):
+    """The full injection through the real dispatch stack: a CLI worker whose
+    captured output is the Chinese GLM 1308 message is diagnosed
+    quota_exhausted (not process_failure), the timezone-less reset is
+    recorded VERBATIM (no Z), the profile stays gated slice after slice (an
+    unknown-zone recovery time never auto-releases), the ladder falls to the
+    next rung, and the display names the timezone as unknown."""
+    monkeypatch.chdir(tmp_path)
+    fail_script = tmp_path / "glm-fail.sh"
+    fail_script.write_text(
+        "#!/bin/sh\necho '" + GLM_1308_MESSAGE + "'\nexit 1\n", encoding="utf-8")
+    fail_script.chmod(0o755)
+    profiles = HOST_PROFILES_TOML + (
+        "\n[profiles.cli-glm]\n"
+        'driver = "cli"\n'
+        'harness = "shell"\n'
+        f'executable = "{fail_script}"\n'
+        'prompt_transport = "stdin"\n'
+        'model = "m-glm"\n'
+        'class = "economy"\n'
+        'effort = "low"\n'
+        'capabilities = ["coding"]\n'
+    )
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-glm", "cli-fake"]',
+    )
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="inject GLM 1308", acceptance=["done"],
+            constraints=[], context="")[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance[:1], verification=[]),
+        ]))
+        out = dispatch.run_slice(project)
+
+        # Diagnosed as a resource failure and rerouted in the same slice.
+        started = out["started"]
+        assert len(started) == 1 and started[0]["profile"] == "cli-fake"
+        assert started[0]["fallback_from"] == "cli-glm"
+
+        # The exhaustion carries the reset VERBATIM — timezone-less.
+        row = project.store.resource_row("cli-glm")
+        assert row.status == "exhausted"
+        assert row.quota_reset_at == NAIVE_RESET
+        assert row.last_error_kind == "quota_exhausted"
+        assert health.quota_reset_tz_source(row.quota_reset_at) == "naive"
+
+        # The original message text survives in the recorded attempt.
+        revision = dispatch._active_revision(
+            project, project.store.run_for_goal(goal.id))
+        attempts = project.store.conn.execute(
+            "SELECT profile, failure_reason FROM attempts"
+            " WHERE role='worker' ORDER BY id").fetchall()
+        glm = next(a for a in attempts if a["profile"] == "cli-glm")
+        assert "额度已用尽" in glm["failure_reason"]
+        assert revision is not None
+
+        # Unknown-zone recovery time: gated now AND on later slices (no
+        # fake available, no auto-release) until explicit re-eligibility.
+        again = dispatch.run_slice(project)
+        assert again["started"] == [] and again["failed"] == []
+        assert health.quota_exhaustion_active(row) is True
+
+        # The operator view names the timezone as unknown.
+        entries = {e["profile"]: e
+                   for e in dispatch.agent_status(project)["profiles"]}
+        assert "timezone unknown" in entries["cli-glm"]["reason"]
+
+        # Explicit re-eligibility (operator decision) re-opens routing.
+        project.store.resource_set("cli-glm", ResourceStatus.AVAILABLE,
+                                   "operator topped up")
+        assert health.quota_exhaustion_active(
+            project.store.resource_row("cli-glm")) is False
+    finally:
+        project.close()
+
+
+def test_refresh_healthy_preflight_lifts_naive_reset_exhaustion(
+        quota_project, monkeypatch):
+    """A live dashboard report is a quota fact, not a probe: preflight
+    reporting the window healthy re-opens a naive-reset exhaustion (one
+    explicit re-eligibility path), while an operator override still stands
+    above it."""
+    monkeypatch.setenv("ORX_QUOTA_PREFLIGHT", "1")
+    store = quota_project.store
+    # Stage the incident's state directly: exhausted with a naive reset.
+    store.resource_learn("cli-quota", status="exhausted",
+                         quota_reset_at=NAIVE_RESET,
+                         last_error_kind="quota_exhausted")
+    healthy = quota.QuotaSnapshot(harness="codex", status="ok",
+                                  limit_reached=False, plan="plus",
+                                  summary="plus; session 5%, weekly 10%")
+    monkeypatch.setattr(quota, "fetch_quota", lambda h, force=False: healthy)
+    report = quota.refresh(quota_project)
+    row = store.resource_row("cli-quota")
+    assert row.status == "available" and row.quota_reset_at is None
+    assert report[0]["changed"] is True
+
+    # The operator outranks the dashboard even on this path.
+    store.resource_learn("cli-quota", status="exhausted",
+                         quota_reset_at=NAIVE_RESET)
+    store.resource_set("cli-quota", ResourceStatus.EXHAUSTED, "operator knows")
+    reached = quota.QuotaSnapshot(harness="codex", status="ok",
+                                  limit_reached=False, plan="plus",
+                                  summary="plus; session 5%")
+    monkeypatch.setattr(quota, "fetch_quota", lambda h, force=False: reached)
+    quota.refresh(quota_project)
+    row = store.resource_row("cli-quota")
+    assert row.status == "exhausted" and bool(row.override) is True
+
+
+def _domain_ladder_tomls(tmp_path: Path):
+    """Worker ladder glm-a (fails with the Chinese GLM 1308 message) ->
+    glm-b (healthy, SAME quota domain) -> free-c (healthy, standalone)."""
+    fail_script = tmp_path / "glm-a.sh"
+    fail_script.write_text(
+        "#!/bin/sh\necho '" + GLM_1308_MESSAGE + "'\nexit 1\n", encoding="utf-8")
+    fail_script.chmod(0o755)
+    ok_script = tmp_path / "ok.sh"
+    ok_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    ok_script.chmod(0o755)
+
+    def shell_profile(name: str, executable: Path, domain: str | None) -> str:
+        block = (
+            f"\n[profiles.{name}]\n"
+            'driver = "cli"\n'
+            'harness = "shell"\n'
+            f'executable = "{executable}"\n'
+            'prompt_transport = "stdin"\n'
+            'model = "m"\n'
+            'class = "economy"\n'
+            'effort = "low"\n'
+            'capabilities = ["coding"]\n'
+        )
+        if domain is not None:
+            block += f'quota_domain = "{domain}"\n'
+        return block
+
+    profiles = (HOST_PROFILES_TOML
+                + shell_profile("glm-a", fail_script, "glm-main")
+                + shell_profile("glm-b", ok_script, "glm-main")
+                + shell_profile("free-c", ok_script, None))
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["glm-a", "glm-b", "free-c"]',
+    )
+    return config, profiles
+
+
+def test_shared_domain_reroute_skips_sibling_rung(tmp_path, monkeypatch):
+    """Shared account, multiple profiles: when one profile's GLM 1308 marks
+    the shared quota domain, the immediate resource reroute must NOT land on
+    a sibling of the same domain as if it were independent capacity — it
+    falls through to a rung outside the domain."""
+    monkeypatch.chdir(tmp_path)
+    config, profiles = _domain_ladder_tomls(tmp_path)
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="shared domain reroute", acceptance=["done"],
+            constraints=[], context="")[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance[:1], verification=[]),
+        ]))
+        out = dispatch.run_slice(project)
+        # The sibling rung was never launched: no attempt for glm-b.
+        started = out["started"]
+        assert [s["profile"] for s in started] == ["free-c"]
+        assert started[0]["fallback_from"] == "glm-a"
+        attempts = project.store.conn.execute(
+            "SELECT DISTINCT profile FROM attempts WHERE role='worker'"
+        ).fetchall()
+        launched = {a["profile"] for a in attempts}
+        assert "glm-b" not in launched, launched
+        # The domain gate is visible in the routing audit.
+        decision = project.store.routing_decisions_all()[-1]
+        sibling = next(c for c in decision.candidates if c["profile"] == "glm-b")
+        assert sibling["reject_reason"] == "quota_domain_exhausted:glm-main"
+        assert sibling["kept"] is False
+    finally:
+        project.close()

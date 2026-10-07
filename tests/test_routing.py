@@ -948,3 +948,132 @@ def test_task_retry_reports_the_suppressed_blocker(tmp_path, monkeypatch):
         assert "routing" in suppressed["remedy"]
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T005 (2026-10-07 incident): shared-quota failure domains in routing.
+# The controller and the worker died on the SAME provider quota at 02:05 —
+# profiles drawing one account's quota are one failure domain, never
+# independent capacity. An optional profiles.toml `quota_domain` key groups
+# them; a profile without it stays standalone.
+
+DOMAIN_PROFILES_TOML = HOST_PROFILES_TOML + """
+[profiles.glm-a]
+driver = "host"
+harness = "zcode"
+model = "m-glm-a"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = "glm-main"
+
+[profiles.glm-b]
+driver = "host"
+harness = "zcode"
+model = "m-glm-b"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = "glm-main"
+"""
+
+DOMAIN_WORKER_CONFIG_TOML = HOST_CONFIG_TOML.replace(
+    'profiles = ["host-worker", "host-external"]',
+    'profiles = ["glm-a", "glm-b", "cli-fake"]',
+)
+
+
+@pytest.fixture
+def domain_project(tmp_path, monkeypatch):
+    """Worker ladder glm-a -> glm-b (same quota domain) -> cli-fake
+    (standalone, no grouping key)."""
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path, config_toml=DOMAIN_WORKER_CONFIG_TOML,
+                           profiles_toml=DOMAIN_PROFILES_TOML)
+    yield project
+    project.close()
+
+
+def test_quota_domain_field_parses_and_defaults_standalone(domain_project):
+    profiles = domain_project.profiles
+    assert profiles["glm-a"].quota_domain == "glm-main"
+    assert profiles["glm-b"].quota_domain == "glm-main"
+    # No grouping declared: the profile stays standalone.
+    assert profiles["cli-fake"].quota_domain is None
+    assert profiles["host-worker"].quota_domain is None
+
+
+def test_shared_quota_domain_is_not_independent_capacity(domain_project):
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    domain_project.store.resource_learn("glm-a", status="exhausted",
+                                        quota_reset_at=future)
+    result = route(domain_project, role=Role.WORKER)
+    assert result.selected == "cli-fake" and result.fallback_used
+    reasons = {c.profile: c.reject_reason for c in result.candidates}
+    assert reasons["glm-a"] == "exhausted"
+    assert reasons["glm-b"] == "quota_domain_exhausted:glm-main"
+    # The sibling itself is healthy on its own row — the shared quota is
+    # what died, and the audit says so instead of pretending capacity.
+    sibling = next(c for c in result.candidates if c.profile == "glm-b")
+    assert sibling.resource_status == "unknown" and sibling.kept is False
+
+
+def test_quota_domain_gate_releases_when_reset_passes(domain_project):
+    from datetime import datetime, timedelta, timezone
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    domain_project.store.resource_learn("glm-a", status="exhausted",
+                                        quota_reset_at=past)
+    result = route(domain_project, role=Role.WORKER)
+    # The anchor is a candidate again (released reads unknown, never
+    # "available"), and the domain no longer gates the sibling.
+    assert result.selected == "glm-a"
+    reasons = {c.profile: c.reject_reason for c in result.candidates}
+    assert reasons["glm-b"] is None
+    anchor = next(c for c in result.candidates if c.profile == "glm-a")
+    assert anchor.resource_status == "unknown" and anchor.kept
+
+
+def test_operator_override_beats_the_domain_gate(domain_project):
+    from datetime import datetime, timedelta, timezone
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    domain_project.store.resource_learn("glm-a", status="exhausted",
+                                        quota_reset_at=future)
+    # The operator vouches for the sibling (e.g. it moved to another
+    # account): the explicit decision outranks the learned domain fact.
+    domain_project.store.resource_set("glm-b", ResourceStatus.AVAILABLE,
+                                      "operator: separate account now")
+    result = route(domain_project, role=Role.WORKER)
+    assert result.selected == "glm-b" and result.reason == "fallback"
+    reasons = {c.profile: c.reject_reason for c in result.candidates}
+    assert reasons["glm-b"] is None
+
+
+def test_all_candidates_unavailable_is_bounded_and_explained(domain_project):
+    """The stop is finite and explainable: every rung dead (anchor
+    exhausted with a timezone-less reset, sibling by domain, standalone by
+    hand) yields one error naming each reason — no loop, no substitute
+    model, no fake availability — and run_slice records it once per task."""
+    from orx.records import TaskStatus
+    domain_project.store.resource_learn("glm-a", status="exhausted",
+                                        quota_reset_at="2026-10-07 04:24:23")
+    domain_project.store.resource_set("cli-fake", ResourceStatus.UNAVAILABLE,
+                                      "down for maintenance")
+    result = route(domain_project, role=Role.WORKER)
+    assert not result.ok
+    for needle in ("glm-a: exhausted",
+                   "glm-b: quota_domain_exhausted:glm-main",
+                   "cli-fake: unavailable"):
+        assert needle in result.error, result.error
+
+    goal = dispatch.create_goal(domain_project, "all dead", ["a1"])[0]
+    dispatch.submit_plan(domain_project, ir_for(goal, [
+        task_spec("T001", acceptance=["a1"], verification=[]),
+    ]))
+    for _ in range(2):  # a second slice must repeat the same bounded stop
+        out = dispatch.run_slice(domain_project)
+        assert out["started"] == [] and out["failed"] == []
+        assert len(out["routing_errors"]) == 1
+        assert "quota_domain_exhausted" in out["routing_errors"][0]["error"]
+        task = active_task(domain_project, "T001")
+        assert TaskStatus(task.status) is TaskStatus.RUNNABLE

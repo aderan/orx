@@ -117,6 +117,25 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
         and not req.allow_class_downgrade
     )
 
+    # G009 T005: shared-quota failure domains. Profiles that declare the
+    # same `quota_domain` draw one provider account's quota; when ANY member
+    # of a domain carries an ACTIVE exhaustion (a reset still in the future,
+    # or a recovery time that cannot be compared honestly), the domain's
+    # quota is dead and no sibling is independent capacity (the incident:
+    # controller and worker died on the same GLM account at 02:05). An
+    # operator override on a member outranks the learned domain fact for
+    # THAT member only (checked per-candidate below).
+    from orx.health import quota_exhaustion_active
+    exhausted_domains: set[str] = set()
+    for member in profiles.values():
+        if not member.quota_domain:
+            continue
+        member_row = store.resource_row(member.name)
+        if (member_row is not None
+                and member_row.status == "exhausted"
+                and quota_exhaustion_active(member_row)):
+            exhausted_domains.add(member.quota_domain)
+
     for name in names:
         profile = profiles.get(name)
         if profile is None:
@@ -143,7 +162,6 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
                 # `exhausted`: "should be usable, unverified" is exactly what
                 # unknown means, and it lets the pool treat the rung as
                 # preferred instead of dropping it behind the healthy ones.
-                from orx.health import quota_exhaustion_active
                 if not quota_exhaustion_active(store.resource_row(name)):
                     reject = None
                     resource = ResourceStatus.UNKNOWN
@@ -154,6 +172,15 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             from orx.health import cooldown_active
             if cooldown_active(store.resource_row(name)):
                 reject = f"cooldown (retry {store.resource_row(name).cooldown_until})"
+        if (reject is None and profile.quota_domain
+                and profile.quota_domain in exhausted_domains):
+            # The sibling's own row is healthy — the shared quota is what
+            # died. An operator override on THIS profile (the operator
+            # vouches it no longer shares that quota) outranks the learned
+            # domain fact.
+            own_row = store.resource_row(name)
+            if own_row is None or not own_row.override:
+                reject = f"quota_domain_exhausted:{profile.quota_domain}"
         if reject is None and class_filter_active and profile.model_class is not records.ModelClass.FRONTIER:
             reject = "class_below_frontier"
         elif reject is None:

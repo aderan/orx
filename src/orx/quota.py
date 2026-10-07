@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -451,6 +452,98 @@ def fetch_zcode(fetch: Fetch | None = None,
         return _glm_snapshot(payload)
     except Exception as exc:
         return _unknown("zcode", _brief(exc))
+
+
+# -- provider quota vocabulary (G009 T005) ----------------------------------------
+#
+# The 2026-10-07 incident (docs/cursor-system-analysis-2026-10-07.md): the
+# 02:05 GLM 1308 quota error arrived as a CHINESE provider message carrying
+# the reset moment WITHOUT a timezone ("2026-10-07 04:24:23"). The generic
+# English failure patterns in adapters cannot see that vocabulary, and the
+# local-time anchoring that is correct for a local CLI's render (codex
+# prints the machine's zone) is a GUESS for a remote provider's message —
+# later failure notes appended "Z" on exactly that guess, with no evidence.
+# The two helpers below keep provider text honest: classify the vocabulary,
+# and return the reset string EXACTLY as printed — a timezone-less string
+# stays timezone-less, so health marks the recovery time unknown instead of
+# inventing a comparable one.
+
+# Chinese provider needles (GLM / bigmodel vocabulary). Disjoint from the
+# English table in adapters; first match wins.
+_PROVIDER_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("余额不足", "quota_exhausted"),      # insufficient balance
+    ("额度", "quota_exhausted"),          # quota/allowance (已用尽/不足/耗尽)
+    ("配额", "quota_exhausted"),          # quota allocation
+    ("请求过于频繁", "rate_limited"),      # requests too frequent
+    ("触发限流", "rate_limited"),          # rate limiting tripped
+    ("限流", "rate_limited"),
+    ("未登录", "auth_required"),
+    ("登录已过期", "auth_required"),
+    ("鉴权失败", "auth_required"),
+    ("身份验证失败", "auth_required"),
+)
+
+# The bigmodel/GLM platform quota error code, as the incident's own records
+# name it ("GLM 1308 配额错误", "platform error 1308 ... window exhausted").
+# Matched only in provider-error shapes (a code label, or a bare "1308:"
+# line prefix) so a 1308 inside a token count or a price can never
+# classify.
+_GLM_QUOTA_CODE_RE = re.compile(
+    r"(?:\berror|\bcode|错误码|错误代码)\W*1308"
+    r"|(?:^|\n)\s*1308\s*[:：]",
+    re.IGNORECASE,
+)
+
+
+def provider_error_kind(text: str) -> str | None:
+    """ErrorKind for Chinese provider vocabulary the adapters' English
+    pattern pass cannot see. None when nothing is recognized (callers keep
+    their safe default)."""
+    if not text:
+        return None
+    if _GLM_QUOTA_CODE_RE.search(text):
+        return "quota_exhausted"
+    for needle, kind in _PROVIDER_PATTERNS:
+        if needle in text:
+            return kind
+    return None
+
+
+# A datetime token a provider may print: date, time, optional seconds,
+# optional explicit offset. Matched verbatim — never normalized.
+_PROVIDER_DATETIME_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?"
+)
+# Reset vocabulary around the token, either side (Chinese 重置时间/…重置;
+# the incident's English note shape "resets 2026-10-07 04:24:23" without
+# the adapters' "at"). The call is only made for text already diagnosed as
+# a quota failure, which bounds false positives.
+_RESET_NEARBY = 24
+
+
+def provider_quota_reset(text: str) -> str | None:
+    """The quota reset moment a REMOTE provider printed, exactly as printed.
+
+    Returns the datetime token VERBATIM: a timezone-less token (the
+    incident's "2026-10-07 04:24:23") keeps no zone — health then treats the
+    recovery time as unknown rather than guessing one; an offset the
+    provider itself printed stays. A reset marker must sit near the token
+    on the same line (either side); a bare timestamp is not a reset. None
+    when no marker has such a token (callers keep "never self-releases"
+    semantics)."""
+    if not text:
+        return None
+    for match in _PROVIDER_DATETIME_RE.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        line_end = len(text) if line_end == -1 else line_end
+        before = text[max(line_start, match.start() - _RESET_NEARBY):match.start()]
+        after = text[match.end():min(line_end, match.end() + _RESET_NEARBY)]
+        if "重置" in before or "重置" in after or "reset" in before.lower() \
+                or "reset" in after.lower():
+            return match.group(0)
+    return None
 
 
 # -- cache + harness dispatch -----------------------------------------------------

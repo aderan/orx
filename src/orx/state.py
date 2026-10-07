@@ -2574,12 +2574,30 @@ class Store:
             )
 
     def resource_clear(self, profile: str) -> None:
-        """Re-enable health auto-learning for a profile (override -> 0)."""
+        """Re-enable health auto-learning for a profile (override -> 0).
+
+        G009 T005: on an EXHAUSTED row this is also the explicit
+        re-eligibility the quota gate honors — the row becomes `unknown`
+        (a routable candidate that re-learns from the next outcome). An
+        exhaustion whose recovery time cannot be compared honestly (none,
+        unparseable, or timezone-less) otherwise never self-releases, and
+        a probe-shaped success must not release it either."""
         with self.tx():
-            self.conn.execute(
-                "UPDATE resource_status SET override = 0, updated_at = ? WHERE profile = ?",
-                (now(), profile),
-            )
+            row = self.conn.execute(
+                "SELECT status FROM resource_status WHERE profile = ?", (profile,)
+            ).fetchone()
+            if row is not None and row["status"] == "exhausted":
+                self.conn.execute(
+                    "UPDATE resource_status SET override = 0, status = 'unknown',"
+                    " updated_at = ? WHERE profile = ?",
+                    (now(), profile),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE resource_status SET override = 0, updated_at = ?"
+                    " WHERE profile = ?",
+                    (now(), profile),
+                )
 
     def resource_learn(self, profile: str, **fields) -> None:
         """Auto-learning write. Never touches rows with override = 1; a

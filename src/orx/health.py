@@ -21,6 +21,14 @@ G009 T004 adds the RECOVERY vocabulary beside the resource one: failure
 classes (permission/environment/code/resource/other), same-condition
 blocker fingerprints, and the per-(task, profile) trailing blocker streak
 — the recorded facts the bounded re-launch gate in dispatch reads.
+
+G009 T005 calibrates the quota semantics on the 2026-10-07 incident: a
+reset string is stored exactly as the provider printed it (a
+timezone-less string keeps no zone — one is never invented), a
+timezone-less or missing reset keeps the exhaustion gated (recovery time
+unknown), and one succeeded request during an ACTIVE exhaustion (the
+08:47 trivial probe) records its success facts without lifting the quota
+blocker — probe success and quota sufficiency are different facts.
 """
 
 from __future__ import annotations
@@ -92,6 +100,20 @@ _TRANSPORT_PREFIX = re.compile(r"^exit (?:\d+|timeout):\s*")
 _FINGERPRINT_REASON_MAX = 160
 
 
+def resource_error_kind(text: str) -> str:
+    """Total ErrorKind classification for one blob of failure text (G009
+    T005): the adapters' verified English pattern pass first, then the
+    Chinese provider vocabulary that pass cannot see (the GLM 1308
+    incident's original message). Unrecognized text stays process_failure —
+    the safe default that never auto-retries."""
+    from orx.adapters.base import error_kind_from_text
+    kind = error_kind_from_text(text)
+    if kind != "process_failure":
+        return kind
+    from orx import quota
+    return quota.provider_error_kind(text) or "process_failure"
+
+
 def failure_class(result: str | None, failure_reason: str | None) -> str:
     """The recovery class of one recorded failure (see the block above).
     Ordered so the proven shapes win: a blocked delivery is a blocker by
@@ -108,8 +130,7 @@ def failure_class(result: str | None, failure_reason: str | None) -> str:
         return "other"  # unproven which side failed the protocol
     if lowered.startswith("delivery failed") or "delivery gate:" in lowered:
         return "code"
-    from orx.adapters.base import error_kind_from_text
-    kind = error_kind_from_text(reason)
+    kind = resource_error_kind(reason)
     if kind in ("quota_exhausted", "rate_limited"):
         return "resource"
     if kind in ("auth_required", "model_unavailable"):
@@ -222,6 +243,21 @@ def record_attempt_outcome(store, profile: str, ok: bool,
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
     if ok:
+        if row is not None and row.status == "exhausted" \
+                and quota_exhaustion_active(row):
+            # G009 T005 (the 08:47 trivial probe): one succeeded request
+            # during an ACTIVE quota exhaustion proves that request at that
+            # moment, never that the window recovered — quota is
+            # size-proportional, so a small request passes while large
+            # tasks still die. Record the success facts; the gate, the
+            # reset, and its timezone honesty all stand. Re-eligibility is
+            # explicit: the (comparable) reset passing, a live preflight
+            # reporting the window healthy, or an operator decision. A
+            # cooldown or an auth gate is a per-request binary fact and a
+            # success still recovers those, exactly as before.
+            store.resource_learn(profile, last_success_at=now,
+                                 failure_streak=0, last_error_kind=None)
+            return
         store.resource_learn(profile, status="available",
                              last_success_at=now, failure_streak=0,
                              last_error_kind=None, cooldown_until=None,
@@ -263,13 +299,32 @@ def cooldown_active(row) -> bool:
     return datetime.now(timezone.utc) < until
 
 
+def quota_reset_tz_source(reset_at: str | None) -> str | None:
+    """Where a stored reset string's timezone stands: 'offset' when the
+    source printed one (comparable to now), 'naive' when it is
+    timezone-less or unparseable (a provider-local time of unknown zone —
+    the GLM 1308 incident's string), None when there is no reset string."""
+    if not reset_at:
+        return None
+    try:
+        until = datetime.fromisoformat(reset_at)
+    except ValueError:
+        return "naive"
+    return "offset" if until.tzinfo is not None else "naive"
+
+
 def quota_exhaustion_active(row) -> bool:
     """True while an exhausted row's quota reset is still in the future
-    (G005). A reset time that already passed releases the profile — routing
-    lets it back in and the next outcome re-learns the truth. An exhausted
-    row without a usable reset time never self-recovers: it stays gated
-    until `orx resource clear` (the reset time comes from harness output or
-    a live preflight; when neither ever named one, guessing is worse)."""
+    (G005). A comparable reset time (one that carries its own offset — a
+    local CLI render or a dashboard epoch) that already passed releases the
+    profile — routing lets it back in as a CANDIDATE (unknown, never
+    "available") and the next outcome re-learns the truth. A reset time
+    that cannot be compared honestly — missing, unparseable, or
+    TIMEZONE-LESS (G009 T005: the GLM 1308 incident's "2026-10-07
+    04:24:23", whose zone is unknown and must not be invented) — keeps the
+    gate standing: recovery time unknown means never auto-released, only
+    explicit re-eligibility (`orx resource set`, or a live preflight
+    reporting the window healthy) re-opens the profile."""
     if row is None or row.status != "exhausted":
         return False
     if not row.quota_reset_at:
@@ -279,5 +334,8 @@ def quota_exhaustion_active(row) -> bool:
     except ValueError:
         return True
     if until.tzinfo is None:
-        return False  # a bare local timestamp cannot be compared honestly
+        # A timezone-less provider string cannot be compared to now without
+        # inventing a zone — the exact mistake (appending Z) the incident
+        # documented. Unknown recovery time: the gate stands.
+        return True
     return datetime.now(timezone.utc) < until

@@ -1022,3 +1022,84 @@ def test_migrate_semantic_model_table_round_trips(tmp_path):
     # identical re-merge stays conflict-free (dict equality on the table)
     report2 = migrate_profiles_to_user(project, user)
     assert report2["moved"] == ["sem"]
+
+
+# ---------------------------------------------------------------------------
+# G009 T005: optional quota_domain profile key — shared-account quota
+# grouping. Purely optional (a profile without it stays standalone), no new
+# required fields.
+
+
+def test_quota_domain_optional_key_parses(tmp_path):
+    _write(tmp_path, profiles="""
+schema_version = 1
+
+[profiles.shared-a]
+driver = "host"
+harness = "zcode"
+model = "m-a"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = "glm-main"
+
+[profiles.shared-b]
+driver = "cli"
+harness = "shell"
+executable = "true"
+prompt_transport = "stdin"
+model = "m-b"
+class = "economy"
+effort = "low"
+capabilities = ["coding"]
+quota_domain = " glm-main "
+
+[profiles.standalone]
+driver = "host"
+harness = "zcode"
+model = "m-c"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+""")
+    profiles = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    assert profiles["shared-a"].quota_domain == "glm-main"
+    # surrounding whitespace is trimmed; an effectively empty value is None
+    assert profiles["shared-b"].quota_domain == "glm-main"
+    assert profiles["standalone"].quota_domain is None
+    data = profiles["shared-a"].to_dict()
+    assert data["quota_domain"] == "glm-main"
+    assert profiles["standalone"].to_dict()["quota_domain"] is None
+
+
+def test_quota_domain_rejects_empty_and_non_string(tmp_path):
+    for bad in ("", "   "):
+        _write(tmp_path, profiles="""
+schema_version = 1
+
+[profiles.bad]
+driver = "host"
+harness = "zcode"
+model = "m"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = "{bad}"
+""".replace("{bad}", bad))
+        with pytest.raises(ConfigError) as excinfo:
+            load_profiles(tmp_path / ".orx" / "profiles.toml")
+        assert "quota_domain must be a non-empty string" in str(excinfo.value)
+    _write(tmp_path, profiles="""
+schema_version = 1
+
+[profiles.bad]
+driver = "host"
+harness = "zcode"
+model = "m"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = 7
+""")
+    with pytest.raises(ConfigError):
+        load_profiles(tmp_path / ".orx" / "profiles.toml")

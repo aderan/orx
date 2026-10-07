@@ -199,6 +199,13 @@ class Profile:
     # string (the spec's identity for table form, the raw string
     # otherwise); a ModelSpec or dict never enters the string contract.
     model_spec: models.ModelSpec | None = None
+    # G009 T005: optional shared-quota grouping. Profiles that draw one
+    # provider account's quota declare the same `quota_domain`; routing
+    # then treats them as one failure domain (an active exhaustion on any
+    # member gates the siblings — the 2026-10-07 incident's controller and
+    # worker died on the same GLM account). Optional and informational: a
+    # profile without it stays standalone, and nothing else changes.
+    quota_domain: str | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -215,6 +222,7 @@ class Profile:
             "force": self.force,
             "host_mode": self.host_mode,
             "agent_ref": self.agent_ref,
+            "quota_domain": self.quota_domain,
         }
         if self.model_spec is not None:
             out["model_spec"] = self.model_spec.to_dict()
@@ -540,6 +548,14 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
     if host_mode == "self" and agent_ref is not None:
         errors.append(f"{p} agent_ref requires host_mode = 'subagent'")
 
+    # G009 T005: optional shared-quota grouping; informational only, but a
+    # present value must be a non-empty string (an empty group name would
+    # silently group every such profile together).
+    quota_domain = raw.get("quota_domain")
+    if quota_domain is not None and (
+            not isinstance(quota_domain, str) or not quota_domain.strip()):
+        errors.append(f"{p} quota_domain must be a non-empty string when set")
+
     return errors
 
 
@@ -570,6 +586,11 @@ def _build_profile(name: str, raw: dict) -> Profile:
         host_mode=raw.get("host_mode", "self"),
         agent_ref=raw.get("agent_ref"),
         model_spec=model_spec,
+        quota_domain=(
+            raw["quota_domain"].strip()
+            if isinstance(raw.get("quota_domain"), str)
+            and raw["quota_domain"].strip() else None
+        ),
     )
 
 

@@ -129,3 +129,45 @@ P1 + P2 全部落地，617 测试绿（新增 tests/test_quota.py 20 例）：
 - codex：5h 窗口 100%（02:16 重置），周窗口 44%，credits 0。
 - cursor：included 2000/2000 用尽，bonus 5459 可用，总占比 15%，账期至 10-20。
 - GLM（zcode）：5h 窗口 20%，**周窗口 67%**，月度资源 10%。
+
+## 四、校准记录（G009 T005，2026-10-07 实施）
+
+2026-10-07 事故（docs/cursor-system-analysis-2026-10-07.md）暴露了 G005 落地的三处
+语义缺口，本节校准全部落地为确定性注入回归（虚拟时钟=store 内伪造就绪值，零真实耗尽）：
+
+1. **重置字符串的时区诚实**。原始 GLM 1308 错误里的重置时刻是无时区的
+   `2026-10-07 04:24:23`；后续失败说明自行补了 `Z`（把 provider 本地时间假设成
+   UTC），无任何证据支持。校准：远端 provider 消息的重置时刻**逐字保存**
+   （`quota.provider_quota_reset`：无时区保持无时区，不补 Z、不锚定本地；provider
+   自己印的 offset 原样保留；重置标记须同行邻近，裸时间戳不算重置）。G005 的本地
+   锚定仅保留给本地 CLI 渲染（codex 在机器本地时区打印，已验证），且 dispatch 的
+   取数顺序是"本地 CLI 形式优先、其次远端逐字原文"。`health.quota_reset_tz_source`
+   把已存字符串的时区来源标成 offset/naive；naive（或缺失/不可解析）的重置
+   **不可与 now 诚实比较**，`quota_exhaustion_active` 一律保持门禁——恢复时刻未知
+   就永不自动释放，显式再合格只有三条路：可比较重置已过（routing 放开为 unknown
+   **候选**，绝不宣告 available）、`orx resource set`、live preflight 报健康窗口。
+   `orx resource clear` 在 exhausted 行上同时置 override=0 与状态 unknown（G005
+   docstring 承诺的"手动 clear"语义真正落地）。
+2. **探针成功 ≠ 额度充足**。08:47 的 trivial 探针通过只证明那一刻那一个请求可用。
+   校准：`record_attempt_outcome(ok=True)` 命中活动中的 exhaustion（未来或不可比较
+   重置）时只记录成功事实（成功时间、streak 清零、error kind 清空），**不清门禁、
+   不清重置串**。限流 cooldown 与认证是每请求二元事实，成功照常恢复（语义不变）；
+   额度是按请求大小成比例消耗的窗口，一个小请求通过不代表长任务容量。
+3. **共享账号 = 一个故障域**。控制器与 worker 用同一 GLM 账号，02:05 同时失效。
+   校准：profiles.toml 可选 `quota_domain` 键（不填即独立，空值/非字符串报配置错）；
+   同域任意成员带活动 exhaustion 时整域不可路由——sibling 的
+   `reject_reason=quota_domain_exhausted:<domain>` 进 routing_decisions 审计（sibling
+   自身行是健康的，死的是共享额度，不伪装成独立容量）；域锚点的可比较重置过期后
+   整域随之放开为候选；候选自身的 operator override 豁免域门（明示换账号时操作者
+   赢）。全部候选不可用时的停止有界且可解释：单一错误列每个 rung 的拒绝原因，
+   任务留 runnable，不换模型、不循环、不虚假 available。
+
+中文 provider 词汇进入分类器：`quota.provider_error_kind`（额度/配额/余额不足 →
+quota_exhausted；请求过于频繁/限流 → rate_limited；未登录/登录已过期/鉴权失败 →
+auth_required；1308 仅按错误码形状匹配，防止普通数字误报），`health.
+resource_error_kind` 组合分类（adapters 英文模式优先，英文未识别才升级中文词汇），
+`failure_class` 与 dispatch 健康缝共用该分类器——中文 GLM 1308 文本从此诊断为
+resource 而非 process_failure。已知边界：`_PROVIDER_PATTERNS` 与 1308 形状来自本仓
+事故记录与 bigmodel 公开错误词汇，逐字原始 provider 消息未存档，注入用例冻结的是
+文档记载的形状（1308 + 额度词汇 + 无时区重置串）；provider 换措辞时安静降级为
+process_failure（安全方向：不误门控），补词即一行。

@@ -1227,10 +1227,26 @@ def _record_attempt_health(store, profile_name: str, run_result,
     if run_result.ok and delivery_outcome in ("blocked", "protocol_error"):
         return None
     error_kind = None if run_result.ok else classify_failure(run_result)
+    quota_reset = None
+    if not run_result.ok:
+        text = _captured(run_result, "stderr") + "\n" + _captured(run_result, "stdout")
+        if error_kind == "process_failure":
+            # G009 T005: the Chinese provider vocabulary (the GLM 1308
+            # incident's original message) that the English pattern pass
+            # cannot see; a recognized English classification is never
+            # overridden.
+            error_kind = health.resource_error_kind(text)
+        if error_kind == "quota_exhausted":
+            # Reset provenance, in order: a LOCAL CLI's render (codex names
+            # the moment in the machine's zone — G005, offset-carrying and
+            # comparable), then a REMOTE provider's message kept verbatim
+            # (timezone-less stays timezone-less; health then treats the
+            # recovery time as unknown instead of inventing a zone).
+            quota_reset = (quota_reset_from(run_result)
+                           or quota.provider_quota_reset(text))
     health.record_attempt_outcome(
         store, profile_name, ok=run_result.ok, error_kind=error_kind,
-        quota_reset_at=(quota_reset_from(run_result)
-                        if error_kind == "quota_exhausted" else None),
+        quota_reset_at=quota_reset,
     )
     return error_kind
 
@@ -4430,7 +4446,9 @@ def verify_submit(
 
 
 def resource_clear(project: Project, profile_name: str) -> dict:
-    """Re-enable health auto-learning for a profile (drops the override)."""
+    """Re-enable health auto-learning for a profile (drops the override).
+    On an exhausted row this is the explicit re-eligibility the quota gate
+    honors (G009 T005): the row becomes a routable `unknown` candidate."""
     if profile_name not in project.profiles:
         raise NotFoundError(
             f"profile {profile_name!r} is not defined"
@@ -4583,7 +4601,11 @@ def _health_reason(row) -> str:
         parts.append(f"retry {row.cooldown_until}")
     if row.quota_reset_at:
         parts.append(f"reset {row.quota_reset_at}")
-        if row.status == "exhausted" and not health.quota_exhaustion_active(row):
+        if health.quota_reset_tz_source(row.quota_reset_at) == "naive":
+            # G009 T005: the provider's own string, zone unknown — say why
+            # it never auto-releases instead of leaving it a mystery.
+            parts.append("timezone unknown (explicit re-eligibility required)")
+        elif row.status == "exhausted" and not health.quota_exhaustion_active(row):
             parts.append("reset passed (routes again)")
     if row.override:
         parts.append("override")

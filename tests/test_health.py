@@ -604,9 +604,14 @@ def test_passed_cli_delivery_clears_the_failure_streak(tmp_path, monkeypatch):
      "delivery gate: 2 of 3 command check(s) red: pytest -q exit 1",
      "code"),
     # Resource facts (T005's domain): transport text carrying the standard
-    # vocabulary.
+    # vocabulary — English patterns and the Chinese provider vocabulary the
+    # English pass cannot see (the GLM 1308 incident).
     ("failed", "exit 1: rate limit exceeded", "resource"),
     ("failed", "exit 1: usage limit reached; try again at Oct 8th, 2026", "resource"),
+    ("failed",
+     "exit 1: 1308: 当前套餐的5小时滚动窗口额度已用尽，重置时间 2026-10-07 04:24:23",
+     "resource"),
+    ("failed", "exit 1: 请求过于频繁，请稍后再试", "resource"),
     # Environment facts from transport text: auth and model availability.
     ("failed", "exit 1: Error: Not logged in", "environment"),
     ("failed", "exit 1: cannot use this model on this plan", "environment"),
@@ -754,3 +759,108 @@ def test_blocker_streak_counts_trailing_same_fingerprint_per_profile(
         assert own.count == 1
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T005 (2026-10-07 incident): timezone-honest quota resets, probe
+# success vs quota sufficiency, and override precedence across quota paths.
+#
+# The 02:05 GLM 1308 quota error carried "2026-10-07 04:24:23" with NO
+# timezone; failure notes later appended "Z" with no evidence. An 08:47
+# trivial probe succeeded while the shared account's quota was still
+# exhausted — one request passing is not quota recovery.
+
+
+def test_resource_error_kind_composes_english_then_provider():
+    """One total classifier for failure text: the adapters' verified English
+    patterns first, the Chinese provider vocabulary when the English pass
+    recognizes nothing, process_failure as the safe default."""
+    assert health.resource_error_kind(
+        "usage limit reached; try again later") == "quota_exhausted"
+    assert health.resource_error_kind("Error: Not logged in") == "auth_required"
+    assert health.resource_error_kind(
+        "1308: 当前套餐的额度已用尽，重置时间 2026-10-07 04:24:23"
+    ) == "quota_exhausted"
+    assert health.resource_error_kind("请求过于频繁") == "rate_limited"
+    assert health.resource_error_kind(
+        "segfault somewhere unrelated") == "process_failure"
+    assert health.resource_error_kind("") == "process_failure"
+
+
+def test_quota_reset_tz_source_truth_table():
+    assert health.quota_reset_tz_source("2026-10-07 04:24:23") == "naive"
+    assert health.quota_reset_tz_source("2026-10-07T04:24:23Z") == "offset"
+    assert health.quota_reset_tz_source(
+        "2026-10-07T04:24:23+08:00") == "offset"
+    assert health.quota_reset_tz_source(None) is None
+    assert health.quota_reset_tz_source("") is None
+
+
+def test_naive_reset_stays_gated_on_both_sides_of_virtual_clock(project):
+    """A timezone-less reset cannot be compared to now honestly — the
+    provider's zone is unknown and inventing one (the failure notes' Z) is
+    the documented mistake. The gate stands whether the naive string reads
+    future or past; only explicit re-eligibility re-opens the profile."""
+    store = project.store
+    for reset in ("2099-01-01 00:00:00",            # naive, "future"-looking
+                  "2000-01-01 00:00:00",            # naive, "past"-looking
+                  "not a timestamp at all"):        # unparseable: unknown
+        store.resource_learn("cli-fake", status="exhausted", quota_reset_at=reset)
+        assert health.quota_exhaustion_active(
+            store.resource_row("cli-fake")) is True, reset
+    # The comparable form still releases once the moment passes (G005).
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    store.resource_learn("cli-fake", quota_reset_at=past)
+    assert health.quota_exhaustion_active(
+        store.resource_row("cli-fake")) is False
+
+
+def test_probe_success_never_lifts_active_quota_exhaustion(project):
+    """The 08:47 trivial probe: one succeeded request during an active
+    exhaustion (aware or naive reset) records the success facts but keeps
+    the quota blocker — routing stays closed until the reset passes, an
+    operator decides, or a live preflight reports the window healthy."""
+    store = project.store
+    for reset in ("2099-01-01T00:00:00+00:00", "2099-01-01 00:00:00"):
+        store.resource_learn("cli-fake", status="exhausted",
+                             quota_reset_at=reset,
+                             last_error_kind="quota_exhausted",
+                             failure_streak=4)
+        health.record_attempt_outcome(store, "cli-fake", ok=True)
+        row = store.resource_row("cli-fake")
+        assert row.status == "exhausted", reset
+        assert row.quota_reset_at == reset, reset
+        assert row.failure_streak == 0 and row.last_success_at, reset
+        assert row.last_error_kind is None, reset
+
+    # Contrast: a cooldown (rate limit) and an auth gate are per-request
+    # binary facts — a success still recovers them (unchanged semantics).
+    health.record_attempt_outcome(store, "cli-fake", ok=False,
+                                  error_kind="rate_limited")
+    assert store.resource_row("cli-fake").status == "cooldown"
+    health.record_attempt_outcome(store, "cli-fake", ok=True)
+    assert store.resource_row("cli-fake").status == "available"
+    health.record_attempt_outcome(store, "cli-fake", ok=False,
+                                  error_kind="auth_required")
+    assert store.resource_row("cli-fake").status == "auth_required"
+    health.record_attempt_outcome(store, "cli-fake", ok=True)
+    assert store.resource_row("cli-fake").status == "available"
+
+
+def test_operator_override_never_auto_cleared_across_quota_paths(project):
+    """The acceptance line: a manual override survives every automatic
+    writer this task touches — probe-shaped successes, quota failures, and
+    the live preflight. Only `orx resource clear` re-enables learning."""
+    store = project.store
+    store.resource_set("cli-fake", ResourceStatus.EXHAUSTED,
+                       "operator says the account is dead")
+    health.record_attempt_outcome(store, "cli-fake", ok=True)   # probe-shaped
+    health.record_attempt_outcome(store, "cli-fake", ok=False,
+                                  error_kind="quota_exhausted",
+                                  quota_reset_at="2099-01-01T00:00:00+00:00")
+    row = store.resource_row("cli-fake")
+    assert row.status == "exhausted" and bool(row.override) is True
+    assert row.quota_reset_at is None  # the failed learn never touched it
+    store.resource_clear("cli-fake")
+    health.record_attempt_outcome(store, "cli-fake", ok=True)
+    assert store.resource_row("cli-fake").status == "available"
