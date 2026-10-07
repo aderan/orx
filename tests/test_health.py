@@ -179,6 +179,86 @@ command_timeout_sec = 30
         project.close()
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "G009 red baseline (2026-10-07): the resource-failure reroute"
+    " unconditionally re-executes as CLI, so a host next rung raises"
+    " ORXError \"no adapter for harness 'zcode'\" instead of parking a host"
+    " assignment"
+    " (docs/diagnostics/cursor-2026-10-07/replay_cli_to_host.py). Remove"
+    " this marker with the CLI->host dispatch fix, never by weakening the"
+    " test."))
+def test_rate_limited_cli_falls_back_to_host_parking(tmp_path, monkeypatch):
+    """G009 T001 (2026-10-07 incident): replay_cli_to_host.py as a regular
+    regression. The sibling test above covers CLI->CLI fallback; this one
+    pins the rung whose next profile is a HOST driver: a rate-limited CLI
+    worker must park a host assignment (host_required), never crash
+    run_slice with ORXError "no adapter for harness 'zcode'" — the bug the
+    diagnostic replay recorded against the real dispatch stack. The
+    rate-limit facts themselves (cooldown learned, failed CLI attempt kept
+    as history) already behave correctly today and must stay that way."""
+    from conftest import (HOST_CONFIG_TOML, HOST_PROFILES_TOML, active_task,
+                          ir_for, make_project, task_spec)
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-fake", "host-worker"]',
+    )
+    profiles = HOST_PROFILES_TOML.replace(
+        'executable = "true"',
+        'executable = "/bin/sh"\n'
+        'args = ["-c", "echo rate limit exceeded >&2; exit 1"]',
+    )
+    project = make_project(tmp_path, config, profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="Verify CLI rate limit switches to host",
+            acceptance=["done"], constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T310", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        # The defect: this call raises ORXError("no adapter for harness
+        # 'zcode'") because the reroute unconditionally re-executes as CLI.
+        outcome = dispatch.run_slice(project)
+
+        # The desired behavior: the next rung is a host profile, so the
+        # task is PARKED for host execution — an assignment the controller
+        # can pick up, not a crash and not a task left failed.
+        host_entries = [
+            entry for entry in outcome["host_required"]
+            if entry["profile"] == "host-worker"
+        ]
+        assert host_entries, outcome
+        entry = host_entries[0]
+        assert entry["task"] == "T310"
+        assert entry["prompt_file"] and (tmp_path / entry["prompt_file"]).exists()
+        assert active_task(project, "T310").status == "waiting_host"
+
+        # The rate-limited CLI rung is recorded as an environment fact for
+        # routing (this half is already correct today).
+        row = project.store.resource_row("cli-fake")
+        assert row.status == "cooldown"
+        assert row.last_error_kind == "rate_limited"
+
+        # And the failed CLI attempt stays as history: the parked host
+        # attempt is a NEW attempt, the rate-limited one is not rewritten.
+        revision_id = active_task(project, "T310").revision_id
+        attempts = project.store.conn.execute(
+            "SELECT profile,result,failure_reason FROM attempts"
+            " WHERE role='worker' ORDER BY id"
+        ).fetchall()
+        by_profile = {row["profile"]: row for row in attempts}
+        assert "cli-fake" in by_profile, attempts
+        assert by_profile["cli-fake"]["result"] == "failed"
+        assert "rate limit" in by_profile["cli-fake"]["failure_reason"]
+        assert "host-worker" in by_profile, attempts
+        assert by_profile["host-worker"]["result"] is None  # parked, open
+    finally:
+        project.close()
+
+
 def test_backoff_grows_with_streak_and_caps(tmp_path, monkeypatch):
     import time
     from datetime import datetime, timedelta, timezone

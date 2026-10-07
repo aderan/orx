@@ -1,0 +1,553 @@
+{
+  "goal": "G009",
+  "exploration": {
+    "summary": "已有只读事故审计、两个真实调度红回放，以及100/88个相关既有测试的绿基线。先恢复事实与协议，再做路由、故障恢复和成本治理。",
+    "relevant_components": [
+      "src/orx/dispatch.py",
+      "src/orx/adapters",
+      "src/orx/health.py",
+      "src/orx/quota.py",
+      "src/orx/routing.py",
+      "src/orx/probes.py",
+      "src/orx/zcode_sessions.py",
+      "src/orx/records.py",
+      "src/orx/state.py"
+    ],
+    "unknowns": [
+      "历史Cursor权限配置快照缺失，当前allowlist只能作为支持证据。",
+      "当前harness同会话resume/check-fix能力须读help和真实验证。",
+      "各宿主能否提供稳定session usage与terminal事实须核验。",
+      "代表性任务预算和上下文压缩收益尚未校准。"
+    ],
+    "assumptions": [
+      "不改变ORX内核和外部分析工具的职责边界。",
+      "真实微任务只使用接手环境已有认证和已声明profile。"
+    ],
+    "risks": [
+      "修改交付契约导致旧CLI兼容误判",
+      "配额时区误读及共享账号误切换",
+      "宿主失联时出现两个writer",
+      "去缓存/重复来源口径错误",
+      "先压缩上下文损伤正确率"
+    ]
+  },
+  "approach": {
+    "summary": "五阶段、十三个串行小任务，正式交付协议优先；先无模型回归，后真实微任务，再测成本。",
+    "decisions": [
+      "JSON是权威计划；Goal ID 已替换为 G009 并在提交前重新验证。",
+      "共享dispatch/state文件暂不并行写，沿用max_parallel=1；host-only终审显式host_context。",
+      "实现使用现有pytest与ORX契约，不创建常驻服务或额外产品。",
+      "每阶段先red后green并本地提交；三次同问题失败先停该路径和重新评估。"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "T001",
+      "objective": "冻结事故基线，将两个已知红回放及交付边界转成常规行为回归。",
+      "dependencies": [],
+      "scope": {
+        "allowed": [
+          "tests",
+          "docs/diagnostics",
+          "docs/recovery-hardening-report.md"
+        ]
+      },
+      "acceptance": [
+        "两个真实调度回放都有可定位的 red 基线；缺失、畸形、互相矛盾的交付有行为测试。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_delivery_gate_e2e.py tests/test_adapters.py tests/test_health.py tests/test_routing.py",
+        "agent: 确认新增回归修复前因目标缺陷失败，而非 fixture 或环境失败；原始证据没有被改写。"
+      ],
+      "preread": [
+        "docs/cursor-system-analysis-2026-10-07.md",
+        "docs/recovery-validation-plan-2026-10-07.md",
+        "docs/diagnostics/cursor-2026-10-07/replay.py",
+        "docs/diagnostics/cursor-2026-10-07/replay_cli_to_host.py",
+        "tests/conftest.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "至少读 delivery_gate、host_progress、quota/routing 三类相似实现。固定既有状态机与正式 delivery 契约，不先发明另一套状态。诊断脚本当前 exit 1 是预期缺陷，不是实施失败。"
+    },
+    {
+      "id": "T002",
+      "objective": "接通 CLI 结构化 delivery 与正式门禁，修正健康学习语义。",
+      "dependencies": [
+        "T001"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/adapters",
+          "src/orx/dispatch.py",
+          "src/orx/runtime.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/health.py",
+          "tests",
+          "docs",
+          "skills/orx-agent",
+          "agents",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "CLI 的进程成功、结构化交付和验收门禁相互区分；blocked、failed、缺失或非法交付均不能因 exit 0 或控制器绿测试被判 passed。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_delivery_gate_e2e.py tests/test_verify_check.py tests/test_adapters.py tests/test_health.py",
+        "agent: 用 exit 0+blocked 在红/绿门禁两种情况下核验均不 passed；审查未知交付、override 和旧 CLI 兼容边界。"
+      ],
+      "preread": [
+        "src/orx/adapters/base.py",
+        "src/orx/adapters/cursor.py",
+        "src/orx/adapters/codex.py",
+        "src/orx/dispatch.py",
+        "src/orx/health.py",
+        "docs/host-progress-contract.md"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "优先扩展既有 Capture/交付入口，运输状态与任务状态分开；不要仅靠英文关键词或要求模型控制 CLI 退出码。a132 仅自然语言 blocked 要被诊断为非正式交付/阻塞证据，不能伪造结构化成功。通过明确机器契约逐步消除歧义；按真实输出形状补 Cursor/Codex/shell fixtures。健康仅更新得到证明的能力维度，代码红不等于账号不可用。"
+    },
+    {
+      "id": "T003",
+      "objective": "让资源失败后的下一档按 driver 分发，补齐有界切换和身份绑定。",
+      "dependencies": [
+        "T002"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/dispatch.py",
+          "src/orx/routing.py",
+          "src/orx/records.py",
+          "tests",
+          "docs",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "CLI、host、external 的路由切换遵循各自执行契约；资源失败后的 CLI→host 切换产生有效宿主指派，不再报 no adapter for harness zcode。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_routing.py tests/test_quota.py tests/test_host_progress_e2e.py tests/test_delivery_gate_e2e.py",
+        "agent: 重放 CLI→host，检查 host_required、profile、nonce；external 只生成正式外部契约，不冒充 adapter。"
+      ],
+      "preread": [
+        "src/orx/dispatch.py",
+        "src/orx/routing.py",
+        "tests/test_host_progress_e2e.py",
+        "docs/responsibilities.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "复用已有 CLI 执行、host parking、external 路径；最小公共分发入口优先，避免重写 dispatch。覆盖 CLI→CLI、CLI→host、host→CLI、host→host 及 external 分支；host 先取得正式结束事实再切换，不由 CLI 日志替代宿主协议。"
+    },
+    {
+      "id": "T004",
+      "objective": "建立失败类型、同条件 blocker 抑制和有界 check-fix 机制。",
+      "dependencies": [
+        "T003"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/config.py",
+          "src/orx/dispatch.py",
+          "src/orx/health.py",
+          "src/orx/routing.py",
+          "src/orx/runtime.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/adapters",
+          "tests",
+          "docs",
+          "skills",
+          "agents",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "重复 blocker 和 check-fix 行为按任务、profile、环境指纹及实际能力约束，有有限启动次数与可解释停止原因。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_health.py tests/test_routing.py tests/test_runtime.py tests/test_delivery_gate_e2e.py",
+        "agent: 同一权限阻塞不重复启动；代码红仍有真实可用的修复机会；不支持 resume 的 harness 有明确有界退路。"
+      ],
+      "preread": [
+        "src/orx/health.py",
+        "src/orx/dispatch.py",
+        "src/orx/runtime.py",
+        "src/orx/config.py",
+        "docs/routing-strategy.md"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "先核验当前 CLI help/官方文档是否支持同会话延续，再实现；不能把新进程称为同会话。支持时保留 session/attempt 的修复轮证据；不支持时生成精简修复包并在总预算内换 attempt。权限阻塞立即收口，不能进入代码修复循环；不要盲目默认 --force。"
+    },
+    {
+      "id": "T005",
+      "objective": "校准额度故障域、退避时间与未知状态的路由规则。",
+      "dependencies": [
+        "T004"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/quota.py",
+          "src/orx/health.py",
+          "src/orx/routing.py",
+          "src/orx/config.py",
+          "src/orx/dispatch.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "tests",
+          "docs",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "权限、认证、额度、限流、代码检查失败分别诊断；相同条件下的同一 blocker 不反复启动，退避和修复预算有界，人工 override 不被自动清除。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_quota.py tests/test_health.py tests/test_routing.py",
+        "agent: 注入中文 GLM1308、无时区 reset、共享账号多模型、全部不可用及 reset 前后，检查无无限循环和虚假 available。"
+      ],
+      "preread": [
+        "src/orx/quota.py",
+        "src/orx/health.py",
+        "src/orx/routing.py",
+        "docs/quota-preflight-research.md"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "保留提供商原始 reset 字符串与时区来源；未知时区不得自行补 Z。共享账号额度的模型不能被当成独立容量。探针成功与额度足够区分，override 优先。虚拟时钟覆盖增长、封顶、过期及未知 reset，无真实耗尽实验。"
+    },
+    {
+      "id": "T006",
+      "objective": "补齐宿主故障事实、可信观察与安全恢复入口。",
+      "dependencies": [
+        "T005"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/zcode_sessions.py",
+          "src/orx/dispatch.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/cli.py",
+          "tests",
+          "docs",
+          "skills/orx-controller",
+          "agents",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "宿主恢复区分真实故障、观察时间和关闭时间；保留 claim、改动及原始时区信息，不由心跳静默认定死亡，不允许两个 writer 或旧 nonce 交付覆盖新 attempt。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_host_progress_e2e.py tests/test_health.py tests/test_quota.py",
+        "agent: 回放已 claim/已修改后 quota 失败、控制器同故障、迟到回传和失联仍在写；核验没有两个 writer。"
+      ],
+      "preread": [
+        "docs/host-progress-contract.md",
+        "src/orx/zcode_sessions.py",
+        "src/orx/dispatch.py",
+        "src/orx/records.py"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "观察/判定/恢复分开。只读终止事实绑定 session/attempt/nonce、来源和时间，不把 silence 当 death。控制器与 worker 同配额故障时，提供独立可调用的状态诊断及显式恢复流程；没有实际恢复执行者就保持可解释停留，不承诺自动继续。历史误报以补充纠正证据保留原记录，不直接 SQL 改库。无需常驻 daemon。"
+    },
+    {
+      "id": "T007",
+      "objective": "增加执行能力预检与验证结果的配置指纹。",
+      "dependencies": [
+        "T006"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/probes.py",
+          "src/orx/doctor.py",
+          "src/orx/cli.py",
+          "src/orx/config.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/adapters",
+          "tests",
+          "docs",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "预检明确说明可证明的范围；结果绑定 CLI/profile/model/effort/权限/workspace/工具链/时间，配置变化失效，不能自动清除额度或人工 override。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_probes.py tests/test_adapters.py",
+        "agent: 检查 trust、force/yolo、审批模式、sandbox 与项目 hooks 的区别；帮助输出和配置检查不能冒充内部 shell 成功。"
+      ],
+      "preread": [
+        "src/orx/probes.py",
+        "src/orx/doctor.py",
+        "src/orx/adapters/cursor.py",
+        "src/orx/config.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "读取当前真实配置再解释。输出避免秘密、完整全局配置与账号标识泄漏；只存必要指纹和来源。若需更改 force，先在隔离项目显式选择并留证据，不修改用户全局权限。"
+    },
+    {
+      "id": "T008",
+      "objective": "建立可重复的故障注入与组合验收矩阵。",
+      "dependencies": [
+        "T007"
+      ],
+      "scope": {
+        "allowed": [
+          "tests",
+          "docs/diagnostics",
+          "docs/recovery-validation-plan-2026-10-07.md",
+          "docs/recovery-hardening-report.md",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "全部确定性矩阵有可定位用例和有限动作断言；组合路径覆盖 driver、权限、配额、override、陈旧身份与控制器同故障。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_health.py tests/test_quota.py tests/test_routing.py tests/test_probes.py tests/test_host_progress_e2e.py tests/test_delivery_gate_e2e.py",
+        "agent: 对照验证计划的矩阵逐行找测试证据，确认只 mock 外部进程/提供商与时钟，没有 mock 被测 dispatch。"
+      ],
+      "preread": [
+        "docs/recovery-validation-plan-2026-10-07.md",
+        "tests/conftest.py",
+        "tests/test_quota.py",
+        "tests/test_host_progress_e2e.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "正反例同时覆盖，禁止靠无异常返回判成功；过期额度只允许重新考虑候选，不宣称长任务容量充足。"
+    },
+    {
+      "id": "T009",
+      "objective": "运行隔离真实微任务，验证投产 profile 与切换接手者。",
+      "dependencies": [
+        "T008"
+      ],
+      "scope": {
+        "allowed": [
+          "tests",
+          "docs/diagnostics",
+          "docs/recovery-hardening-report.md",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "配置预检、确定性故障注入和真实微任务形成可复用验证入口；至少一条真实 CLI worker 和一条真实 host worker 完成读写、内部检查、正式交付及独立门禁闭环，其余启用 profile 均有明确验证状态和证据。"
+      ],
+      "verification": [
+        "agent: 至少核对一条真实 CLI 和一条真实 host 的 nonce、范围内改动、agent 内部真实测试结果、正式 delivery、控制器独立门禁及用量；其余启用 profiles 有证据状态。"
+      ],
+      "preread": [
+        "docs/recovery-validation-plan-2026-10-07.md",
+        "docs/host-progress-contract.md",
+        ".orx/config.toml",
+        ".orx/profiles.toml"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      },
+      "handoff_details": "微任务使用隔离临时仓库、预置 red 测试和一行修复。优先现有 worker 两档；其余角色按职责验证，不能由 worker 成功给 verifier/planner 背书。每个 profile 首轮一次启动，60–90秒为校准目标；阻塞立即停止该 profile 的本轮，不派代理绕过审批。只使用已有认证，模型按现有路由。故障由注入触发，备用执行者是真实模型。接手平台没有 ZCode 原生入口或缺认证时记未验证，工程工作继续，但该验收不得冒充完成。 此项需要原生宿主启动能力，由具备host_context的执行者组织，不能交给CLI假装完成host认证。"
+    },
+    {
+      "id": "T010",
+      "objective": "统一 provider 用量口径并补齐 host/controller/probe 观测。",
+      "dependencies": [
+        "T009"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/adapters",
+          "src/orx/zcode_sessions.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/dispatch.py",
+          "src/orx/cli.py",
+          "tests",
+          "docs",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "用量区分 provider 原始字段、归一化处理量、缓存、未缓存输入、输出和缺失数据；同一 token 不重复累计，controller、worker、verifier、probe 分账，不能把处理量冒充账单。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q tests/test_adapters.py tests/test_host_progress_e2e.py",
+        "agent: 在复制/合成 fixtures 重算会话树与 ORX attempts；缓存不双算、controller/probe 单列、缺失不等于零。"
+      ],
+      "preread": [
+        "src/orx/zcode_sessions.py",
+        "src/orx/records.py",
+        "src/orx/state.py",
+        "src/orx/adapters/base.py",
+        "docs/diagnostics/cursor-2026-10-07/evidence.json"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "核验同一会话、消息、turn 和请求的重复来源并去重；明确 provider input 是否已含缓存。关注当前21/26 host attempts 缺 ORX usage。持久字段变动须加增量迁移、旧记录默认 unknown、备份/复制库兼容测试。根会话/会话外 planner/CLI 不能漏算或重复归属。不得把内建观测扩展成整个外部 analytics 产品。"
+    },
+    {
+      "id": "T011",
+      "objective": "用对照实测压缩 controller 与 worker 上下文，形成预算策略。",
+      "dependencies": [
+        "T010"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx/config.py",
+          "src/orx/dispatch.py",
+          "src/orx/runtime.py",
+          "src/orx/records.py",
+          "src/orx/state.py",
+          "src/orx/cli.py",
+          "tests",
+          "docs",
+          "skills",
+          "agents",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "用可重复的代表性任务对照证明上下文成本治理效果；保留正确率、验收和恢复能力，公布原始指标及限制，并设置可配置的软提示与有界预算行为。"
+      ],
+      "verification": [
+        "agent: 对相同小任务与一个代表性开发任务记录 baseline/改后上下文、请求、缓存/未缓存输入、输出、检查轮、启动数与正确率，复核原始证据。"
+      ],
+      "preread": [
+        "docs/cursor-system-analysis-2026-10-07.md",
+        "src/orx/dispatch.py",
+        "skills/orx-controller/SKILL.md",
+        "agents/orx-worker.md"
+      ],
+      "routing": {
+        "complexity": "high",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "先对提示构建与工具 schema 做静态/捕获测量，再做有限真实对照。控制器只保留调度事实与证据索引；worker 输入以任务契约、preread、失败差量为主。不假设父会话历史一定被继承，不盲删验证工具。软预算告警、硬预算停止/恢复点均可配置，未知用量不能当0；阈值来自样本而非虚构价格或预期。解析器 O(n²) 已修复，补性能回归及诊断长挂预算，不重复当待修根因。"
+    },
+    {
+      "id": "T012",
+      "objective": "执行兼容、打包、迁移及全量验证，整理使用文档。",
+      "dependencies": [
+        "T011"
+      ],
+      "scope": {
+        "allowed": [
+          "src/orx",
+          "tests",
+          "scripts",
+          "docs",
+          "README.md",
+          "skills",
+          "agents",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "新增回归、既有全量测试和受影响的打包或迁移检查通过；交付完整实现、可重取证据、修正后的事故结论、独立验收与逐阶段本地提交。"
+      ],
+      "verification": [
+        ".venv/bin/python -m pytest -q",
+        "git diff --check",
+        "agent: 对受影响的 wheel/资源/旧库迁移运行现有检查；确认没有版本发布、测试禁用或未经记录的跳过。"
+      ],
+      "preread": [
+        "docs/package-acceptance.md",
+        "scripts/check_release.py",
+        "tests/test_package_acceptance.py",
+        "pyproject.toml",
+        "tests/test_m12_acceptance.py",
+        "tests/test_model_docs.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      },
+      "handoff_details": "完整检查通过后才提交对应阶段；无 formatter/linter 配置时如实说明，不引入工具凑检查。打包检查已有全量用例覆盖时不无理由重复，但新增持久化/技能资源变动必须覆盖。更新事故勘误只在仓库，外部 ZCode memory 另需明确范围。 注意既有全量测试依赖本地dogfood DB，并会重写docs/m1.2-report.md；在有基线快照的环境验证并还原纯测试生成的无关报告差异。当前G008文档测试把标题之后全部视为历史，新活跃阶段放到历史之前。跨工作树缺失数据库不能伪装成代码回归，补足只读测试输入或明确记录环境缺项。"
+    },
+    {
+      "id": "T013",
+      "objective": "依据完整证据独立终审 Goal，交付实现报告和剩余阻塞。",
+      "dependencies": [
+        "T012"
+      ],
+      "scope": {
+        "allowed": [
+          "docs/recovery-hardening-report.md",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "最终报告每条验收都有状态、证据路径、命令/观测时间和限制；实际状态与报告一致，无未处理的必需工作。"
+      ],
+      "verification": [
+        "agent: 逐项核对 goal.json 的8条验收、ORX真实状态、独立verdict、真实微任务与对照测量；任何缺项不得宣称 Goal done。"
+      ],
+      "preread": [
+        "docs/cursor-system-analysis-2026-10-07.md",
+        "docs/recovery-validation-plan-2026-10-07.md",
+        "docs/recovery-execution-goal-2026-10-07.md",
+        "docs/diagnostics/recovery-hardening-2026-10-07/goal.json"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      },
+      "handoff_details": "此任务需要全局验收与跨任务上下文，必须 host_context。交付本地 commits、改动摘要、故障恢复操作、计量口径、配置迁移说明及未验证项目；不能由CLI重复读取全库写总结。"
+    }
+  ]
+}

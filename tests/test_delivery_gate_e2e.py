@@ -30,10 +30,19 @@ from pathlib import Path
 
 import pytest
 
-from orx import dispatch, verify
+from orx import adapters, dispatch, runtime, verify
+from orx.adapters.base import Launch, ProbeReport
 from orx.verify import DeliveryRejected
 
-from conftest import active_task, ir_for, task_spec, write_evidence
+from conftest import (
+    HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
+    active_task,
+    ir_for,
+    make_project,
+    task_spec,
+    write_evidence,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -904,3 +913,275 @@ def test_upgrade_doc_evidence_example_is_accepted_by_the_real_validator(tmp_path
     assert "{command, exit_code, log}" in flat
     # The legacy shape is explicitly called out as rejected.
     assert '"commands", "artifacts"' in flat
+
+
+# ---------------------------------------------------------------------------
+# G009 T001 (2026-10-07 incident): freeze the two known-red diagnostic
+# replays and the CLI delivery boundary as regular behavior regressions.
+#
+# docs/diagnostics/cursor-2026-10-07/replay.py drove the REAL dispatch
+# stack with attempt a131's captured Cursor output — a worker that
+# explicitly delivered status=blocked in the result text while the CLI
+# process exited 0 — and recorded the defect both ways: the attempt closes
+# as `completed` with failure_reason=NULL (worker's own delivery never
+# parsed), and with a green controller gate the TASK PASSES. The same
+# envelope carries usage and a session id, which today ARE recorded
+# correctly — that half of the seam must stay correct when the delivery
+# half is fixed (Stage 1 of docs/cursor-system-analysis-2026-10-07.md:
+# "usage/session 仍照常记录").
+#
+# Until the Stage 1 CLI delivery fix lands, these regressions pin the
+# DESIRED behavior as strict xfail red baselines. Each one fails on the
+# defect itself (the recorded attempt/task rows), not on fixtures; strict
+# xfail means the moment the behavior changes the suite demands the
+# marker's removal — the baseline can never silently rot. Do not weaken an
+# assertion to make one pass; remove its marker with the fix.
+#
+# The boundary matrix (missing / malformed / contradictory deliveries)
+# pins the same seam from the plan's success criteria: an unparseable or
+# self-contradictory worker delivery is an explicit protocol_error — never
+# a silent pass, never a clean "completed" attempt.
+
+# a131's captured result envelope, frozen: process exit 0, harness
+# envelope success, the worker's blocked delivery fenced in the result
+# text, real usage buckets. Original evidence — do not edit casually; it
+# mirrors docs/diagnostics/cursor-2026-10-07/replay.py byte for byte.
+CAPTURED_CURSOR_BLOCKED_DELIVERY = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "session_id": "24eea185-1608-4ead-99e7-791734bdade1",
+    "result": (
+        "blocked: the start gate cannot run in this environment. "
+        "Every shell invocation was rejected before execution.\n\n"
+        '```json\n{"status":"blocked","summary":"shell rejected",'
+        '"checks":[],"artifacts":[]}\n```'
+    ),
+    "usage": {"inputTokens": 46730, "outputTokens": 2341,
+              "cacheReadTokens": 166272},
+}
+
+CAPTURED_CURSOR_SESSION = "24eea185-1608-4ead-99e7-791734bdade1"
+CAPTURED_CURSOR_USAGE = {"inputTokens": 46730, "outputTokens": 2341,
+                         "cacheReadTokens": 166272}
+
+
+def _captured_envelope(result_text: str, **overrides) -> dict:
+    """A Cursor-shaped result envelope around an arbitrary worker result
+    text (the boundary variants derive from the same captured shape)."""
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "session_id": CAPTURED_CURSOR_SESSION,
+        "result": result_text,
+        "usage": dict(CAPTURED_CURSOR_USAGE),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _replay_cli_delivery(monkeypatch, tmp_path, payload: dict, check: str = "true"):
+    """The replay logic of docs/diagnostics/cursor-2026-10-07/replay.py,
+    parameterized on the captured process output: one CLI worker task
+    through the REAL dispatch stack (route, launch seam, state machine,
+    delivery gate, storage) with only the model process replaced by the
+    captured Cursor envelope. Returns the recorded (attempt, task, usage)
+    rows so regressions assert persisted facts, not narrative.
+
+    The worker profile is a cursor-harness stand-in whose probe and launch
+    are pinned to the captured shape; the controller gate runs `check`
+    ("true" = green, "false" = red) exactly as the diagnostic replay does.
+    """
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]', 'profiles = ["cli-fake"]'
+    )
+    profiles = HOST_PROFILES_TOML.replace('harness = "shell"', 'harness = "cursor"')
+    project = make_project(tmp_path, config, profiles)
+    try:
+        adapter = adapters.get_adapter("cursor")
+        monkeypatch.setattr(
+            adapter, "probe",
+            lambda: ProbeReport(True, "captured CLI stand-in"),
+        )
+        monkeypatch.setattr(
+            adapter, "build_worker_launch",
+            lambda **kwargs: Launch(
+                argv=["captured-agent"], cwd=tmp_path, timeout=5),
+        )
+        monkeypatch.setattr(
+            runtime, "run_launch",
+            lambda launch: runtime.CommandResult(
+                command="captured-agent", exit_code=0,
+                stdout=json.dumps(payload), stderr="",
+                duration_sec=0.01, timed_out=False,
+            ),
+        )
+        goal = dispatch.create_goal(
+            project, objective="Replay the captured CLI delivery",
+            acceptance=["checks runnable"], constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T310", acceptance=goal.acceptance, verification=[check],
+            complexity="low",
+        )]))
+        dispatch.run_slice(project)
+        attempt = project.store.conn.execute(
+            "SELECT id,result,failure_reason,session_ref FROM attempts"
+            " WHERE role='worker'"
+        ).fetchone()
+        task = project.store.conn.execute(
+            "SELECT status,failure_reason FROM tasks WHERE task_id='T310'"
+        ).fetchone()
+        usage = project.store.conn.execute(
+            "SELECT input_tokens,output_tokens,cached_input_tokens"
+            " FROM usage_observations WHERE attempt_id = ?",
+            (attempt["id"],),
+        ).fetchall()
+        return attempt, task, usage
+    finally:
+        project.close()
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "G009 red baseline (2026-10-07): exit 0 overrides the worker's blocked"
+    " delivery — the attempt closes completed and a green controller gate"
+    " passes the task"
+    " (docs/diagnostics/cursor-2026-10-07/replay.py). Remove this marker"
+    " with the Stage 1 CLI delivery fix, never by weakening the test."))
+def test_cli_blocked_delivery_survives_a_green_controller_gate(tmp_path, monkeypatch):
+    """The incident's false pass, frozen: a CLI worker that explicitly
+    delivers status=blocked while the process exits 0 must never pass —
+    not even when every controller check is green. The blocked delivery is
+    the recorded attempt result (blocked stays blocked; exit 0 is
+    transport, not a task verdict), and the task fails with the block as
+    its cause — the same classification the host delivery path records.
+    Usage and session ride the envelope and stay recorded regardless."""
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, CAPTURED_CURSOR_BLOCKED_DELIVERY, check="true")
+
+    # The worker's own delivery, not the process exit code, closes the
+    # attempt: blocked is an independent recorded delivery result.
+    assert attempt["result"] == "blocked", (
+        f"exit 0 overrode the worker's blocked delivery:"
+        f" result={attempt['result']!r},"
+        f" failure_reason={attempt['failure_reason']!r}"
+    )
+    assert attempt["failure_reason"].startswith(
+        "delivery blocked (environment/tool blocked):")
+
+    # A green controller gate cannot turn a blocked delivery into a pass:
+    # the task fails on the block, so retries get environment-block
+    # guidance instead of "fix the red tests".
+    assert task["status"] == "failed", task["status"]
+    assert task["failure_reason"].startswith(
+        "delivery blocked (environment/tool blocked):")
+
+    # The half of the seam that already works must keep working: usage and
+    # session are recorded from the envelope whatever the delivery says.
+    assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
+    assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "G009 red baseline (2026-10-07): exit 0 overrides the worker's blocked"
+    " delivery — the attempt closes completed with no failure reason and the"
+    " red gate is reclassified as a code failure"
+    " (docs/diagnostics/cursor-2026-10-07/replay.py). Remove this marker"
+    " with the Stage 1 CLI delivery fix, never by weakening the test."))
+def test_cli_blocked_delivery_survives_a_red_controller_gate(tmp_path, monkeypatch):
+    """The incident's misclassification, frozen: with the controller gate
+    red, the blocked delivery is still the worker's recorded fact — the
+    attempt closes blocked with the block as its failure reason, not as a
+    clean `completed` whose task failure then reads as a code defect the
+    worker should fix."""
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, CAPTURED_CURSOR_BLOCKED_DELIVERY, check="false")
+
+    assert attempt["result"] == "blocked", (
+        f"exit 0 overrode the worker's blocked delivery:"
+        f" result={attempt['result']!r},"
+        f" failure_reason={attempt['failure_reason']!r}"
+    )
+    assert attempt["failure_reason"].startswith(
+        "delivery blocked (environment/tool blocked):")
+    # The blocked delivery is the primary failure fact: the retrying worker
+    # is told about the environment block, not sent to fix red tests it
+    # cannot even run.
+    assert task["status"] == "failed", task["status"]
+    assert task["failure_reason"].startswith(
+        "delivery blocked (environment/tool blocked):")
+    assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
+    assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+# The delivery boundary matrix. Each shape is a real failure mode from the
+# 2026-10-07 incident report (a132/a133 delivered natural language only;
+# truncated or contradictory machine output is the neighboring protocol
+# hazard). The desired behavior is the plan's success criterion: an
+# explicit protocol_error — never a silent pass, never a clean completed
+# attempt — while usage/session recording stays untouched.
+BOUNDARY_DELIVERIES = {
+    # a132/a133: natural-language blocker, no machine-readable delivery.
+    "missing": _captured_envelope(
+        "I could not run the checks: every shell invocation of uv, pytest"
+        " and orx was rejected before execution. No code was modified."
+    ),
+    # The worker tried the protocol but the JSON is not parseable.
+    "malformed": _captured_envelope(
+        "blocked: the start gate cannot run in this environment.\n\n"
+        '```json\n{"status":"blocked","summary":"shell rejected"\n```'
+    ),
+    # Two fenced deliveries that disagree — passed and blocked cannot both
+    # be the worker's final answer.
+    "contradictory": _captured_envelope(
+        "The work is finished.\n\n"
+        '```json\n{"status":"passed","summary":"all checks green",'
+        '"checks":[],"artifacts":[]}\n```\n\n'
+        "Correction: the shell was rejected, nothing ran.\n"
+        '```json\n{"status":"blocked","summary":"shell rejected",'
+        '"checks":[],"artifacts":[]}\n```'
+    ),
+    # The harness envelope itself contradicts the claim: is_error=true
+    # while the fenced delivery says passed.
+    "envelope-contradicts-claim": _captured_envelope(
+        '```json\n{"status":"passed","summary":"done",'
+        '"checks":[],"artifacts":[]}\n```',
+        subtype="error_during_execution", is_error=True,
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(BOUNDARY_DELIVERIES))
+@pytest.mark.xfail(strict=True, reason=(
+    "G009 red baseline (2026-10-07): a CLI result text with a missing,"
+    " malformed, or self-contradictory delivery silently passes today; the"
+    " boundary matrix demands an explicit protocol_error"
+    " (docs/cursor-system-analysis-2026-10-07.md Stage 1). Remove this"
+    " marker with the Stage 1 CLI delivery fix, never by weakening the test."))
+def test_cli_unparseable_delivery_is_an_explicit_protocol_error(
+        tmp_path, monkeypatch, shape):
+    """Missing, malformed, and mutually contradictory deliveries are an
+    explicit protocol_error (docs/cursor-system-analysis-2026-10-07.md
+    Stage 1: 缺失或歧义 delivery 显式 protocol_error): the attempt closes
+    with the protocol problem recorded, the task never passes, and the
+    envelope's usage/session facts are still stored — the protocol failure
+    never destroys the observations."""
+    attempt, task, usage = _replay_cli_delivery(
+        monkeypatch, tmp_path, BOUNDARY_DELIVERIES[shape], check="true")
+
+    assert attempt["result"] == "protocol_error", (
+        f"{shape}: an unparseable delivery must not close the attempt as"
+        f" {attempt['result']!r} (failure_reason="
+        f"{attempt['failure_reason']!r})"
+    )
+    assert attempt["failure_reason"], f"{shape}: the protocol problem itself must be recorded"
+    assert task["status"] == "failed", (
+        f"{shape}: task reached {task['status']!r} from an unparseable"
+        " delivery — never a silent pass"
+    )
+    assert task["failure_reason"], f"{shape}: the task failure names the protocol problem"
+    # Observations survive the protocol failure.
+    assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
+    assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
