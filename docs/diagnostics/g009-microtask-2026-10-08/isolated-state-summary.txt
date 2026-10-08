@@ -1,0 +1,10 @@
+1|worker|cursor-strong|blocked|orx-assignment:ca956a13-acfb-400a-9ad7-2a152de33a01|2cc9c138-bf71-426f-a76e-c441397f5b98
+2|worker|codex-frontier|completed|orx-assignment:bc542c6b-dd9c-440a-bb26-853279f2a7da|01a11932-96ab-7091-b6dd-597dfd612a58
+3|worker|zcode-worker|completed|orx-assignment:c4a0484e-d571-4a35-8c57-3f9efec8559a|NULL
+4|verifier|zcode-verifier-flash|pass|orx-assignment:c47dd116-ba89-471e-bbb2-4bdcde79aeb8|NULL
+--
+1|cursor-strong|22187|2078|151296|native_cli
+2|codex-frontier|89121|624|78336|native_cli
+--
+R001|done
+R002|done

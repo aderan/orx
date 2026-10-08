@@ -1,0 +1,10 @@
+diff --git a/calc.py b/calc.py
+index 2b04a8b..d32f681 100644
+--- a/calc.py
++++ b/calc.py
+@@ -2,4 +2,4 @@ def add(a, b):
+     return a + b
+ 
+ def mul(a, b):
+-    return a + b  # deliberately wrong: host microtask fix target
++    return a * b

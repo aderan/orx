@@ -137,6 +137,12 @@ defaults_standalone 及域门三例）。
 
 ## 第三层：真实微任务
 
+> **执行状态（G009 T009，2026-10-08）**：已执行。四次真实启动（每 profile 首轮
+> 一次）：cursor-strong 54.3s 权限阻塞被正确诊断（预检先于付费启动预测）；
+> codex-frontier 61.9s 完整 CLI 闭环；zcode-worker（真原生子代理）58s 完整
+> host 闭环；zcode-verifier-flash 56s 独立验收。原始证据
+> docs/diagnostics/g009-microtask-2026-10-08/evidence.json。
+
 准备一个隔离的最小仓库，按项目现有工具链放好测试和一个错误函数。通过真实 ORX 指派让拟投产 worker 完成：
 
 1. 读取指定文件，返回其中的随机 nonce，证明真实访问到了正确 workspace。

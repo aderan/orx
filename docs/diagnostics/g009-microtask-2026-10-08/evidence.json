@@ -1,0 +1,93 @@
+{
+  "kind": "g009-t009-real-microtask-evidence",
+  "date": "2026-10-08",
+  "executor": "host controller session sess_698a4146-176f-465e-9357-39e3344878fa",
+  "isolated_repo": "/tmp/orx-g009-micro (git: e3d3672 preset red add → 74c1cef preset red mul; final working tree has both fixes)",
+  "hypothesis_chain": [
+    "T007 preflight PREDICTED cursor permission block from real config axes before any paid launch",
+    "cursor-strong real launch CONFIRMED the prediction (blocked, correctly diagnosed post-T002)",
+    "codex-frontier and zcode-worker each closed a full read/write/check/delivery/gate loop",
+    "zcode-verifier-flash closed an independent read-only verdict loop"
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "run": "R001",
+      "profile": "cursor-strong",
+      "driver": "cli (cursor agent 3.23.12 / real model grok-4.7-medium via catalog_variant)",
+      "nonce": "orx-assignment:ca956a13-acfb-400a-9ad7-2a152de33a01",
+      "session_ref": "2cc9c138-bf71-426f-a76e-c441397f5b98 (real cursor session id from process envelope)",
+      "wall_clock": "54.3s (one launch, closed on first permission block per plan)",
+      "result": "blocked",
+      "failure_reason_prefix": "delivery blocked (environment/tool blocked):",
+      "workspace_changes": "none (calc.py untouched; delivery document states it; git status clean except .orx//__pycache__)",
+      "usage_observation": {"input": 22187, "output": 2078, "cached_input": 151296, "source": "native_cli", "accuracy": "exact"},
+      "status_for_goal": "真实启动且交付语义正确（blocked 被如实分类，未被 exit 0 覆盖）；生产配置（approvalMode=allowlist 仅 Shell(ls)、sandbox disabled、无 force）下权限阻塞，闭环未达成——需用户决定 Cursor 全局权限调整，本轮不改全局权限",
+      "evidence_files": ["cursor-strong-blocked.delivery.json", "cursor-strong-preflight.txt"]
+    },
+    {
+      "attempt": 2,
+      "run": "R001",
+      "profile": "codex-frontier",
+      "driver": "cli (codex-cli 0.160.0 / real model gpt-6.1-sol)",
+      "nonce": "orx-assignment:bc542c6b-dd9c-440a-bb26-853279f2a7da",
+      "session_ref": "01a11932-96ab-7091-b6dd-597dfd612a58 (real codex session)",
+      "wall_clock": "61.9s (within 60-90s calibration target)",
+      "result": "completed → task passed",
+      "scope_change": "exactly one line in calc.py: 'return a - b' → 'return a + b' (captured live via git diff; also visible in commit 74c1cef's parent diff)",
+      "internal_check": "python3 -m unittest discover -s tests -v exit 0 inside the agent (structured delivery checks[0].exit_code=0)",
+      "controller_gate": "delivery gate re-ran the command fresh: 'Ran 1 test ... OK' (codex-gate-rerun.log, .orx/runs/R001/check/T001/01-0000-command.log)",
+      "usage_observation": {"input": 89121, "output": 624, "cached_input": 78336, "source": "native_cli", "accuracy": "exact"},
+      "status_for_goal": "真实 CLI worker 完整闭环达成（读→写→内部检查→正式结构化交付→控制器独立门禁→passed）",
+      "evidence_files": ["codex-frontier-passed.delivery.json", "codex-gate-rerun.log"]
+    },
+    {
+      "attempt": 3,
+      "run": "R002",
+      "profile": "zcode-worker",
+      "driver": "host (real native orx-worker subagent agent_c93de261, GLM-5.3 max)",
+      "nonce": "orx-assignment:c4a0484e-d571-4a35-8c57-3f9efec8559a",
+      "session_ref": "NULL — claim --discover-session did not bind despite the subagent carrying the nonce verbatim (observed gap; CLI attempts bound via envelope; candidate cause /tmp vs /private/tmp project-root aliasing in discovery lookup — left for T010 attribution work)",
+      "wall_clock": "58.0s",
+      "result": "completed → task passed",
+      "scope_change": "exactly one line in calc.py: mul 'return a + b' → 'return a * b' (host-worker-scope.diff; verifier independently confirmed tests untouched incl. .pyc consistency)",
+      "internal_check": "start gate red (expected baseline) → one-line fix → unittest exit 0 (2/3 check rounds; host-worker-check.log)",
+      "controller_gate": "delivery gate re-ran command fresh at complete; run R002 done, task passed",
+      "usage_observation": "none recorded by ORX (host attempts have no usage observation — the known 21/26 gap, T010 scope); raw zcode-side metric for disclosure: subagent_tokens 659,724 (processing, not billing)",
+      "status_for_goal": "真实 host worker 完整闭环达成（真实原生子代理读写→内部检查→正式交付→门禁→独立验证）",
+      "evidence_files": ["host-worker-passed.delivery.json", "host-worker-check.log", "host-worker-scope.diff"]
+    },
+    {
+      "attempt": 4,
+      "run": "R002",
+      "profile": "zcode-verifier-flash",
+      "driver": "host (real native orx-verifier subagent agent_26a97ba4, GLM-5.3-Flash)",
+      "nonce": "orx-assignment:c47dd116-ba89-471e-bbb2-4bdcde79aeb8",
+      "session_ref": "NULL (same discovery gap as attempt 3)",
+      "wall_clock": "56.1s",
+      "result": "pass (verdict submitted, task passed, run done)",
+      "verifier_behavior": "independently re-ran unittest itself (2 tests OK exit 0), checked git diff scope, checked .pyc/test-source consistency — not just trusting the worker's text",
+      "usage_observation": "none recorded by ORX (same host gap); raw subagent_tokens 22,981",
+      "status_for_goal": "真实 verifier 独立验收闭环达成",
+      "evidence_files": ["host-worker-passed.delivery.json"]
+    }
+  ],
+  "other_enabled_profiles_status": [
+    {"profile": "cursor-frontier (claude-opus-5-5)", "status": "probe ok (logged_in, 31 models, cursor 3.23.12 same binary); 权限轴与 cursor-strong 同源（同 cli-config.json allowlist）→ 同样无法在当前生产权限下执行内部 shell；未做微任务启动（首轮阻塞已在 cursor-strong 验证，无需重复烧额度）"},
+    {"profile": "cursor-economy (composer-2.5)", "status": "同上：probe ok，权限域与 cursor-strong 相同 → 权限阻塞状态沿同源配置成立，未重复启动"},
+    {"profile": "codex-frontier", "status": "真实微任务闭环 passed（attempt 2）；probe ok (logged_in, 10 models)"},
+    {"profile": "zcode-worker", "status": "真实微任务闭环 passed（attempt 3）"},
+    {"profile": "zcode-verifier-flash", "status": "真实独立验收 passed（attempt 4；且 G009 R009 本身 T001–T008 的 8 次真实 verifier 派发均为该档）"},
+    {"profile": "zcode-verifier-strong", "status": "配置在位未启用（本 Goal 路由未触达）；probe/启动未验证——如实记未验证"},
+    {"profile": "zcode-controller / orx-host", "status": "controller 即本会话（真实运行中）；orx-host 为 preset 占位（model=unconfigured），未验证"},
+    {"profile": "planner 角色（codex-frontier/cursor-frontier）", "status": "codex-frontier 进程与认证已由微任务实证；planner 角色的 Plan IR 生成在 G008/R008 有真实 codex 历史记录；本 Goal 计划来自权威模板（host-manual）。cursor-frontier planner 同 cursor 权限域限制"}
+  ],
+  "observed_gaps_for_later_tasks": [
+    "T010: host attempts（3、4）usage observation 缺失；session_ref 未绑定（discover-session 未命中，疑 /tmp↔/private/tmp 项目根别名）——归属与观测是 T010 直接输入",
+    "cursor 系全部档位在当前生产权限配置下无法执行内部 shell（allowlist 仅 Shell(ls)）；修复需用户决策全局 Cursor 权限（本 Goal 不改）"
+  ],
+  "cost_summary": {
+    "real_paid_launches": 4 (cursor-strong 54s blocked; codex 62s passed; host worker 58s passed; verifier 56s passed),
+    "policy": "每 profile 首轮一次；权限阻塞即收口；无额外变体尝试"
+  }
+}

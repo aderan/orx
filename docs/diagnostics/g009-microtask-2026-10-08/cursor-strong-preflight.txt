@@ -1,0 +1,17 @@
+cursor preflight (profile cursor-strong, role worker)
+  fingerprint: sha256:8869cb1ecb0d0d31ca5b21805875d095
+  probed_at: 2026-10-08T01:55:22+00:00
+  cli: /Users/flb/.local/bin/agent (2026.10.01-e373342)
+  axes:
+    trust: true — argv: the cursor adapter always passes --trust (workspace trust axis, not an approval mode)
+    force_yolo: false — argv: --force/--yolo only when profile cursor-strong sets force = False
+    approval_mode: allowlist (shell allow: Shell(ls); deny: none) — config /Users/flb/.cursor/cli-config.json approvalMode
+    sandbox: disabled — config /Users/flb/.cursor/cli-config.json sandbox.mode (no --sandbox argv override)
+    project_hooks: unknown — no cursor project-hooks config location known to this ORX version (unknown, not defaulted)
+  toolchain (controller-side only, not in-agent approval):
+    python3: /Users/flb/.pyenv/shims/python3
+  proves: the harness CLI identity and version, and the effective permission axes above, each with the source it was read from
+  cannot prove: internal shell execution inside the agent session: controller-side PATH lookups, denylist checks, and help output are not in-agent approval. This preflight also never clears quota cooldowns, quota exhaustions, or manual overrides (probe success is not quota sufficiency)
+  prior result: INVALIDATED
+    - config mtime changed for /Users/flb/.cursor/cli-config.json (content hash equal; the touch still retires the prior result)
+  wrote /Users/flb/.local/share/orx/probes/preflight/cursor-cursor-strong.json

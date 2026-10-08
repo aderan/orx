@@ -1,0 +1,11 @@
+$ python3 -m unittest discover -s tests -v
+[exit 0 in 0.18s]
+
+[stderr]
+test_add_positive (test_calc.TestCalc.test_add_positive) ... ok
+test_mul_positive (test_calc.TestMul.test_mul_positive) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK

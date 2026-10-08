@@ -1,0 +1,12 @@
+{
+  "status": "passed",
+  "summary": "Fixed calc.mul to return a*b instead of a+b (single-line change in calc.py only; tests untouched). Start gate ran the check baseline (red as expected, round 1), fix applied, then the prescribed unittest discover check passed (round 2/3, attempt 3).",
+  "checks": [
+    {
+      "command": "python3 -m unittest discover -s tests -v",
+      "exit_code": 0,
+      "log": ".orx/runs/R002/check/T001/01-0001-command.log"
+    }
+  ],
+  "artifacts": ["calc.py"]
+}

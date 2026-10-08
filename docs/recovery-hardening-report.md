@@ -7,6 +7,51 @@ attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区�
 
 ---
 
+## T009 · 运行隔离真实微任务，验证投产 profile 与切换接手者
+
+**输入commit**：T008 交付后 40a5fcb（attempt 157；host 控制器会话
+sess_698a4146-176f-465e-9357-39e3344878fa 认领执行——本任务要求
+host_context，由具备原生宿主启动能力的执行者组织，不交 CLI）。
+
+**隔离仓库**：/tmp/orx-g009-micro（git e3d3672 预置红 add → 74c1cef
+预置红 mul；stdlib unittest，无外部依赖）。结构与原始证据：
+docs/diagnostics/g009-microtask-2026-10-08/（evidence.json + 四个
+attempt 的 delivery/check/diff/preflight 文件）。
+
+**真实闭环（4 次付费启动，每 profile 首轮一次，权限阻塞即收口）**：
+
+| attempt | profile | 墙钟 | 结果 | 关键事实 |
+|---|---|---|---|---|
+| 1 (R001) | cursor-strong (CLI, grok-4.7-medium) | 54.3s | **blocked（正确诊断）** | T007 预检先于付费启动即预测 allowlist Shell(ls) 阻塞；真实启动证实；`delivery blocked (environment/tool blocked):` 前缀关闭，零工作区改动，exit 0 不再覆盖 blocked |
+| 2 (R001) | codex-frontier (CLI, gpt-6.1-sol) | 61.9s | **passed（CLI 闭环）** | 一行范围内修复（- b → + b），agent 内 unittest exit 0，结构化 passed 交付，控制器门禁复跑 OK；usage 89121/624/78336 native_cli exact |
+| 3 (R002) | zcode-worker (host, 真原生子代理 GLM-5.3 max) | 58.0s | **passed（host 闭环）** | start gate 红（预期基线）→ 一行 mul 修复 → 绿；nonce c4a0484e；门禁复跑 OK；R002 done |
+| 4 (R002) | zcode-verifier-flash (host, 真原生子代理) | 56.1s | **pass（独立验收）** | 自行重跑 unittest（2 tests OK）、核对 diff 范围、连 .pyc 与测试源一致性都核了——不是只信 worker 文本 |
+
+**其余启用 profile 状态**：cursor-frontier/cursor-economy——probe ok
+(logged_in)，但与 cursor-strong 同一 cli-config.json 权限域，同源阻塞
+成立，不重复烧启动；codex-frontier 双重实证（进程+认证+闭环）；
+zcode-verifier-flash 另有 R009 本身 T001–T008 的 8 次真实派发；
+zcode-verifier-strong 配置在位未被路由触达（如实未验证）；orx-host
+为 preset 占位（未验证）。planner 角色：codex 进程/认证实证 + G008
+真实 codex 规划历史；本 Goal 计划来自权威模板（host-manual）。
+
+**观察到的缺口（交 T010）**：host attempts 3/4 的 usage observation
+缺失（已知 21/26 模式）；`claim --discover-session` 未绑定 session_ref
+（nonce 逐字携带、CLI attempts 经信封绑定成功，host 疑 /tmp↔/private/tmp
+项目根别名致发现未命中——原始事实见 evidence.json，归因待 T010 核验）。
+披露用原始计量：host worker subagent_tokens 659,724、verifier 22,981
+（处理量口径，非账单）。
+
+**遗留决策（不属本 Goal 权限）**：cursor 系全部档位在当前生产权限
+（approvalMode=allowlist 仅 Shell(ls)）下无法执行内部 shell。修复需
+用户决定 Cursor 全局权限调整；本 Goal 明确不修改用户全局权限。
+
+**耗时区间与提交**：4 次真实启动共 ~230s 墙钟；本任务只改
+tests/docs/diagnostics（生产代码零改动），全量基线维持 1007 passed
+0 xfail（无代码变更，未重跑全量）。提交见 git log `G009/R009 T009`。
+
+---
+
 ## T008 · 建立可重复的故障注入与组合验收矩阵
 
 **输入commit**：T007 交付后工作树（attempt 155；session

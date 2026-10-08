@@ -10,6 +10,23 @@
 
 ### G009/R009 轮次记录
 
+- **T009（2026-10-08 交付，attempt 157）**：运行隔离真实微任务，验证投产
+  profile 与切换接手者。host_context 任务由控制器会话亲自组织：隔离仓库
+  /tmp/orx-g009-micro（预置红测试+一行修复，stdlib unittest），四次真实
+  启动各 profile 首轮一次：(1) cursor-strong 真实 CLI 54.3s——T007 预检先于
+  付费启动即从真实配置预测 allowlist Shell(ls) 阻塞，启动证实，T002 语义下
+  blocked 正确分类（零改动、exit 0 不覆盖、delivery blocked (environment/
+  tool blocked): 前缀）；(2) codex-frontier 61.9s 完整 CLI 闭环（一行范围
+  内修复→agent 内 unittest 绿→结构化 passed 交付→控制器门禁复跑 OK→task
+  passed，usage 89121/624/78336 native_cli exact）；(3) zcode-worker 真原生
+  子代理 58s 完整 host 闭环（start gate 红→一行 mul 修复→绿→门禁复跑→R002
+  done）；(4) zcode-verifier-flash 56s 独立验收 pass（自行重跑测试、核对
+  diff 范围与 .pyc 一致性）。其余 profile 状态见 evidence.json（cursor 同
+  权限域不重复启动；zcode-verifier-strong 未触达如实未验证）。观察到缺口交
+  T010：host attempts 无 usage 观测 + discover-session 未绑定（疑 /tmp 与
+  /private/tmp 项目根别名）。cursor 权限修复需用户决策全局配置，本 Goal 不改。
+  原始证据 docs/diagnostics/g009-microtask-2026-10-08/。
+
 - **T008（2026-10-08 交付，attempt 155）**：建立可重复的故障注入与组合验收矩阵。
   仅测试与文档（生产代码零改动）：以验证计划 §第二层 12 行矩阵 + GLM 1308 注记 +
   退避切换组合 + 探针适用范围为清单，逐行定位 T001–T007 用例（含 T006 的
@@ -233,7 +250,7 @@
 **Goal**: 完成 T007–T009。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T007–T008 已交付，见上方轮次记录；T009 待做）
+**Status**: Done（R009：T007–T009 全部交付，见轮次记录；T009 真实 CLI+host 双闭环达成，cursor 权限阻塞如实收口）
 
 ## Stage 4: 观测、上下文与预算治理
 **Goal**: 完成 T010–T011。
