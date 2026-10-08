@@ -372,7 +372,7 @@
 **Goal**: 完成 T012–T013。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T012 已交付（attempt 163 撞 1308 后经 observe→shared-failure note→recover 关闭，attempt 164 控制器收尾：全量 1036 绿 + diff-check clean + 打包 problems=[] + 零新增 skip + 版本保持 0.3.1 未发布）；T013 独立终审待做）
+**Status**: Done（R009：T012–T013 全部交付；T013 终审=八条验收证据表见 docs/recovery-hardening-report.md，Goal G009 判 done；未发布版本）
 
 # IMPLEMENTATION_PLAN — orx-pbv（替换 StockMate pbv-loop）
 

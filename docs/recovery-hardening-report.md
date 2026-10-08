@@ -664,3 +664,33 @@ host driver 的 attempt 不经 adapter 启动，ORX 无其 usage 行（host 语�
   13m25s）；关闭 2026-10-08 08:32:00 +0800。attempt 151（本次）：claim
   2026-10-08 08:32:51 +0800 → 交付（本地提交见下）。
 - 提交：`G009/R009 T006`（含 attempt 150 的未提交半成品折叠）。
+
+---
+
+## T013 · 依据完整证据独立终审 Goal（八条验收证据表）
+
+**终审执行**：host 控制器会话 sess_698a4146（host_context 任务，控制器亲执，
+attempt 166；2026-10-08 13:0x +0800）。审计基线：git 5589242..65481b5
+共 12 个任务提交；两个事故回放终态均 exit 0（replay.py / replay_cli_to_host.py，
+2026-10-08 复跑）；全量 1036 passed 0 xfail（T012 复跑 110.65s）；12/13 任务
+passed 且每任务均有独立 verifier verdict（T013 本表为第 13 项）。
+
+| # | 验收（goal.json 逐字） | 状态 | 证据与观测时间 | 限制 |
+|---|---|---|---|---|
+| 1 | CLI 进程成功/结构化交付/门禁相互区分；blocked/failed/缺失/非法不因 exit 0 或绿门禁判 passed | **达成** | T001 红基线 50e68ac + T002 五事实分层 9018f03（extract_cli_delivery 复用 verify 单一 schema；blocked/failed 走 _record_failed_delivery；protocol_error 矩阵）；tests/test_delivery_gate_e2e.py 绿/红门禁双向钉住；T009 真实启动活体证明（2026-10-08 09:47 cursor-strong exit 0+blocked → attempt blocked、task failed、零改动）；回放 replay.py exit 0（2026-10-08 复跑） | shell exit-channel 兼容边界保留（DELIVERY_CHANNEL_EXIT） |
+| 2 | CLI/host/external 切换遵循各自契约；CLI→host 产生有效宿主指派，不再报 no adapter for harness zcode | **达成** | T003 fc7b8c9：_reroute_resource_failure 按 driver 三路分发（host=_park_task 正式指派带新 nonce/attempt；external=waiting_external 正式契约）；回放 replay_cli_to_host.py exit 0（RED→GREEN）；tests/test_routing.py 分支矩阵（CLI→CLI/→host/→external/host→CLI/host→host） | 切换有界=每任务每 slice 至多一跳（设计边界） |
+| 3 | 权限/认证/额度/限流/代码失败分别诊断；同 blocker 不反复启动；退避与修复预算有界；override 不被自动清除 | **达成** | T004 b9acd98（failure_class/blocker_fingerprint/streak；max_same_blocker_attempts=3；代码红永不抑制）+ T005 a4d96b4（时区诚实 naive reset 不自动放开；探针≠额度；quota_domain 共享故障域；中文 1308 词汇；override 三路免疫）+ T008 40a5fcb 矩阵 12 行逐行定位（auth 有界、全部不可用有界停止等） | T008 记录生产缺口：抑制重启用缺 T007 指纹消费者（后续任务候选，未修） |
+| 4 | 宿主恢复区分真实故障/观察/关闭；保留 claim/改动/原始时区；不心跳判死；无两个 writer 或旧 nonce 覆盖 | **达成** | T006 222872f（observe 三钟分立 verdict 恒 None / recover 需操作者终止事实先关闭再重开+nonce 轮换 / note 追加不改史）+ **两次活体事故恢复**：T006 attempt 150（2026-10-07 夜 1308，故障 22:55→关闭 08:32）与 T012 attempt 163（2026-10-08 午 1308，故障 12:13→关闭 12:46=33min，对照原事故 6h26m）；tests/test_host_recovery_facts.py 17 例（迟到交付 stale、失联仍在写纯观察） | 无常驻 daemon（设计边界）；自动接续明确不做 |
+| 5 | 预检+注入+真实微任务形成验证入口；≥1 真实 CLI + ≥1 真实 host 完整闭环；其余 profile 有状态证据 | **达成** | T007 0ab2210（五权限轴指纹 `orx agent preflight`，真机读出 allowlist Shell(ls)）；T008 40a5fcb（矩阵可重复）；T009 2bcbe40 四次真实启动：**CLI 闭环**=codex-frontier 61.9s（一行修复→内部测试→结构化交付→门禁复跑→passed，usage 89121/624/78336 exact）；**host 闭环**=zcode-worker 真原生子代理 58s（同链路→R002 done）；独立验收=zcode-verifier-flash 56s pass；其余 profile 状态表在 docs/diagnostics/g009-microtask-2026-10-08/evidence.json（2026-10-08 09:46-09:55 观测） | cursor 系生产权限（allowlist 仅 Shell(ls)）无法内部 shell——修复需用户决策全局配置，本 Goal 明确不改；zcode-verifier-strong 未被路由触达=如实未验证 |
+| 6 | 用量区分原始字段/归一化/缓存/未缓存/输出/缺失；不重复累计；controller/worker/verifier/probe 分账；处理量不冒充账单 | **达成** | T010 18d10f4：normalized_usage（zcode/codex 缓存⊂input、cursor 独立桶）；session_tree 去重；dispatch.usage 五本账；schema v12 增量迁移；`orx usage zcode` 回填实证（attempt 159=152 请求 31760702/76608/31552768 exact，2026-10-08 10:58）；防双算活体证明（2026-10-08 13:00 批量回填被子树重叠正确拒绝）；NORMALIZED_NOT_BILLING_NOTE 全 surface | 本 run host attempts 覆盖缺口如实：根会话绑定为 worker attempt 后子树失去逐 child 回填资格（防双算的代价）；controller 账本终端常 unbound=诚实缺失；cursor cacheWriteTokens 未入库（incident 恒 0） |
+| 7 | 对照实测证明上下文治理效果；保留正确率/验收/恢复；公布原始指标与限制；可配置软提示+有界预算 | **达成** | T011 cef9e7f：静态 host scaffolding -32.0%（measure.py 可重跑）；真实 A/B 一次付费启动（codex 处理量 89745→85963=-4.2%，正确率保持：passed/一行修复/1 启动 1 检查轮）；budget.* 分层可配（soft 8M/硬停 50M-task、150M-run，阈值引实测样本，未知≠0）；check_timeout_sec=600 诊断长挂有界；parser 线性回归钉住；限制原文公布（N=1 噪声、代表性任务未付费重跑、-32% 纯静态） | 代表性开发任务改后=静态测量+声明，无完整付费对照（成本边界） |
+| 8 | 新增回归/全量/打包迁移通过；完整实现+可重取证据+修正后事故结论+独立验收+逐阶段本地提交 | **达成** | 全量 1036 passed 0 xfail（887→1036，+149 例，零新增 skip）；git diff --check clean；check_release problems=[]（0.3.1、资源 6/6、VACUUM INTO v8→v12 链）；逐任务提交 50e68ac→65481b5（12 个）；事故结论修正=docs/cursor-system-analysis-2026-10-07.md（取证版）+ 两次 G009 活体事故准确记录（T006/T012 条目）；独立验收=13/13 任务独立 verifier（本表为 T013）；证据可重取=docs/diagnostics/g009-* 四个目录+冻结回放 | 无版本发布（0.3.1 保持，tag/发布留用户决策）；外部 ZCode memory 勘误在仓库外另行处理 |
+
+**结论**：八条验收全部达成；两个 P0 缺陷由红回放转常规回归并修复；执行期内
+两次真实同域配额故障被本 Goal 自建的恢复机制正确处置（观察/恢复/单 writer
+全程成立）。Goal G009 满足其完成定义（真实 CLI 与 host 微任务闭环、独立
+验收、用量证据齐备且限制如实公布），可判 done。
+
+**后续建议（不在本 Goal 范围，不借此扩权）**：T008 记录的抑制重启用指纹
+消费者；cursor 全局权限调整的用户决策；host usage 观测的自动补录；
+常驻观察/通知服务的成本收益评估。
