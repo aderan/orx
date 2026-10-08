@@ -46,6 +46,13 @@ run's next step from your report.
 - Claim FIRST, before doing the work: `orx task claim <task-id>
   --discover-session` binds your session to this attempt. Quote the attempt
   id the claim returns in your completion (`--attempt`).
+- Your assignment prompt carries the four-clause delivery contract below in
+  one of two forms (G009 T011): the FULL inline text (CLI/external/self
+  dispatches, where no agent definition is loaded), or a BRIEF reference
+  naming the clauses (host subagent dispatches — this definition is
+  harness-injected and IS the full contract). Either way the clauses below
+  apply verbatim to every task; the brief form additionally carries the
+  task-bound facts (check budget, commands, escalation).
 - Work the delivery contract in order (your assignment prompt carries the
   same contract plus a static pre-flight of your prescribed checks):
   1. **START GATE** — before any implementation work, prove the checks can

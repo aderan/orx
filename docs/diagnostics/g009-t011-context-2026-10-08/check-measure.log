@@ -1,0 +1,17 @@
+run R009: 13 tasks
+  T001: old 5653B -> full 5375B / brief 3832B (checks: 2; archived dispatched: 5665B)
+  T002: old 5794B -> full 5497B / brief 3954B (checks: 2; archived dispatched: 5806B)
+  T003: old 5659B -> full 5367B / brief 3824B (checks: 2; archived dispatched: 5802B)
+  T004: old 5748B -> full 5451B / brief 3908B (checks: 2; archived dispatched: 5891B)
+  T005: old 5684B -> full 5413B / brief 3870B (checks: 2; archived dispatched: 5827B)
+  T006: old 5689B -> full 5424B / brief 3881B (checks: 2; archived dispatched: 6712B)
+  T007: old 5610B -> full 5360B / brief 3817B (checks: 2; archived dispatched: 5753B)
+  T008: old 5768B -> full 5424B / brief 3881B (checks: 2; archived dispatched: 5911B)
+  T009: old 5521B -> full 5285B / brief 3742B (checks: 1; archived dispatched: 5664B)
+  T010: old 5706B -> full 5460B / brief 3917B (checks: 2; archived dispatched: 5849B)
+  T011: old 5501B -> full 5287B / brief 3744B (checks: 1; archived dispatched: 5644B)
+  T012: old 5646B -> full 5431B / brief 3888B (checks: 3; archived dispatched: NoneB)
+  T013: old 5331B -> full 5156B / brief 3613B (checks: 1; archived dispatched: NoneB)
+totals: {'old': 73310, 'new_full': 69930, 'new_brief': 49871, 'archived': 64524}
+savings: {'host_subagent_per_task_bytes': 23439, 'host_subagent_per_task_percent': 32.0, 'cli_or_self_per_task_bytes': 3380, 'cli_or_self_per_task_percent': 4.6}
+written: /Users/flb/Sources/Products/ORX/docs/diagnostics/g009-t011-context-2026-10-08/static-measurement.json

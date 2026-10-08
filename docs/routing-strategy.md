@@ -139,6 +139,27 @@ task event — naming the blocker, the count, the fingerprint, and the remedy
 (operator intent) but reports the suppression in its payload. A different
 failure signature, a success on the profile, or a replan resets the streak.
 
+**Budget gates (G009 T011).** The `[budget]` config keys are the cost
+backstop, the same explainable-stop shape as suppression:
+`budget.hard_stop_task_processing_tokens` (default 50M) and
+`budget.hard_stop_task_attempts` (default 8) gate NEW launches for one
+task when its RECORDED usage crosses the bound;
+`budget.hard_stop_run_processing_tokens` (default 150M) defers every new
+launch of the run. Thresholds are calibrated from recorded samples (the
+2026-10-07 incident's usage rows and the T009 microtask baseline — see
+config.BUILTIN_DEFAULTS citations); "processing tokens" use the per-harness
+normalized volume from the T010 vocabulary (zcode/codex input already
+includes cache; cursor sums three buckets) and are never a billing claim.
+Unknown usage is never treated as free: attempts without a usage
+observation count as `attempts_unassessed` and toward the attempt bound;
+observations whose harness declares no cache semantics count as
+`attempts_unnormalized` and make no claim in the sum. A hard stop records
+`dispatch_budget_stopped` and leaves the task runnable with every recorded
+fact queryable — the restore point is consciously raising the limit
+(`orx config set budget.…`). `budget.soft_warn_task_processing_tokens`
+(default 8M) only annotates: dispatched entries and `orx task list` carry
+the budget observation; nothing is stopped below the hard bounds.
+
 **Same-session continuation (verified facts).** Resume support was verified
 2026-10-07 from each CLI's own help output, read-only (no paid calls):
 cursor 3.23.12 ships `--resume [chatId]` / `--continue`; codex-cli 0.160.0

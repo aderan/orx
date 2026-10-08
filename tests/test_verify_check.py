@@ -262,8 +262,14 @@ def test_check_skips_agent_entries(planned):
 
 def test_check_timeout_semantics_match_verify(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # G009 T011: the check/gate path runs under runtime.check_timeout_sec
+    # (the diagnostic-stall bound), not the launch timeout — the a130
+    # round's ~42-minute pytest stall waited under the old shared 1800s
+    # bound. command_timeout_sec stays at the fixture's 30s to pin that
+    # the launch bound no longer governs checks.
     config = HOST_CONFIG_TOML.replace(
-        "command_timeout_sec = 30", "command_timeout_sec = 1"
+        "command_timeout_sec = 30",
+        "command_timeout_sec = 30\ncheck_timeout_sec = 1",
     )
     project = make_project(tmp_path, config_toml=config)
     try:

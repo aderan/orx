@@ -108,6 +108,23 @@ profiles = ["orx-host"]
 # this value; a higher setting produces an explicit doctor warning.
 max_parallel = 1
 command_timeout_sec = 1800
+# G009 T011: diagnostic-stall bound for check/gate commands (task check,
+# delivery gate, verifier command verifications). Launches keep
+# command_timeout_sec. A hanging check escalates as a bounded red result
+# instead of waiting the full launch timeout in silence.
+check_timeout_sec = 600
+
+[budget]
+# G009 T011 context/cost budget gates — thresholds calibrated from the
+# recorded samples in the 2026-10-07 incident analysis and the T009
+# microtask baseline (see config.BUILTIN_DEFAULTS for the citations).
+# Normalized processing tokens are a per-provider volume measure, NOT
+# billing. Soft warn annotates output; hard stops gate NEW launches and
+# keep every recorded fact (the restore point is raising the limit).
+soft_warn_task_processing_tokens = 8_000_000
+hard_stop_task_processing_tokens = 50_000_000
+hard_stop_task_attempts = 8
+hard_stop_run_processing_tokens = 150_000_000
 """
 
 DEFAULT_PROFILES_TOML = """\
@@ -1569,6 +1586,177 @@ def _annotate_suppression(entry: dict, suppressed: dict[str, dict],
         entry["fallback_from"] = next(iter(suppressed))
 
 
+def _annotate_budget(entry: dict, budget_state: dict) -> None:
+    """G009 T011: carry the soft warning on dispatched entries — advisory
+    only, the dispatch itself already happened. The full budget payload
+    rides the hard-stop routing_errors entry; normal entries stay lean
+    (the annotation itself is context the controller pays for)."""
+    if budget_state["soft_warn"]:
+        entry["budget"] = budget_state
+
+
+# ---------------------------------------------------------------------------
+# G009 T011: context/cost budget gates. The thresholds live in config
+# ([budget], layered env > project > user > builtin) and are calibrated
+# from RECORDED samples (see config.BUILTIN_DEFAULTS): the T009 microtask
+# baseline and the 2026-10-07 incident's usage rows — never invented
+# prices. Two bounds, both honest about what they measure:
+#
+#   * tokens — the normalized per-provider processing sum (adapters.base:
+#     zcode/codex input already includes cache; cursor keeps three
+#     separate buckets) of the RECORDED usage observations. Rows that were
+#     never observed are never zero-filled into the sum; they surface as
+#     attempts_unassessed.
+#   * attempts — countable even when usage is unknown, so an unobserved
+#     attempt is never a free pass.
+#
+# The soft threshold only annotates output (warn). The hard thresholds
+# gate NEW launches at dispatch: the task/run stays exactly as recorded
+# (runnable, evidence, verification rows, attempt history) — the restore
+# point is raising the limit in config, after which dispatch resumes.
+
+_BUDGET_RESTORE_NOTE = (
+    "restore point: raise the budget.* limit in config.toml (or the"
+    " ORX_BUDGET_* env override) to resume dispatch — recorded evidence,"
+    " verification rows, and attempt history stay queryable; nothing is"
+    " deleted"
+)
+
+
+def _budget_facts(project: Project, attempts: list) -> dict:
+    """Measured-attempt facts over one attempt set: how many attempts
+    exist, how many carry a usage observation, how many were never
+    observed (unknown — counted, never zero-filled), how many observation
+    rows could not be normalized (harness without declared cache
+    semantics), and the normalized processing sum of everything that WAS
+    measured."""
+    from orx.adapters.base import HARNESS_CACHE_SEMANTICS, normalized_usage
+
+    rows_by_attempt: dict[int, list] = {}
+    for row in project.store.usage_rows():
+        rows_by_attempt.setdefault(row["attempt_id"], []).append(row)
+    processing = 0
+    with_usage = 0
+    unassessed = 0
+    unnormalized = 0
+    for attempt in attempts:
+        rows = rows_by_attempt.get(attempt.id)
+        if not rows:
+            unassessed += 1
+            continue
+        with_usage += 1
+        harness = attempt.harness
+        for row in rows:
+            norm = normalized_usage(
+                harness, row["input_tokens"], row["output_tokens"],
+                row["cached_input_tokens"],
+            )
+            measured = norm["normalized_processing_tokens"]
+            if measured is None:
+                # The observation exists but its harness declares no cache
+                # semantics: the raw fields stay recorded, the normalized
+                # sum makes no claim about them.
+                unnormalized += 1
+            else:
+                processing += measured
+    return {
+        "attempts": len(attempts),
+        "attempts_with_usage": with_usage,
+        "attempts_unassessed": unassessed,
+        "attempts_unnormalized": unnormalized,
+        "processing_tokens_recorded": processing,
+    }
+
+
+def _task_budget_state(project: Project, goal: Goal, run: Run,
+                       revision: Revision, task_id: str) -> dict:
+    store = project.store
+    store.task_get(revision.id, task_id)  # validates the task exists
+    attempts = [
+        a for a in store.attempts_for_task(revision.id, task_id)
+        if a.role == Role.WORKER.value
+    ]
+    facts = _budget_facts(project, attempts)
+    cfg = project.config
+    soft = facts["processing_tokens_recorded"] >= cfg.soft_warn_task_processing_tokens
+    hard_tokens = (
+        facts["processing_tokens_recorded"] >= cfg.hard_stop_task_processing_tokens
+    )
+    hard_attempts = facts["attempts"] >= cfg.hard_stop_task_attempts
+    reason = None
+    if hard_tokens:
+        reason = (
+            f"recorded processing {facts['processing_tokens_recorded']} >="
+            f" budget.hard_stop_task_processing_tokens"
+            f" {cfg.hard_stop_task_processing_tokens}"
+            " (normalized per-provider volume, not billing)"
+        )
+    elif hard_attempts:
+        reason = (
+            f"worker attempts {facts['attempts']} >="
+            f" budget.hard_stop_task_attempts {cfg.hard_stop_task_attempts}"
+        )
+    return {
+        **facts,
+        "scope": "task",
+        "limits": {
+            "soft_warn_task_processing_tokens": cfg.soft_warn_task_processing_tokens,
+            "hard_stop_task_processing_tokens": cfg.hard_stop_task_processing_tokens,
+            "hard_stop_task_attempts": cfg.hard_stop_task_attempts,
+        },
+        "soft_warn": soft,
+        "hard_stop": hard_tokens or hard_attempts,
+        "hard_stop_reason": reason,
+        "restore": _BUDGET_RESTORE_NOTE,
+    }
+
+
+def task_budget_state(project: Project, task_id: str) -> dict:
+    """Public read-only budget observation for one task of the active
+    revision (the same dict the dispatch gate and `orx task list` carry)."""
+    goal, run = _active_context(project)
+    revision = _active_revision(project, run)
+    if revision is None:
+        raise NotFoundError("no active plan revision; submit a plan first")
+    return _task_budget_state(project, goal, run, revision, task_id)
+
+
+def _run_budget_state(project: Project, run: Run) -> dict:
+    """Run-level budget observation over every attempt recorded against
+    the run (all roles). Same honesty rules as the task-level facts."""
+    attempts = [a for a in project.store.attempts_all() if a.run_id == run.id]
+    facts = _budget_facts(project, attempts)
+    cfg = project.config
+    hard = (
+        facts["processing_tokens_recorded"] >= cfg.hard_stop_run_processing_tokens
+    )
+    return {
+        **facts,
+        "scope": "run",
+        "limits": {
+            "hard_stop_run_processing_tokens": cfg.hard_stop_run_processing_tokens,
+        },
+        "soft_warn": False,  # the run bound is a backstop; no separate run soft key
+        "hard_stop": hard,
+        "hard_stop_reason": (
+            f"run recorded processing {facts['processing_tokens_recorded']} >="
+            f" budget.hard_stop_run_processing_tokens"
+            f" {cfg.hard_stop_run_processing_tokens}"
+            " (normalized per-provider volume, not billing)"
+        ) if hard else None,
+        "restore": _BUDGET_RESTORE_NOTE,
+    }
+
+
+def _budget_stop_reason(state: dict, task_id: str) -> str:
+    return (
+        f"dispatch stopped for task {task_id}: budget hard stop —"
+        f" {state['hard_stop_reason']}; attempts_unassessed:"
+        f" {state['attempts_unassessed']} (unknown usage is counted, never"
+        f" treated as free). {state['restore']}"
+    )
+
+
 def run_slice(project: Project) -> dict:
     """Route runnable tasks. Host/external work is parked; CLI work is
     executed through adapters, at most `effective_parallelism` (1) process
@@ -1594,12 +1782,46 @@ def run_slice(project: Project) -> dict:
     # released, and operator overrides always win. No signal -> no change.
     out["quota_preflight"] = quota.refresh(project)
 
+    # G009 T011: the run-level budget backstop. Read-only observation in
+    # the output; the hard stop only defers NEW launches this slice.
+    run_budget = _run_budget_state(project, run)
+    out["budget"] = run_budget
+
     started = 0
     cap = project.config.effective_parallelism
     parked_this_slice: set[str] = set()
     for task in store.tasks_all(revision.id):
         current = store.task_get(revision.id, task.task_id)
         if TaskStatus(current.status) is not TaskStatus.RUNNABLE:
+            continue
+        if run_budget["hard_stop"]:
+            out["deferred"].append({
+                "task": current.task_id,
+                "reason": (
+                    "run budget hard stop: "
+                    + (run_budget["hard_stop_reason"] or "")
+                ),
+                "budget": run_budget,
+            })
+            continue
+        # G009 T011: the per-task budget gate — before any routing or
+        # launch. A hard stop records the bounded reason in three places
+        # (run output, the task's event history) and leaves the task
+        # exactly as recorded: runnable, with every attempt, verification
+        # row, and evidence row queryable (the restore point).
+        budget_state = _task_budget_state(
+            project, goal, run, revision, current.task_id)
+        if budget_state["hard_stop"]:
+            reason = _budget_stop_reason(budget_state, current.task_id)
+            store.task_event_add(
+                revision.id, current.task_id, current.status, current.status,
+                "dispatch_budget_stopped", reason,
+            )
+            out["routing_errors"].append({
+                "task": current.task_id,
+                "error": reason,
+                "budget": budget_state,
+            })
             continue
         caps = tuple(current.routing.get("required_capabilities", []))
         # G009 T004: same-condition blocker suppression. Profiles whose
@@ -1639,11 +1861,13 @@ def run_slice(project: Project) -> dict:
             parked_this_slice.add(task.task_id)
             parked = _park_task(project, goal, run, revision.id, current, result, request, profile, "host")
             _annotate_suppression(parked, suppressed, result)
+            _annotate_budget(parked, budget_state)
             out["host_required"].append(parked)
         elif profile.driver.value == "external":
             parked_this_slice.add(task.task_id)
             parked = _park_task(project, goal, run, revision.id, current, result, request, profile, "external")
             _annotate_suppression(parked, suppressed, result)
+            _annotate_budget(parked, budget_state)
             out["waiting_external"].append(parked)
         else:
             if started >= cap:
@@ -1654,6 +1878,7 @@ def run_slice(project: Project) -> dict:
             outcome = _execute_cli_task(project, goal, run, revision, current, result, request, profile)
             started += 1
             _annotate_suppression(outcome, suppressed, result)
+            _annotate_budget(outcome, budget_state)
             bucket = "failed" if outcome.get("status") == "failed" else "started"
             # Immediate rung fallback (G005): a quota/rate failure has already
             # marked the profile non-routable in health, so one re-route now
@@ -1812,6 +2037,15 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
             store, project.root, revision_row_id, task.task_id, audience="worker"
         ),
         identity=_identity_block(nonce),
+        # G009 T011: a subagent-mode host worker runs under the
+        # agents/orx-worker.md definition (harness-injected, contract
+        # verbatim); its prompt carries the brief reference. Self/external
+        # execution has no provably loaded definition: full contract.
+        contract=(
+            "brief"
+            if kind == "host" and profile.host_mode == "subagent"
+            else "full"
+        ),
     )
     attempt = store.attempt_create(
         revision_row_id=revision_row_id,
@@ -2182,7 +2416,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     gate = verify.run_task_check(
         store, project.root, run.id, revision.id,
         store.task_get(revision.id, task.task_id),
-        timeout=project.config.command_timeout_sec,
+        timeout=project.config.check_timeout_sec,
         attempt_id=attempt.id,
     )
     # An accepted CLI delivery (green command gate) persists the replan
@@ -2967,8 +3201,10 @@ def preflight_task_checks(task: TaskRow) -> list[dict]:
 
 
 def _preflight_block(task: TaskRow) -> str:
-    """The preflight section of the worker prompt: one tagged line per
-    verification entry plus a summary. Tags are stable for tooling:
+    """The check listing of the worker prompt: every verification entry
+    ONCE, tagged with its static pre-flight status (G009 T011 merged the
+    old duplicate plain list into this block — the raw entry string was
+    carried twice per check). Tags are stable for tooling:
     [preflight:ok], [preflight:blocked], [preflight:not-run]."""
     rows = preflight_task_checks(task)
     lines: list[str] = []
@@ -3008,9 +3244,10 @@ def _preflight_block(task: TaskRow) -> str:
         f"{agent_total} agent check(s) not preflighted."
     )
     return (
-        "Pre-flight of the prescribed checks (static; assembled by ORX at\n"
-        "assignment time, nothing was executed. The START GATE below\n"
-        "re-verifies it for real in your environment):\n"
+        "How your work will be checked (the prescribed checks, with ORX's\n"
+        "static pre-flight status — assembled at assignment time, nothing\n"
+        "was executed; the START GATE re-verifies it for real in your\n"
+        "environment):\n"
         + "\n".join(lines) + "\n" + summary + "\n\n"
     )
 
@@ -3066,12 +3303,32 @@ CLI_FINAL_DELIVERY_BLOCK = """
 """
 
 
+#: G009 T011: the brief delivery-contract form. Host workers dispatched
+#: through a SUBAGENT-mode profile run under the agents/orx-worker.md
+#: definition, which the harness injects and which carries the four-clause
+#: contract VERBATIM — re-sending the full ~2.4 KB clause text in every
+#: assignment prompt was pure duplication. The brief form still states the
+#: task-bound facts (budget, commands, escalation) and names the clauses it
+#: delegates; CLI/external/self dispatches keep the full inline contract
+#: (no agent definition is provably loaded for them).
+_BRIEF_CONTRACT_NOTE = """Delivery contract (binding, in order): the four-clause delivery
+contract in your agent definition (orx-worker: 1. START GATE — prove the
+prescribed checks can run BEFORE implementing; 2. BLOCKED EXIT — when they
+cannot, leave the workspace unchanged and exit non-zero with the blocker
+in your output; 3. CHECK-FIX LOOP; 4. DELIVERY GATE) applies to this task
+VERBATIM. Task-bound facts:
+- check budget: {check_budget} check round(s) on this attempt; `orx task check {task_id}` reports rounds used vs budget
+- stop and submit the structured failed/blocked delivery when the budget is exhausted and checks are still red
+- completion: `orx task complete {task_id} --evidence <file>` only when every command check is green; a green self-check is necessary, not sufficient — the independent verifier still judges the work
+{extra}"""
+
+
 def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
                   check_budget: int = 3, replan_context: str = "",
                   identity: str = "",
-                  delivery_channel: str | None = None) -> str:
+                  delivery_channel: str | None = None,
+                  contract: str = "full") -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
-    verification = "\n".join(f"  - {entry}" for entry in task.verification) or "  (none)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
     context_block = (
@@ -3095,27 +3352,18 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
         if delivery_channel == DELIVERY_CHANNEL_MESSAGE else ""
     )
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
-    return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
-
-Your assignment is ONE task. Do only this task and stay inside its scope.
-
-Task {task.task_id}: {task.objective}
-
-Goal constraints (binding for this work):
-{constraints}
-
-{context_block}{replan_block}Scope (write only inside these project-relative paths): {allowed}
-Read these files first — before any exploration, and only these plus the
-files you yourself create or modify (project-relative):
-{preread}
-Acceptance (your work is verified against these, verbatim):
-{acceptance}
-{prior_failure}
-How your work will be checked (the prescribed checks):
-{verification}
-
-{_preflight_block(task)}Delivery contract (binding, in order):
-1. START GATE: before any implementation work, prove the checks can run in
+    if contract == "brief":
+        contract_block = _BRIEF_CONTRACT_NOTE.format(
+            check_budget=check_budget, task_id=task.task_id,
+            extra=(
+                "- CLI machine delivery: end your final message with exactly"
+                " one fenced ```json block carrying the structured delivery"
+                " result\n"
+                if delivery_channel == DELIVERY_CHANNEL_MESSAGE else ""
+            ),
+        ).rstrip("\n")
+    else:
+        contract_block = f"""1. START GATE: before any implementation work, prove the checks can run in
    your environment. Run `orx task check {task.task_id}` (or trial-run each
    prescribed check command yourself) and confirm the tools exist, the
    commands are permitted, and the test baseline executes. Do not write any
@@ -3133,13 +3381,13 @@ How your work will be checked (the prescribed checks):
    again — while budget remains. `orx task check {task.task_id}` reports
    check_rounds (rounds used vs budget) for your attempt after every run.
    Red checks that are EXPECTED at this stage of development are part of
-   the work, not failures (TDD: a test written before its implementation
-   is deliberately red): keep implementing in the same session — do not
+   the work, not failures (TDD: a test written before its implementation is
+   deliberately red): keep implementing in the same session — do not
    restart the task or request a new attempt merely because a check is
    temporarily red. Run the full check set at stage boundaries only — when
    a new behavior is complete, when a module modification is complete, and
-   when you are ready to deliver — not after every edit. When the budget is
-   exhausted and checks are still red, stop iterating: submit the
+   when you are ready to deliver — not after every edit. When the budget
+   is exhausted and checks are still red, stop iterating: submit the
    structured failed/blocked delivery result (`orx task complete
    {task.task_id} --evidence <file>`) or `orx task fail {task.task_id}
    --reason <why>` so the Controller decides the next round. Do not keep
@@ -3148,7 +3396,25 @@ How your work will be checked (the prescribed checks):
    before you may exit 0 or submit `orx task complete {task.task_id}
    --evidence <file>`. A green self-check is necessary, not sufficient: it
    never replaces the independent verifier — agent checks and independent
-   acceptance still judge the work afterwards.{delivery_block}
+   acceptance still judge the work afterwards.{delivery_block}"""
+    return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
+
+Your assignment is ONE task. Do only this task and stay inside its scope.
+
+Task {task.task_id}: {task.objective}
+
+Goal constraints (binding for this work):
+{constraints}
+
+{context_block}{replan_block}Scope (write only inside these project-relative paths): {allowed}
+Read these files first — before any exploration, and only these plus the
+files you yourself create or modify (project-relative):
+{preread}
+Acceptance (your work is verified against these, verbatim):
+{acceptance}
+{prior_failure}
+{_preflight_block(task)}Delivery contract (binding, in order):
+{contract_block}
 Rules:
 - do not modify the Goal text or other tasks' scope
 - if you are blocked, leave the workspace unchanged and exit non-zero with the
@@ -3295,6 +3561,11 @@ def task_list(project: Project) -> list[dict]:
                 # `unknown` until this attempt reports, never a fallback to
                 # an older attempt's history.
                 "progress": progress_observation(project, attempt),
+                # G009 T011: budget observation (recorded usage vs the
+                # configured soft/hard bounds; unknown usage disclosed,
+                # never zero-filled). Read-only.
+                "budget": _task_budget_state(
+                    project, goal, run, revision, task.task_id),
             }
         )
     return rows
@@ -3492,7 +3763,7 @@ def task_complete(
     # completion (the independent verifier still judges them).
     gate = verify.run_task_check(
         store, project.root, run.id, revision.id, task,
-        timeout=project.config.command_timeout_sec,
+        timeout=project.config.check_timeout_sec,
         attempt_id=attempt.id,
     )
     failures = verify.gate_failures(gate)
@@ -3548,7 +3819,7 @@ def task_complete(
         run.id,
         revision.id,
         store.task_get(revision.id, task.task_id),
-        timeout=project.config.command_timeout_sec,
+        timeout=project.config.check_timeout_sec,
         attempt_id=attempt.id,
     )
     verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
@@ -3745,7 +4016,7 @@ def task_check(project: Project, task_id: str) -> dict:
     )
     report = verify.run_task_check(
         store, project.root, run.id, revision.id, task,
-        timeout=project.config.command_timeout_sec,
+        timeout=project.config.check_timeout_sec,
         attempt_id=attempt_id,
     )
     # This round is included: the payload is computed after the rows were
@@ -4517,7 +4788,7 @@ def verify_dispatch(project: Project) -> dict:
         bound = store.attempt_latest_for_task(revision.id, task.task_id)
         verify.run_command_verifications(
             store, project.root, run.id, revision.id, task,
-            timeout=project.config.command_timeout_sec,
+            timeout=project.config.check_timeout_sec,
             attempt_id=bound.id if bound else None,
         )
         verdict = verify.apply_verdict(store, revision.id, task)

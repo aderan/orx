@@ -1,0 +1,23 @@
+{
+  "spec": {
+    "provider": null,
+    "family": null,
+    "version": null,
+    "id": "gpt-6.1-sol",
+    "effort": "high",
+    "speed": null,
+    "context": null,
+    "capabilities": []
+  },
+  "cli_slug": "gpt-6.1-sol",
+  "strategy": "catalog_levels",
+  "bracket_params": [
+    [
+      "model_reasoning_effort",
+      "high"
+    ]
+  ],
+  "catalog_generation": 1,
+  "attempt": 5,
+  "recorded_at": "2026-10-08T03:38:30.168315+00:00"
+}

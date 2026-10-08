@@ -1,0 +1,184 @@
+{
+  "kind": "g009-t011-static-context-measurement",
+  "method": "controlled A/B on identical inputs (same task row + goal from the live R009 state, empty failure/replan blocks): the old renderer quoted from the parent commit vs the T011 renderer in full and brief contract forms. Archived assignment files are reported as raw dispatched facts (they carry nonce + failure context). Token estimates are bytes/4.",
+  "run": "R009",
+  "tasks": [
+    {
+      "task": "T001",
+      "checks": 2,
+      "bytes_old": 5653,
+      "bytes_new_full": 5375,
+      "bytes_new_cli_message": 6452,
+      "bytes_new_brief_host_subagent": 3832,
+      "bytes_archived_dispatched": 5665,
+      "tokens_estimate_old": 1413,
+      "tokens_estimate_new_full": 1343,
+      "tokens_estimate_new_brief": 958
+    },
+    {
+      "task": "T002",
+      "checks": 2,
+      "bytes_old": 5794,
+      "bytes_new_full": 5497,
+      "bytes_new_cli_message": 6574,
+      "bytes_new_brief_host_subagent": 3954,
+      "bytes_archived_dispatched": 5806,
+      "tokens_estimate_old": 1448,
+      "tokens_estimate_new_full": 1374,
+      "tokens_estimate_new_brief": 988
+    },
+    {
+      "task": "T003",
+      "checks": 2,
+      "bytes_old": 5659,
+      "bytes_new_full": 5367,
+      "bytes_new_cli_message": 6444,
+      "bytes_new_brief_host_subagent": 3824,
+      "bytes_archived_dispatched": 5802,
+      "tokens_estimate_old": 1414,
+      "tokens_estimate_new_full": 1341,
+      "tokens_estimate_new_brief": 956
+    },
+    {
+      "task": "T004",
+      "checks": 2,
+      "bytes_old": 5748,
+      "bytes_new_full": 5451,
+      "bytes_new_cli_message": 6528,
+      "bytes_new_brief_host_subagent": 3908,
+      "bytes_archived_dispatched": 5891,
+      "tokens_estimate_old": 1437,
+      "tokens_estimate_new_full": 1362,
+      "tokens_estimate_new_brief": 977
+    },
+    {
+      "task": "T005",
+      "checks": 2,
+      "bytes_old": 5684,
+      "bytes_new_full": 5413,
+      "bytes_new_cli_message": 6490,
+      "bytes_new_brief_host_subagent": 3870,
+      "bytes_archived_dispatched": 5827,
+      "tokens_estimate_old": 1421,
+      "tokens_estimate_new_full": 1353,
+      "tokens_estimate_new_brief": 967
+    },
+    {
+      "task": "T006",
+      "checks": 2,
+      "bytes_old": 5689,
+      "bytes_new_full": 5424,
+      "bytes_new_cli_message": 6501,
+      "bytes_new_brief_host_subagent": 3881,
+      "bytes_archived_dispatched": 6712,
+      "tokens_estimate_old": 1422,
+      "tokens_estimate_new_full": 1356,
+      "tokens_estimate_new_brief": 970
+    },
+    {
+      "task": "T007",
+      "checks": 2,
+      "bytes_old": 5610,
+      "bytes_new_full": 5360,
+      "bytes_new_cli_message": 6437,
+      "bytes_new_brief_host_subagent": 3817,
+      "bytes_archived_dispatched": 5753,
+      "tokens_estimate_old": 1402,
+      "tokens_estimate_new_full": 1340,
+      "tokens_estimate_new_brief": 954
+    },
+    {
+      "task": "T008",
+      "checks": 2,
+      "bytes_old": 5768,
+      "bytes_new_full": 5424,
+      "bytes_new_cli_message": 6501,
+      "bytes_new_brief_host_subagent": 3881,
+      "bytes_archived_dispatched": 5911,
+      "tokens_estimate_old": 1442,
+      "tokens_estimate_new_full": 1356,
+      "tokens_estimate_new_brief": 970
+    },
+    {
+      "task": "T009",
+      "checks": 1,
+      "bytes_old": 5521,
+      "bytes_new_full": 5285,
+      "bytes_new_cli_message": 6362,
+      "bytes_new_brief_host_subagent": 3742,
+      "bytes_archived_dispatched": 5664,
+      "tokens_estimate_old": 1380,
+      "tokens_estimate_new_full": 1321,
+      "tokens_estimate_new_brief": 935
+    },
+    {
+      "task": "T010",
+      "checks": 2,
+      "bytes_old": 5706,
+      "bytes_new_full": 5460,
+      "bytes_new_cli_message": 6537,
+      "bytes_new_brief_host_subagent": 3917,
+      "bytes_archived_dispatched": 5849,
+      "tokens_estimate_old": 1426,
+      "tokens_estimate_new_full": 1365,
+      "tokens_estimate_new_brief": 979
+    },
+    {
+      "task": "T011",
+      "checks": 1,
+      "bytes_old": 5501,
+      "bytes_new_full": 5287,
+      "bytes_new_cli_message": 6364,
+      "bytes_new_brief_host_subagent": 3744,
+      "bytes_archived_dispatched": 5644,
+      "tokens_estimate_old": 1375,
+      "tokens_estimate_new_full": 1321,
+      "tokens_estimate_new_brief": 936
+    },
+    {
+      "task": "T012",
+      "checks": 3,
+      "bytes_old": 5646,
+      "bytes_new_full": 5431,
+      "bytes_new_cli_message": 6508,
+      "bytes_new_brief_host_subagent": 3888,
+      "bytes_archived_dispatched": null,
+      "tokens_estimate_old": 1411,
+      "tokens_estimate_new_full": 1357,
+      "tokens_estimate_new_brief": 972
+    },
+    {
+      "task": "T013",
+      "checks": 1,
+      "bytes_old": 5331,
+      "bytes_new_full": 5156,
+      "bytes_new_cli_message": 6233,
+      "bytes_new_brief_host_subagent": 3613,
+      "bytes_archived_dispatched": null,
+      "tokens_estimate_old": 1332,
+      "tokens_estimate_new_full": 1289,
+      "tokens_estimate_new_brief": 903
+    }
+  ],
+  "totals_bytes": {
+    "old": 73310,
+    "new_full": 69930,
+    "new_brief": 49871,
+    "archived": 64524
+  },
+  "savings": {
+    "host_subagent_per_task_bytes": 23439,
+    "host_subagent_per_task_percent": 32.0,
+    "cli_or_self_per_task_bytes": 3380,
+    "cli_or_self_per_task_percent": 4.6
+  },
+  "fixed_context_facts": {
+    "agent_definition_bytes": 8376,
+    "note": "the agent definition rides the subagent's context via the harness; it is the reason the brief form can delegate the four clauses instead of re-sending them"
+  },
+  "limitations": [
+    "bytes/4 is a token heuristic, not a tokenizer measurement",
+    "harness tool schemas and system scaffolding dominate worker first-input size (incident: median 72,245 tokens) and are not ORX-generated — not measured here",
+    "the archived sizes include nonce and failure context; they are raw facts, not the controlled delta"
+  ]
+}

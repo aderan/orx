@@ -1,0 +1,61 @@
+{
+  "kind": "g009-t011-real-ab-microtask-evidence",
+  "date": "2026-10-08",
+  "executor": "host worker session sess_subagent_agent_07ae8e5e-ad3e-4ff4-9391-71296872fbaf (T011 attempt 161)",
+  "cost_bound": "Controller T011 note: at most ONE paid A/B launch; this is that one launch. Baselines were NOT re-run (T009 evidence.json and the incident analysis are the recorded baselines).",
+  "isolated_repo": "/tmp/orx-g009-micro (commits b55c760 preset red sub -> 7fa5ba4 codex one-line fix passed)",
+  "purpose": "Post-compression end-to-end sample on the SAME microtask shape as T009's codex-frontier round: prove the compressed prompt still closes the read -> write -> check -> structured delivery -> controller gate loop with accuracy and acceptance preserved.",
+  "comparison": [
+    {
+      "side": "baseline (T009 attempt 2, pre-T011 prompt)",
+      "source": "docs/diagnostics/g009-microtask-2026-10-08/evidence.json",
+      "profile": "codex-frontier (codex-cli 0.160.0 / gpt-6.1-sol)",
+      "task": "one preset-red unittest, one-line fix in calc.py (add implemented as subtract)",
+      "result": "completed -> task passed",
+      "launches": 1,
+      "check_rounds": 1,
+      "wall_clock_sec": 61.9,
+      "usage": {"input_tokens": 89121, "cached_input_tokens": 78336, "uncached_input_tokens": 10785, "output_tokens": 624, "processing_tokens_cache_subset": 89745, "source": "native_cli", "accuracy": "exact"},
+      "prompt_bytes_dispatched": 6467,
+      "prompt_note": "the archived R001 prompt carries a prior-failure block (the earlier cursor-strong blocked attempt) — a condition the A/B round did not have; not a like-for-like byte pair"
+    },
+    {
+      "side": "after (T011 A/B, compressed prompt)",
+      "source": "this run (R003, attempt 5)",
+      "profile": "codex-frontier (same profile, same harness, same repo)",
+      "task": "one preset-red unittest, one-line fix in calc.py (sub implemented as add)",
+      "result": "completed -> task passed (R003 done)",
+      "launches": 1,
+      "check_rounds": 1,
+      "wall_clock_sec": 70.0,
+      "usage": {"input_tokens": 85430, "cached_input_tokens": 75776, "uncached_input_tokens": 9654, "output_tokens": 533, "processing_tokens_cache_subset": 85963, "source": "native_cli", "accuracy": "exact", "session_ref": "01a11997-546e-7af0-8018-f680a41a2fac"},
+      "prompt_bytes_dispatched": 5146,
+      "scope_change": "exactly one line: sub 'return a + b' -> 'return a - b' (R003-scope.diff)",
+      "delivery": "structured passed document via cli_final_message (R003-T001.delivery.json); controller delivery gate re-ran the command fresh: exit 0 (R003-T001-exec.log tail, verifications row for attempt 5)"
+    }
+  ],
+  "deltas": {
+    "input_tokens": -3691,
+    "input_tokens_percent": -4.1,
+    "uncached_input_tokens": -1131,
+    "output_tokens": -91,
+    "processing_tokens": -3782,
+    "processing_tokens_percent": -4.2,
+    "prompt_bytes_like_for_like_static": "see static-measurement.json: CLI-form scaffolding -4.6% on identical inputs; host-subagent brief form -32.0%"
+  },
+  "limitations": [
+    "N=1 per side; run-to-run variance (session state, cache warmth, model behavior) dominates single-pair token deltas — the -4.1% input delta is directionally consistent with the -4.6% static scaffolding saving but is NOT attributable to compression alone",
+    "the R001 baseline prompt carried a prior-failure block the A/B round lacked; archived byte sizes (6467 vs 5146) therefore overstate the compression effect — the controlled like-for-like numbers are in static-measurement.json",
+    "no host-subagent paid A/B: platform forbids children of children; the -32.0% brief-form saving is static-only",
+    "no verifier launch in the A/B (cost bound: one launch); acceptance signal is the deterministic delivery gate re-run plus the one-line scope diff",
+    "cursor harness not re-run (same permission domain blocked it in T009; nothing changed)"
+  ],
+  "evidence_files": [
+    "R003-T001-prompt.md",
+    "R001-T001-prompt-baseline.md",
+    "R003-T001-exec.log",
+    "R003-T001.delivery.json",
+    "R003-T001.resolution.json",
+    "R003-scope.diff"
+  ]
+}

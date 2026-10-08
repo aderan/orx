@@ -59,6 +59,13 @@ ENV_OVERRIDES: dict[str, str] = {
     # override (env > project > user > builtin), same mechanism as the
     # existing integer runtime keys.
     "worker.progress_timeout_min": "ORX_WORKER_PROGRESS_TIMEOUT_MIN",
+    # G009 T011: the budget gates and the diagnostic-stall bound layer the
+    # same way as every other integer runtime/worker key.
+    "runtime.check_timeout_sec": "ORX_RUNTIME_CHECK_TIMEOUT_SEC",
+    "budget.soft_warn_task_processing_tokens": "ORX_BUDGET_SOFT_WARN_TASK_TOKENS",
+    "budget.hard_stop_task_processing_tokens": "ORX_BUDGET_HARD_STOP_TASK_TOKENS",
+    "budget.hard_stop_task_attempts": "ORX_BUDGET_HARD_STOP_TASK_ATTEMPTS",
+    "budget.hard_stop_run_processing_tokens": "ORX_BUDGET_HARD_STOP_RUN_TOKENS",
 }
 
 BUILTIN_DEFAULTS: dict = {
@@ -85,6 +92,34 @@ BUILTIN_DEFAULTS: dict = {
     "verify.profiles": [],
     "runtime.max_parallel": 1,
     "runtime.command_timeout_sec": 1800,
+    # G009 T011: the diagnostic-stall bound for check/gate commands
+    # (task check, the delivery gate, verifier command verifications).
+    # The 2026-10-07 incident's a130 round spent ~42 min inside one
+    # hanging pytest run while the shared 1800s launch timeout waited
+    # silently; 600s turns a stalled diagnostic into a bounded red
+    # result the worker must fix or escalate.
+    "runtime.check_timeout_sec": 600,
+    # G009 T011 budget gates. Thresholds are CALIBRATED FROM RECORDED
+    # SAMPLES, never invented prices (normalized processing tokens are a
+    # per-provider volume measure, not billing — adapters.base):
+    #   soft 8M   — the T009 microtask passed at ~90K processing (codex
+    #               89,121 input incl. 78,336 cached + 624 output) with a
+    #               host-side raw metric of 659,724; the incident's a130
+    #               did one hour of real work at 25.74M. 8M warns long
+    #               before the pathological zone, well after normal work.
+    #   task 50M  — T003's whole pathological saga (a130 25.74M + repair
+    #               7.42M + three blocked Cursor rounds 10.09M + verifier
+    #               0.77M) totalled ~44M; 50M admits the legitimate
+    #               a130+a134 chain and bounds any second continuation.
+    #   attempts 8 — T003 needed 6 worker attempts; 8 leaves escalation
+    #               headroom while stopping runaway relaunches.
+    #   run 150M  — the whole 2026-10-07 session (2 goals, 10 tasks, 26
+    #               attempts) normalized to ~155.8M processing; a single
+    #               run exhausting that much needs a human decision.
+    "budget.soft_warn_task_processing_tokens": 8_000_000,
+    "budget.hard_stop_task_processing_tokens": 50_000_000,
+    "budget.hard_stop_task_attempts": 8,
+    "budget.hard_stop_run_processing_tokens": 150_000_000,
     "inbox.github_labels": [],
     "inbox.auto_accept": False,
 }
@@ -106,6 +141,11 @@ WRITABLE_SPEC: dict[str, str] = {
     "verify.profiles": "profile names (comma-separated or a JSON array)",
     "runtime.max_parallel": "integer >= 1",
     "runtime.command_timeout_sec": "integer > 0",
+    "runtime.check_timeout_sec": "integer > 0",
+    "budget.soft_warn_task_processing_tokens": "integer >= 1",
+    "budget.hard_stop_task_processing_tokens": "integer >= 1",
+    "budget.hard_stop_task_attempts": "integer >= 1",
+    "budget.hard_stop_run_processing_tokens": "integer >= 1",
 }
 RECOGNIZED_KEYS: tuple[str, ...] = tuple(WRITABLE_SPEC)
 PROFILE_KEYS = frozenset({
@@ -254,6 +294,19 @@ class Config:
     worker_progress_timeout_min: int = 60
     max_parallel: int = 1
     command_timeout_sec: int = 1800
+    # G009 T011: the diagnostic-stall bound for check/gate commands —
+    # `orx task check`, the delivery gate, and verifier command
+    # verifications all run under THIS timeout (launches keep
+    # command_timeout_sec). A hanging check escalates as a bounded red
+    # result instead of waiting the full launch timeout in silence.
+    check_timeout_sec: int = 600
+    # G009 T011 budget gates (see BUILTIN_DEFAULTS for the calibration
+    # citations). Soft warn is advisory output only; the hard stops gate
+    # NEW launches at dispatch and never delete recorded facts.
+    soft_warn_task_processing_tokens: int = 8_000_000
+    hard_stop_task_processing_tokens: int = 50_000_000
+    hard_stop_task_attempts: int = 8
+    hard_stop_run_processing_tokens: int = 150_000_000
     inbox_github_labels: list[str] = field(default_factory=list)
     inbox_auto_accept: bool = False
     warnings: tuple[str, ...] = ()
@@ -410,6 +463,31 @@ def load_config(path: Path) -> Config:
         errors.append("config.toml: [runtime] command_timeout_sec must be a positive integer")
         timeout = 1800
 
+    check_timeout = runtime_cfg.get("check_timeout_sec", 600)
+    if (
+        not isinstance(check_timeout, int) or isinstance(check_timeout, bool)
+        or check_timeout <= 0
+    ):
+        errors.append("config.toml: [runtime] check_timeout_sec must be a positive integer")
+        check_timeout = 600
+
+    budget = data.get("budget", {})
+    if not isinstance(budget, dict):
+        errors.append("config.toml: [budget] must be a table")
+        budget = {}
+
+    def budget_int(key: str, default: int) -> int:
+        value = budget.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            errors.append(f"config.toml: [budget] {key} must be an integer >= 1")
+            return default
+        return value
+
+    soft_warn = budget_int("soft_warn_task_processing_tokens", 8_000_000)
+    hard_task_tokens = budget_int("hard_stop_task_processing_tokens", 50_000_000)
+    hard_task_attempts = budget_int("hard_stop_task_attempts", 8)
+    hard_run_tokens = budget_int("hard_stop_run_processing_tokens", 150_000_000)
+
     if errors:
         raise ConfigError(errors)
 
@@ -426,6 +504,11 @@ def load_config(path: Path) -> Config:
         worker_progress_timeout_min=progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
+        check_timeout_sec=check_timeout,
+        soft_warn_task_processing_tokens=soft_warn,
+        hard_stop_task_processing_tokens=hard_task_tokens,
+        hard_stop_task_attempts=hard_task_attempts,
+        hard_stop_run_processing_tokens=hard_run_tokens,
         warnings=tuple(warnings),
     )
 
@@ -735,6 +818,11 @@ def load_effective(
     allow_downgrade = layered("plan.allow_class_downgrade")
     max_parallel = layered("runtime.max_parallel")
     timeout = layered("runtime.command_timeout_sec")
+    check_timeout = layered("runtime.check_timeout_sec")
+    soft_warn = layered("budget.soft_warn_task_processing_tokens")
+    hard_task_tokens = layered("budget.hard_stop_task_processing_tokens")
+    hard_task_attempts = layered("budget.hard_stop_task_attempts")
+    hard_run_tokens = layered("budget.hard_stop_run_processing_tokens")
 
     depth_profiles: dict[str, list[str]] = {}
     for depth_name in ("light", "standard", "deep"):
@@ -804,6 +892,30 @@ def load_effective(
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
         errors.append("config.toml: [runtime] command_timeout_sec must be a positive integer")
         timeout = 1800
+    if (
+        not isinstance(check_timeout, int) or isinstance(check_timeout, bool)
+        or check_timeout <= 0
+    ):
+        errors.append("config.toml: [runtime] check_timeout_sec must be a positive integer")
+        check_timeout = 600
+    for dotted, value in (
+        ("budget.soft_warn_task_processing_tokens", soft_warn),
+        ("budget.hard_stop_task_processing_tokens", hard_task_tokens),
+        ("budget.hard_stop_task_attempts", hard_task_attempts),
+        ("budget.hard_stop_run_processing_tokens", hard_run_tokens),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            errors.append(f"config.toml: {dotted} must be an integer >= 1")
+
+    def _int_or(value, default: int) -> int:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            return value
+        return default
+
+    soft_warn = _int_or(soft_warn, 8_000_000)
+    hard_task_tokens = _int_or(hard_task_tokens, 50_000_000)
+    hard_task_attempts = _int_or(hard_task_attempts, 8)
+    hard_run_tokens = _int_or(hard_run_tokens, 150_000_000)
     if errors:
         raise ConfigError(errors)
 
@@ -847,6 +959,11 @@ def load_effective(
         worker_progress_timeout_min=worker_progress_timeout,
         max_parallel=max_parallel,
         command_timeout_sec=timeout,
+        check_timeout_sec=check_timeout,
+        soft_warn_task_processing_tokens=soft_warn,
+        hard_stop_task_processing_tokens=hard_task_tokens,
+        hard_stop_task_attempts=hard_task_attempts,
+        hard_stop_run_processing_tokens=hard_run_tokens,
         inbox_github_labels=list(inbox_labels),
         inbox_auto_accept=inbox_auto_accept,
         warnings=tuple(warnings),
@@ -913,6 +1030,11 @@ def config_entries(effective: EffectiveConfig) -> list[dict]:
         "verify.profiles": list(cfg.verify_profiles),
         "runtime.max_parallel": cfg.max_parallel,
         "runtime.command_timeout_sec": cfg.command_timeout_sec,
+        "runtime.check_timeout_sec": cfg.check_timeout_sec,
+        "budget.soft_warn_task_processing_tokens": cfg.soft_warn_task_processing_tokens,
+        "budget.hard_stop_task_processing_tokens": cfg.hard_stop_task_processing_tokens,
+        "budget.hard_stop_task_attempts": cfg.hard_stop_task_attempts,
+        "budget.hard_stop_run_processing_tokens": cfg.hard_stop_run_processing_tokens,
     }
     return [
         {"key": key, "value": values[key], "origin": effective.origins[key]}
@@ -1040,6 +1162,21 @@ def parse_config_value(key: str, raw: str, *, profile_names: set[str] | None = N
         number = _parse_int(key, raw)
         if number <= 0:
             raise ConfigError([f"{key} must be a positive integer"])
+        return number
+    if key == "runtime.check_timeout_sec":
+        number = _parse_int(key, raw)
+        if number <= 0:
+            raise ConfigError([f"{key} must be a positive integer"])
+        return number
+    if key in (
+        "budget.soft_warn_task_processing_tokens",
+        "budget.hard_stop_task_processing_tokens",
+        "budget.hard_stop_task_attempts",
+        "budget.hard_stop_run_processing_tokens",
+    ):
+        number = _parse_int(key, raw)
+        if number < 1:
+            raise ConfigError([f"{key} must be an integer >= 1"])
         return number
     raise ConfigError([f"unsupported config key {key!r}"])
 

@@ -139,6 +139,21 @@ Rules:
   signal, not a code problem: change the conditions (harness/approval
   config, routing, or human investigation) instead of retrying again; the
   ladder still serves the task on the next configured rung.
+- **Budget gates** (`[budget]` config, G009 T011) are the cost backstop,
+  same shape as suppression: when a task's RECORDED usage crosses
+  `budget.hard_stop_task_processing_tokens` / `hard_stop_task_attempts`, or
+  the run crosses `hard_stop_run_processing_tokens`, `orx run` launches
+  nothing for it and reports `routing_errors[].budget` / deferred entries
+  with a restore note — the task stays runnable and every recorded fact
+  survives. Unknown usage is never treated as free (unassessed attempts
+  count toward the attempt bound; `orx task list` carries each task's
+  `budget` observation, and a soft `soft_warn_task_processing_tokens`
+  crossing only annotates output). Treat a budget stop as a decision
+  point: raise the limit consciously (`orx config set budget.…`) or
+  replan/split the work — not as a code failure. Thresholds are calibrated
+  from the 2026-10-07 incident samples (see config.BUILTIN_DEFAULTS
+  citations); normalized processing tokens are a volume measure, never a
+  billing claim.
 - **Replan** (`orx replan`) is for a wrong plan: failed assumptions, wrong
   dependency graph, scope drift, plan/verification disagreement.
 - **Ask the user** for Goal-level changes: new objective, changed
@@ -147,8 +162,13 @@ Rules:
 ## The loop
 
 Worker assignments carry ORX's delivery contract in the prompt itself
-(pass it through unchanged): START GATE (the worker proves the prescribed
-checks can run before implementing), BLOCKED EXIT (the worker delivers
+(pass it through unchanged). The contract appears in one of two forms
+(G009 T011): CLI/external/self dispatches carry the full four-clause text;
+host dispatches whose profile runs `host_mode = "subagent"` carry a brief
+reference, because the injected agent definition (agents/orx-worker.md)
+already IS the full contract — do not "restore" the long form by hand.
+The contract names: START GATE (the worker proves the prescribed checks
+can run before implementing), BLOCKED EXIT (the worker delivers
 `status: "blocked"` when they cannot — never implements against checks it
 cannot run), CHECK-FIX LOOP (red checks are repaired in the same session
 within the `check_rounds` budget), and DELIVERY GATE (completion only

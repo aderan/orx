@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "summary": "G009 T011 delivered: (1) worker prompt compression with zero information loss — each prescribed check listed once (was twice) and host subagent dispatches carry a brief delivery-contract reference instead of duplicating the four clauses their harness-injected agent definition already carries verbatim (CLI/external/self keep the full inline contract); (2) configurable budget policy ([budget] keys, layered env>project>user>builtin, orx config set writable) — soft warn annotates task-list/run output, hard stops gate NEW launches at dispatch with three recorded traces and a raise-the-limit restore point, thresholds calibrated from the recorded samples (T009 microtask ~90K processing / host raw 659,724; incident a130 25.74M, T003 saga ~44M with 6 attempts, whole session ~155.8M), unknown usage never zero-filled (attempts_unassessed counted, attempt bound backstops, unnormalized rows disclosed); (3) runtime.check_timeout_sec=600 diagnostic-stall bound on all five check/gate/verify command call sites (launches keep command_timeout_sec) — the a130 ~42min silent pytest stall shape now escalates as a bounded red result; (4) parser linearity regression pinning the in-tree O(n^2) fix (200KB no-bracket scan <5s vs 110s pre-fix, <3x growth, bracket example still found). Comparative measurement as required: static controlled A/B on all 13 real R009 task rows (measure.py, rerunnable, state read via copy) — host-subagent scaffolding -32.0% (5,639->3,836 B/task), CLI form -4.6%; plus exactly ONE paid A/B microtask launch (Controller COST BOUND ceiling): same microtask shape, same codex-frontier profile, same isolated repo — passed with a one-line scope-verified fix, 1 launch, 1 check round, input 89,121->85,430 (-4.1%), cached 78,336->75,776, uncached 10,785->9,654, output 624->533, processing 89,745->85,963 (-4.2%), wall 61.9->70.0s; representative dev task 'after' is the static prompt-size delta with explicit limitations (no full paid rerun; harness tool schemas not ORX-generated and unmeasured; N=1 token deltas dominated by run-to-run variance; host-subagent -32% is static-only). Accuracy/acceptance/recovery preserved: full suite 1036 passed 0 xfail (baseline 1022 + 14 new red-first tests; one pre-existing timeout-semantics test migrated to the new key), delivery gate re-ran the A/B check fresh (exit 0), suppression/recovery seams untouched and built upon. Raw metrics and limitations published in docs/recovery-hardening-report.md T011; skills/orx-controller and agents/orx-worker updated for the two contract forms and the budget-stop semantics; IMPLEMENTATION_PLAN.md G009/R009 T011 round record added.",
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest tests/test_context_budget.py -q",
+      "exit_code": 0,
+      "log": "docs/diagnostics/g009-t011-context-2026-10-08/check-newtests.log"
+    },
+    {
+      "command": ".venv/bin/python -m pytest -q",
+      "exit_code": 0,
+      "log": "docs/diagnostics/g009-t011-context-2026-10-08/check-fullsuite.log"
+    },
+    {
+      "command": ".venv/bin/python docs/diagnostics/g009-t011-context-2026-10-08/measure.py",
+      "exit_code": 0,
+      "log": "docs/diagnostics/g009-t011-context-2026-10-08/check-measure.log"
+    }
+  ],
+  "artifacts": [
+    "src/orx/config.py",
+    "src/orx/dispatch.py",
+    "tests/test_context_budget.py",
+    "tests/test_verify_check.py",
+    "docs/recovery-hardening-report.md",
+    "docs/routing-strategy.md",
+    "docs/diagnostics/g009-t011-context-2026-10-08/measure.py",
+    "docs/diagnostics/g009-t011-context-2026-10-08/static-measurement.json",
+    "docs/diagnostics/g009-t011-context-2026-10-08/ab-run/ab-evidence.json",
+    "skills/orx-controller/SKILL.md",
+    "agents/orx-worker.md",
+    "IMPLEMENTATION_PLAN.md"
+  ]
+}

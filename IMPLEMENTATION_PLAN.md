@@ -10,6 +10,48 @@
 
 ### G009/R009 轮次记录
 
+- **T011（2026-10-08 交付，attempt 161）**：用对照实测压缩 controller 与
+  worker 上下文，形成预算策略。四件落地：(1) worker 提示词压缩零信息
+  损失——每条验证条目从出现两次（清单+preflight 行）合并为一次（preflight
+  行即清单，"How your work will be checked" 标题不变）；host_mode=
+  subagent 的停泊改携 brief 交付契约引用（agents/orx-worker.md 由 harness
+  注入且逐字携带四条款——省掉每提示词 ~1.8KB 的纯重复），CLI/external/
+  self 保留完整内联契约+CLI 机器交付条款；verifier 提示词本就轻不动。
+  skills/orx-controller 与 agents/orx-worker 同步双形态契约说明+预算
+  停止语义。(2) 预算策略分层可配（env>project>user>builtin，全部可
+  config set）：budget.soft_warn_task_processing_tokens=8M（微任务 ~90K
+  处理量、host 原样 659,724、a130 一小时 25.74M——早于病理区晚于正常
+  工作）/hard_stop_task_processing_tokens=50M（T003 全链 ~44M：放行
+  a130+a134 合法链阻断二次延续）/hard_stop_task_attempts=8（T003 用
+  6）/hard_stop_run_processing_tokens=150M（全会话 ~155.8M）；归一化
+  沿 T010 词汇非账单；未知用量绝不补零（attempts_unassessed 计数+
+  attempt 门禁兜底、无语义行计 attempts_unnormalized 不入和）；硬停
+  在 run_slice 派发前三处留痕（routing_errors.budget+task event
+  dispatch_budget_stopped+恢复点说明），任务保持 runnable 一切已记录
+  事实可查=恢复点即调阈值；软告警只注记（task list 每任务 budget 观察
+  +run 顶层 budget）；构建在 T004 抑制缝与 T006 不删事实上。(3)
+  runtime.check_timeout_sec=600 诊断长挂边界：check/门禁/verifier 命令
+  五处调用点换用（启动仍用 command_timeout_sec）——a130 一次 pytest
+  卡顿 ~42 分钟静默等待的形态变为 600s 有界红结果；既有超时语义测试
+  迁移到新键。(4) 解析器线性回归钉住（修复已在树）：200KB 无括号
+  slug 流 <5s（修复前实测 110s）+倍增 <3x+带括号样例功能正确，引用
+  a130 事故，不再列为待修根因。对照实测（可重复，基线=已记录实测不
+  重复付费）：静态受控（measure.py，state 只读副本，旧渲染器父 commit
+  逐字引用与归档提示词交叉验证 ~129B 行折叠差）——host subagent
+  scaffolding -32.0%（5,639→3,836B/任务）、CLI 形态 -4.6%；真实 A/B
+  恰 1 次付费启动（Controller COST BOUND 上限）：同形微任务同 profile
+  codex-frontier——passed、一行修复（sub +→-）、1 启动 1 检查轮、
+  input 89,121→85,430（-4.1%）、cached 78,336→75,776、uncached
+  10,785→9,654、output 624→533、处理量 89,745→85,963（-4.2%）、
+  墙钟 61.9→70.0s；代表性开发任务改后=静态测量+诚实声明（host 工具
+  schema 非 ORX 生成未测量、完整付费重跑未执行、单对 A/B 的 token 差
+  N=1 噪声主导不可归因压缩单独贡献、host subagent -32% 纯静态——
+  平台禁孙代）。14 例新增先红后绿；全量 1036 passed 0 xfail
+  （基线 1022+14）；付费启动恰 1 次。详见
+  docs/recovery-hardening-report.md T011 +
+  docs/diagnostics/g009-t011-context-2026-10-08/（measure.py+
+  static-measurement.json+ab-run/ab-evidence.json）。
+
 - **T010（2026-10-08 交付，attempt 159）**：统一 provider 用量口径并补齐
   host/controller/probe 观测。六件落地：(1) adapters.base.normalized_usage
   展示层统一词汇——zcode/codex=cache_subset（input 已含缓存，
@@ -292,7 +334,7 @@
 **Goal**: 完成 T010–T011。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T010 已交付，见上方轮次记录；T011 待做；阶段终验待独立 verifier）
+**Status**: In Progress（R009：T010–T011 已全部交付，见上方轮次记录；阶段终验待独立 verifier）
 
 ## Stage 5: 兼容终验与交付
 **Goal**: 完成 T012–T013。

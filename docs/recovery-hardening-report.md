@@ -7,6 +7,121 @@ attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区�
 
 ---
 
+## T011 · 用对照实测压缩 controller 与 worker 上下文，形成预算策略
+
+**输入commit**：T010 交付后 18d10f4（attempt 161；host 子代理会话
+sess_subagent_agent_07ae8e5e-ad3e-4ff4-9391-71296872fbaf，claim
+--discover-session 绑定，check_rounds 0/3——本任务无命令验证条目，
+agent 检查由独立 verifier 判定；本任务全程预算：付费启动恰 1 次，
+见下文 A/B）。
+
+**红信号（先写行为回归，14 例新增 tests/test_context_budget.py，全红
+后转绿）**：提示词压缩 4 例（每条 prescribed check 恰出现一次、brief
+契约省 >1000B 且保留任务绑定事实、CLI/exit 通道四条款+机器交付条款
+逐字钉住、host_mode=subagent 停泊走 brief 而 self 停泊走 full）；
+预算配置 3 例（内置默认=校准样本值、TOML 解析+校验+非法值拒绝、
+env 层覆盖 origin=env）；预算事实与门禁 5 例（按 harness 归一化
+求和+未知不补零、recorded 处理量超限硬停三处留痕+提额恢复点、
+attempt 数门禁把未知用量的尝试如实计数、软告警只注记不拦截、
+run 级硬停 defer 全部新启动）；诊断长挂 1 例（check_timeout_sec=1
+时 sleep 3 有界超时）；解析器线性回归 1 例（200KB 无括号 slug 流
+<5s——修复前实测 110s——倍增输入 <3x，带括号样例仍正确发现）。
+
+**实现选择**：
+
+1. **worker 提示词压缩（零信息损失的两处）**：每条验证条目原先出现
+   两次（"How your work will be checked" 明细 + preflight 行），合并为
+   一处——preflight 行即检查清单，标题 "How your work will be checked"
+   保持不变（test_assignments 既有钉住不受影响）；四条款交付契约对
+   host subagent worker 是与 agents/orx-worker.md 的逐字重复（harness
+   注入该定义），host_mode=subagent 的停泊改携 brief 引用（保留
+   预算数、任务命令、升级语义，指名四条款按定义 verbatim 适用）。
+   CLI/external/self 通道无定义可证已加载：保留完整内联契约（G009
+   T002 的 CLI 机器交付条款照旧）。verifier 提示词本就短（事故数据：
+   首 input 中位 6,242.5 vs worker 72,245），不动。
+2. **预算策略（config 分层 env > project > user > builtin，全部
+   可 orx config set）**：`budget.soft_warn_task_processing_tokens=8M`
+   （告警：微任务 ~90K 处理量、host 侧原样 659,724、a130 一小时真实
+   工作 25.74M——8M 在病理区前早、正常工作后晚）、
+   `budget.hard_stop_task_processing_tokens=50M`（T003 全链 ~44M：
+   50M 放行 a130+a134 合法链，阻断二次延续）、
+   `budget.hard_stop_task_attempts=8`（T003 用 6 次）、
+   `budget.hard_stop_run_processing_tokens=150M`（全会话归一化
+   ~155.8M）。归一化沿用 T010 词汇（zcode/codex=input+output、
+   cursor 三桶相加，非账单）；**未知用量绝不补零**：无观测的 attempt
+   计入 attempts_unassessed 并由可数的 attempt 门禁兜底，观测行存在
+   但 harness 无语义时计 attempts_unnormalized 不入和。硬停在
+   run_slice 派发前生效（任务级三处留痕：routing_errors+task event
+   dispatch_budget_stopped+预算载荷；run 级 defer），任务保持
+   runnable、证据/验证行/attempt 历史全部可查——**恢复点=调高阈值**，
+   软告警只注记（task list 每任务携带 budget 观察；run 输出顶层
+   budget）。构建在 T004 抑制缝（同为"不启动+可解释停止"）与 T006
+   恢复事实（不删任何已记录事实）之上。
+3. **诊断长挂边界 `runtime.check_timeout_sec=600`**：check/门禁/verifier
+   命令五处调用点换用该值（worker/planner/verifier 启动仍用
+   command_timeout_sec）；a130 在一次 pytest 卡顿中耗 ~42 分钟静默等待
+   的形态，今后在 600s 处变成有界红结果（修或升级）。既有
+   test_check_timeout_semantics_match_verify 相应迁移到新键（语义测
+   试不变，键随缝移动）。
+4. **解析器性能回归**：model_catalog 的线性括号扫描（修复已在树，
+   注释留有 110s/200KB 实测）钉住：绝对界 5s（22x 余量）+倍增界
+   <3x + 带括号样例功能正确。引用 a130 ~42 分钟诊断事故；不再把
+   O(n²) 列为待修根因。
+
+**对照实测（可重复；基线为已记录实测，未重复付费基线）**：
+
+*静态·受控（确定性，零付费；measure.py 重跑即得）*——同一任务行
+（R009 全部 13 个任务，state 只读副本）同一输入下，旧渲染器（父
+commit 逐字引用，与归档提示词交叉验证差异仅 ~129B 行折叠）vs T011
+渲染器：
+
+| 形态 | 旧 (B/任务) | 新 (B/任务) | 节省 |
+|---|---:|---:|---:|
+| host subagent（brief 契约） | 5,639（均值） | 3,836 | **-1,803（-32.0%）** |
+| CLI / self（full 契约） | 5,639 | 5,379 | -260（-4.6%） |
+| 真实归档派发提示词（含 nonce/失败上下文，原始事实） | 5,459–6,712（T006 最高，携失败链） | — | — |
+
+*真实·小任务 A/B（恰 1 次付费启动；Controller COST BOUND 授权的上限）*
+——同形微任务、同 profile（codex-frontier）、同隔离仓：
+
+| 指标 | T009 基线（旧提示词） | T011 A/B（压缩后） | Δ |
+|---|---:|---:|---:|
+| 上下文（派发提示词字节） | 6,467 | 5,146 | -1,321B（注：基线携失败链块，非同类对比；受控同类 -4.6%） |
+| 请求（启动数） | 1 | 1 | 0 |
+| 缓存输入 | 78,336 | 75,776 | -2,560 |
+| 未缓存输入 | 10,785 | 9,654 | -1,131 |
+| 输出 | 624 | 533 | -91 |
+| 处理量（codex 子集口径） | 89,745 | 85,963 | -3,782（-4.2%） |
+| 检查轮 | 1 | 1 | 0 |
+| 正确率 | passed，一行修复 | passed，一行修复（sub: +→-，R003-scope.diff） | 保持 |
+| 墙钟 | 61.9s | 70.0s | +8.1s（单对噪声） |
+
+*代表性开发任务（改后=静态测量+诚实声明，未做付费重跑）*：基线为
+事故实测（host worker 首 input 中位 72,245 vs verifier 6,242.5 ≈11.6x；
+根会话均值 184,113/峰 287,769；a130 累计 25.74M、其中 ~42 分钟卡在
+O(n²) 解析诊断）。改后可测部分：ORX 生成提示词 scaffolding
+-32.0%（host subagent）；不可测部分如实声明：harness 工具 schema 与
+系统注入主导 worker 首 input 体量且非 ORX 生成，未测量；完整付费
+重跑未执行（COST BOUND），不可宣称端到端 32% 节省。
+
+**限制（原文公布）**：单对 A/B 的 token 差（-4.1% input）方向与静态
+scaffolding 节省（-4.6%）一致，但 N=1、会话/缓存状态差异主导，不能
+归因为压缩单独贡献；host subagent 的 -32.0% 为纯静态测量（平台禁止
+子代理再派子代理，无法付费 A/B）；A/B 未跑独立 verifier（成本上限
+一次启动），验收信号=确定性交付门禁复跑+单行 scope diff；cursor
+域权限未变不重跑；bytes/4 为 token 估算非分词器实测。
+
+**绿验证**：新增 14 例先红后绿；全量 `.venv/bin/python -m pytest -q`
+**1036 passed, 0 xfail**（基线 1022+14；迁移 1 例既有超时测试到
+check_timeout_sec）；`git diff --check` 干净；docs/m1.2-report.md 未
+触碰。
+
+**证据**：docs/diagnostics/g009-t011-context-2026-10-08/（measure.py
+可重跑+static-measurement.json；ab-run/ 含 R003 提示词/执行日志/
+交付文档/模型解析/scope diff/ab-evidence.json 与 R001 基线提示词）。
+
+---
+
 ## T010 · 统一 provider 用量口径并补齐 host/controller/probe 观测
 
 **输入commit**：T009 交付后 2bcbe40（attempt 159；host 子代理会话

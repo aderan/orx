@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "summary": "\u5df2\u5c06 calc.py \u7684 sub(a, b) \u4fee\u590d\u4e3a\u8fd4\u56de a - b\uff1b\u5168\u90e8 3 \u4e2a unittest \u901a\u8fc7\u3002",
+  "checks": [
+    {
+      "command": "python3 -m unittest discover -s tests -v",
+      "exit_code": 0,
+      "log": null
+    }
+  ],
+  "artifacts": [
+    "calc.py"
+  ],
+  "attempt": 5,
+  "channel": "cli_final_message",
+  "recorded_at": "2026-10-08T03:39:28.870507+00:00"
+}
