@@ -21,9 +21,18 @@
       "result": "blocked",
       "failure_reason_prefix": "delivery blocked (environment/tool blocked):",
       "workspace_changes": "none (calc.py untouched; delivery document states it; git status clean except .orx//__pycache__)",
-      "usage_observation": {"input": 22187, "output": 2078, "cached_input": 151296, "source": "native_cli", "accuracy": "exact"},
+      "usage_observation": {
+        "input": 22187,
+        "output": 2078,
+        "cached_input": 151296,
+        "source": "native_cli",
+        "accuracy": "exact"
+      },
       "status_for_goal": "真实启动且交付语义正确（blocked 被如实分类，未被 exit 0 覆盖）；生产配置（approvalMode=allowlist 仅 Shell(ls)、sandbox disabled、无 force）下权限阻塞，闭环未达成——需用户决定 Cursor 全局权限调整，本轮不改全局权限",
-      "evidence_files": ["cursor-strong-blocked.delivery.json", "cursor-strong-preflight.txt"]
+      "evidence_files": [
+        "cursor-strong-blocked.delivery.json",
+        "cursor-strong-preflight.txt"
+      ]
     },
     {
       "attempt": 2,
@@ -37,9 +46,18 @@
       "scope_change": "exactly one line in calc.py: 'return a - b' → 'return a + b' (captured live via git diff; also visible in commit 74c1cef's parent diff)",
       "internal_check": "python3 -m unittest discover -s tests -v exit 0 inside the agent (structured delivery checks[0].exit_code=0)",
       "controller_gate": "delivery gate re-ran the command fresh: 'Ran 1 test ... OK' (codex-gate-rerun.log, .orx/runs/R001/check/T001/01-0000-command.log)",
-      "usage_observation": {"input": 89121, "output": 624, "cached_input": 78336, "source": "native_cli", "accuracy": "exact"},
+      "usage_observation": {
+        "input": 89121,
+        "output": 624,
+        "cached_input": 78336,
+        "source": "native_cli",
+        "accuracy": "exact"
+      },
       "status_for_goal": "真实 CLI worker 完整闭环达成（读→写→内部检查→正式结构化交付→控制器独立门禁→passed）",
-      "evidence_files": ["codex-frontier-passed.delivery.json", "codex-gate-rerun.log"]
+      "evidence_files": [
+        "codex-frontier-passed.delivery.json",
+        "codex-gate-rerun.log"
+      ]
     },
     {
       "attempt": 3,
@@ -55,7 +73,11 @@
       "controller_gate": "delivery gate re-ran command fresh at complete; run R002 done, task passed",
       "usage_observation": "none recorded by ORX (host attempts have no usage observation — the known 21/26 gap, T010 scope); raw zcode-side metric for disclosure: subagent_tokens 659,724 (processing, not billing)",
       "status_for_goal": "真实 host worker 完整闭环达成（真实原生子代理读写→内部检查→正式交付→门禁→独立验证）",
-      "evidence_files": ["host-worker-passed.delivery.json", "host-worker-check.log", "host-worker-scope.diff"]
+      "evidence_files": [
+        "host-worker-passed.delivery.json",
+        "host-worker-check.log",
+        "host-worker-scope.diff"
+      ]
     },
     {
       "attempt": 4,
@@ -69,25 +91,77 @@
       "verifier_behavior": "independently re-ran unittest itself (2 tests OK exit 0), checked git diff scope, checked .pyc/test-source consistency — not just trusting the worker's text",
       "usage_observation": "none recorded by ORX (same host gap); raw subagent_tokens 22,981",
       "status_for_goal": "真实 verifier 独立验收闭环达成",
-      "evidence_files": ["host-worker-passed.delivery.json"]
+      "evidence_files": [
+        "host-worker-passed.delivery.json"
+      ]
     }
   ],
   "other_enabled_profiles_status": [
-    {"profile": "cursor-frontier (claude-opus-5-5)", "status": "probe ok (logged_in, 31 models, cursor 3.23.12 same binary); 权限轴与 cursor-strong 同源（同 cli-config.json allowlist）→ 同样无法在当前生产权限下执行内部 shell；未做微任务启动（首轮阻塞已在 cursor-strong 验证，无需重复烧额度）"},
-    {"profile": "cursor-economy (composer-2.5)", "status": "同上：probe ok，权限域与 cursor-strong 相同 → 权限阻塞状态沿同源配置成立，未重复启动"},
-    {"profile": "codex-frontier", "status": "真实微任务闭环 passed（attempt 2）；probe ok (logged_in, 10 models)"},
-    {"profile": "zcode-worker", "status": "真实微任务闭环 passed（attempt 3）"},
-    {"profile": "zcode-verifier-flash", "status": "真实独立验收 passed（attempt 4；且 G009 R009 本身 T001–T008 的 8 次真实 verifier 派发均为该档）"},
-    {"profile": "zcode-verifier-strong", "status": "配置在位未启用（本 Goal 路由未触达）；probe/启动未验证——如实记未验证"},
-    {"profile": "zcode-controller / orx-host", "status": "controller 即本会话（真实运行中）；orx-host 为 preset 占位（model=unconfigured），未验证"},
-    {"profile": "planner 角色（codex-frontier/cursor-frontier）", "status": "codex-frontier 进程与认证已由微任务实证；planner 角色的 Plan IR 生成在 G008/R008 有真实 codex 历史记录；本 Goal 计划来自权威模板（host-manual）。cursor-frontier planner 同 cursor 权限域限制"}
+    {
+      "profile": "cursor-frontier (claude-opus-5-5)",
+      "status": "probe ok (logged_in, 31 models, cursor 3.23.12 same binary); 权限轴与 cursor-strong 同源（同 cli-config.json allowlist）→ 同样无法在当前生产权限下执行内部 shell；未做微任务启动（首轮阻塞已在 cursor-strong 验证，无需重复烧额度）"
+    },
+    {
+      "profile": "cursor-economy (composer-2.5)",
+      "status": "同上：probe ok，权限域与 cursor-strong 相同 → 权限阻塞状态沿同源配置成立，未重复启动"
+    },
+    {
+      "profile": "codex-frontier",
+      "status": "真实微任务闭环 passed（attempt 2）；probe ok (logged_in, 10 models)"
+    },
+    {
+      "profile": "zcode-worker",
+      "status": "真实微任务闭环 passed（attempt 3）"
+    },
+    {
+      "profile": "zcode-verifier-flash",
+      "status": "真实独立验收 passed（attempt 4；且 G009 R009 本身 T001–T008 的 8 次真实 verifier 派发均为该档）"
+    },
+    {
+      "profile": "zcode-verifier-strong",
+      "status": "配置在位未启用（本 Goal 路由未触达）；probe/启动未验证——如实记未验证"
+    },
+    {
+      "profile": "zcode-controller / orx-host",
+      "status": "controller 即本会话（真实运行中）；orx-host 为 preset 占位（model=unconfigured），未验证"
+    },
+    {
+      "profile": "planner 角色（codex-frontier/cursor-frontier）",
+      "status": "codex-frontier 进程与认证已由微任务实证；planner 角色的 Plan IR 生成在 G008/R008 有真实 codex 历史记录；本 Goal 计划来自权威模板（host-manual）。cursor-frontier planner 同 cursor 权限域限制"
+    }
   ],
   "observed_gaps_for_later_tasks": [
     "T010: host attempts（3、4）usage observation 缺失；session_ref 未绑定（discover-session 未命中，疑 /tmp↔/private/tmp 项目根别名）——归属与观测是 T010 直接输入",
     "cursor 系全部档位在当前生产权限配置下无法执行内部 shell（allowlist 仅 Shell(ls)）；修复需用户决策全局 Cursor 权限（本 Goal 不改）"
   ],
   "cost_summary": {
-    "real_paid_launches": 4 (cursor-strong 54s blocked; codex 62s passed; host worker 58s passed; verifier 56s passed),
+    "real_paid_launches": "4 (cursor-strong 54s blocked; codex 62s passed; host worker 58s passed; verifier 56s passed; closeout: cursor-strong 113s passed)",
     "policy": "每 profile 首轮一次；权限阻塞即收口；无额外变体尝试"
+  },
+  "addendum_2026_10_08_closeout": {
+    "what": "cursor-strong closed loop achieved after user decision",
+    "user_decision": "授予 Cursor 完全权限：~/.cursor/cli-config.json approvalMode allowlist→unrestricted（2026-10-08 13:55 +0800；备份 cli-config.json.bak-2026-10-08；deny 保持空、sandbox 保持 disabled、未改 profile force 旗标）",
+    "preflight_after": "approval_mode: unrestricted（fingerprint sha256:f3f43a52…，prior 结果随之失效）；cursor-strong-preflight.txt 为修改前基线，保留不改",
+    "closed_loop": {
+      "run": "R004/G004（隔离仓新预置红 sub 缺陷，两个测试文件均红）",
+      "attempt": 6,
+      "profile": "cursor-strong (grok-4.7-medium)",
+      "nonce": "orx-assignment:c411dfb9-cde6-410f-aa0f-90dc22039514",
+      "session_ref": "c6cbecfc-339a-4828-80be-fdb17df7a6e2",
+      "wall_clock": "1:53（cursor 进程内 97.1s）",
+      "scope_change": "exactly one line: sub 'a + b' → 'a - b'（cursor-strong-scope.diff）",
+      "internal_check": "python3 -m unittest 全绿 exit 0（4 tests，交付 checks[0]）",
+      "controller_gate": "running→verifying→passed（events 19-20，2026-10-08T05:58:21Z）；R004 done",
+      "usage_observation": {
+        "input": 32798,
+        "output": 3315,
+        "cached_input": 150912,
+        "source": "native_cli",
+        "accuracy": "exact"
+      },
+      "status": "真实 CLI 闭环达成——原 attempt 1 的'权限阻塞需用户决策'限制由用户决策解除并实证"
+    },
+    "observed_followup": "worker 因网络断连重试 orx task complete（exec log 3 次调用），迟到重复 complete 被状态机以 illegal transition passed→verifying 拒绝（终态正确）——complete 幂等性列为后续小项",
+    "other_profiles_status_update": "cursor-frontier/cursor-economy 与 cursor-strong 同配置域，unrestricted 后同获完整执行权限（未单独付费验证，同源配置证据）"
   }
 }
