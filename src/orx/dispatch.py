@@ -3805,6 +3805,7 @@ def task_complete(
         project, run, revision, task, attempt, delivered_evidence=str(evidence_path),
     )
     store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
+    usage_backfill = _usage_autobill(project, attempt.id)
     machine.transition(
         store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
         reason="completion claimed; verification starting",
@@ -3862,6 +3863,7 @@ def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run
     store.attempt_update(
         attempt.id, ended_at=db_now(), result=status, failure_reason=reason,
     )
+    usage_backfill = _usage_autobill(project, attempt.id)
     machine.transition(
         store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
         reason=reason, failure_reason=reason,
@@ -3900,6 +3902,7 @@ def task_fail(project: Project, task_id: str, reason: str,
             result="failed",
             failure_reason=reason,
         )
+        usage_backfill = _usage_autobill(project, attempt.id)
     machine.transition(
         store, revision.id, task.task_id, "fail", TaskStatus.FAILED, reason=reason,
         failure_reason=reason,
@@ -4637,6 +4640,7 @@ def task_recover(project: Project, task_id: str, termination_fact: str,
     store.attempt_update(
         attempt.id, ended_at=db_now(), result="failed", failure_reason=reason,
     )
+    usage_backfill = _usage_autobill(project, attempt.id)
     machine.transition(
         store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
         reason=reason, failure_reason=reason,
@@ -5151,6 +5155,7 @@ def verify_submit(
                 f"agent verifier rejected: {reason or chosen.spec}"
             ),
         )
+        usage_backfill = _usage_autobill(project, bound.id)
     else:
         # Legacy path: no dispatch-time attempt exists (verdict submitted
         # straight after task completion). Route a verifier now, as in M1.
@@ -6224,3 +6229,56 @@ def usage_zcode_record(project: Project, attempt_id: int,
         "aggregate": aggregate,
         "session_discovery": discovery,
     }
+
+
+def _usage_autobill(project: Project, attempt_id: int) -> dict:
+    """Auto-record the zcode_db usage observation at attempt closure.
+
+    G009 closeout: the incident's 21-of-26 host gap closed at the one
+    moment the books can first be written — the attempt is terminal
+    (worker complete / failed / blocked delivery / recover / verifier
+    verdict), so the session's usage is final and the subtree below it
+    can be attributed without racing a live writer.
+
+    Never raises: a usage read must not fail the closure it follows.
+    Non-recordable outcomes are STATED on the attempt as a missing
+    reason (subtree conflict / unreadable aggregate / unbound session) —
+    missing is stated, never zero — except an absent zcode database,
+    where ORX cannot know anything and the attempt stays unassessed for
+    the usage views to count honestly.
+    """
+    from . import zcode_sessions
+
+    store = project.store
+    attempt = store.attempt_get(attempt_id)
+    if attempt.driver != "host" or attempt.harness != "zcode":
+        return {"status": "skipped", "attempt": attempt_id,
+                "reason": "not a host zcode attempt"}
+    if not project.config.usage_auto_backfill_zcode:
+        return {"status": "skipped", "attempt": attempt_id,
+                "reason": "usage.auto_backfill_zcode disabled"}
+    if not zcode_sessions.zcode_db_path().exists():
+        return {"status": "skipped", "attempt": attempt_id,
+                "reason": "zcode_db_absent"}
+    try:
+        result = usage_zcode_record(project, attempt_id)
+    except ConflictError as exc:
+        # The subtree already belongs to another attempt's book: recording
+        # it here would count the same tokens twice. State it and stop.
+        store.attempt_mark_usage_missing(
+            attempt_id, adapters.base.MISS_ZCODE_SUBTREE_CONFLICT)
+        return {"status": "missing", "attempt": attempt_id,
+                "reason": adapters.base.MISS_ZCODE_SUBTREE_CONFLICT,
+                "detail": str(exc)}
+    except ORXError as exc:
+        store.attempt_mark_usage_missing(
+            attempt_id, adapters.base.MISS_ZCODE_UNREADABLE)
+        return {"status": "missing", "attempt": attempt_id,
+                "reason": adapters.base.MISS_ZCODE_UNREADABLE,
+                "detail": str(exc)}
+    if result["status"] == "unreadable":
+        store.attempt_mark_usage_missing(
+            attempt_id, adapters.base.MISS_ZCODE_UNREADABLE)
+        return {"status": "missing", "attempt": attempt_id,
+                "reason": adapters.base.MISS_ZCODE_UNREADABLE}
+    return result

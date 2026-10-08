@@ -9,6 +9,45 @@ G009/R009 轮次记录与 docs/diagnostics/ 各目录，不在本报告补写。
 
 ---
 
+## 收尾（2026-10-08，用户决策后）
+
+**收尾① Cursor 完全权限 + cursor-strong 真实闭环**（98814ff/2716ba4）：
+用户决策授予完全权限——`~/.cursor/cli-config.json` `approvalMode`
+allowlist→unrestricted（备份 `cli-config.json.bak-2026-10-08`；deny 保持空、
+sandbox 保持 disabled；未走 profile force 旗标，全局配置即权限源）。T007
+预检即时反映新轴值（指纹失效重算）。真实验证：隔离仓新预置红 sub 缺陷，
+cursor-strong 单次真实启动 1:53 完整闭环（nonce c411dfb9、真实 session
+c6cbecfc、恰好一行修复、agent 内 unittest 4 tests exit 0、结构化 passed
+交付、门禁后 passed、R004 done、usage 32798/3315/150912 native_cli exact）。
+原 T009"cursor 权限阻塞留用户决策"限制解除并实证；证据 addendum 追加于
+docs/diagnostics/g009-microtask-2026-10-08/evidence.json。观察项：worker
+网络断连重试 complete 被状态机正确拒绝（illegal transition），complete
+幂等性列为后续小项。
+
+**收尾② host attempts 用量自动补录**：
+`dispatch._usage_autobill`——host zcode attempt 到达终态的五个闭合点
+（worker complete / failed/blocked 交付 / task fail / task recover /
+verifier verdict submit）自动读取会话子树用量并记录 zcode_db 观测行；
+永不抛错（补录不得弄坏它跟随的闭合）；不可记录结果一律陈述为 missing
+reason 而非清零：子树冲突=`zcode_subtree_conflict`、聚合不可读=
+`zcode_unreadable`、无会话=`host_session_unbound`（沿 T010 语义）；zcode
+库不存在则安静跳过（ORX 无从知晓，attempt 留给 usage 视图计 unassessed）；
+配置门 `[usage] auto_backfill_zcode`（默认 true，分层 + `orx config set`
+可写；env 层为 int-only 故不设 env 键）。手动 `orx usage zcode --attempt`
+保留为重同步路径。附带修复 G009 运行中发现的 CLI 缺陷：`orx task complete
+--session` 此前被 CLI 层静默丢弃（attempt 157 session_ref 为 NULL 的根因），
+现已转发。观测契约 missing 词表补两义。测试
+tests/test_usage_autobill.py 7 例全确定性（伪 zcode 库；含真实 claim→
+complete 流程、冲突陈述、配置关闭、库缺失安静跳过、CLI attempt 永不
+autobill、CLI 转发契约）。全量 1043 passed 0 xfail（1036+7）。
+
+**已知边界（沿终审一致）**：attempt 164（根会话绑定为 worker attempt）
+持有控制器子树所有权期间，R009 其余 host attempts 的逐 child 回填被防双算
+守卫拒绝——该 run 的 host 用量以 zcode 侧原始事实（observe/subagent_tokens
+披露）为准；此后新 attempt 的用量在闭合点自动入账。
+
+---
+
 ## T012 · 执行兼容、打包、迁移及全量验证，整理使用文档
 
 **输入commit**：T011 交付后 cef9e7f（attempt 163，session

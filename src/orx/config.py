@@ -120,6 +120,11 @@ BUILTIN_DEFAULTS: dict = {
     "budget.hard_stop_task_processing_tokens": 50_000_000,
     "budget.hard_stop_task_attempts": 8,
     "budget.hard_stop_run_processing_tokens": 150_000_000,
+    # G009 closeout: automatically record a zcode_db usage observation when
+    # a HOST zcode attempt reaches a terminal result. Conflicts and
+    # unreadable aggregates become missing reasons — never zero, never a
+    # silent skip when the books could be written.
+    "usage.auto_backfill_zcode": True,
     "inbox.github_labels": [],
     "inbox.auto_accept": False,
 }
@@ -146,6 +151,7 @@ WRITABLE_SPEC: dict[str, str] = {
     "budget.hard_stop_task_processing_tokens": "integer >= 1",
     "budget.hard_stop_task_attempts": "integer >= 1",
     "budget.hard_stop_run_processing_tokens": "integer >= 1",
+    "usage.auto_backfill_zcode": "boolean (true | false)",
 }
 RECOGNIZED_KEYS: tuple[str, ...] = tuple(WRITABLE_SPEC)
 PROFILE_KEYS = frozenset({
@@ -307,6 +313,12 @@ class Config:
     hard_stop_task_processing_tokens: int = 50_000_000
     hard_stop_task_attempts: int = 8
     hard_stop_run_processing_tokens: int = 150_000_000
+    # G009 closeout: auto-record a zcode_db usage observation when a HOST
+    # zcode attempt reaches a terminal result (worker complete / failed /
+    # blocked delivery / recover / verifier verdict). The manual
+    # `orx usage zcode --attempt` remains the re-sync path; subtree
+    # conflicts and unreadable aggregates are stated as missing reasons.
+    usage_auto_backfill_zcode: bool = True
     inbox_github_labels: list[str] = field(default_factory=list)
     inbox_auto_accept: bool = False
     warnings: tuple[str, ...] = ()
@@ -488,6 +500,15 @@ def load_config(path: Path) -> Config:
     hard_task_attempts = budget_int("hard_stop_task_attempts", 8)
     hard_run_tokens = budget_int("hard_stop_run_processing_tokens", 150_000_000)
 
+    usage_cfg = data.get("usage", {})
+    if not isinstance(usage_cfg, dict):
+        errors.append("config.toml: [usage] must be a table")
+        usage_cfg = {}
+    usage_backfill = usage_cfg.get("auto_backfill_zcode", True)
+    if not isinstance(usage_backfill, bool):
+        errors.append("config.toml: [usage] auto_backfill_zcode must be a boolean")
+        usage_backfill = True
+
     if errors:
         raise ConfigError(errors)
 
@@ -509,6 +530,7 @@ def load_config(path: Path) -> Config:
         hard_stop_task_processing_tokens=hard_task_tokens,
         hard_stop_task_attempts=hard_task_attempts,
         hard_stop_run_processing_tokens=hard_run_tokens,
+        usage_auto_backfill_zcode=usage_backfill,
         warnings=tuple(warnings),
     )
 
@@ -823,6 +845,7 @@ def load_effective(
     hard_task_tokens = layered("budget.hard_stop_task_processing_tokens")
     hard_task_attempts = layered("budget.hard_stop_task_attempts")
     hard_run_tokens = layered("budget.hard_stop_run_processing_tokens")
+    usage_backfill = layered("usage.auto_backfill_zcode")
 
     depth_profiles: dict[str, list[str]] = {}
     for depth_name in ("light", "standard", "deep"):
@@ -859,6 +882,9 @@ def load_effective(
     if not isinstance(inbox_auto_accept, bool):
         errors.append("config.toml: [inbox] auto_accept must be a boolean")
         inbox_auto_accept = False
+    if not isinstance(usage_backfill, bool):
+        errors.append("config.toml: [usage] auto_backfill_zcode must be a boolean")
+        usage_backfill = True
     if (
         not isinstance(worker_check_rounds, int) or isinstance(worker_check_rounds, bool)
         or worker_check_rounds < 1
@@ -964,6 +990,7 @@ def load_effective(
         hard_stop_task_processing_tokens=hard_task_tokens,
         hard_stop_task_attempts=hard_task_attempts,
         hard_stop_run_processing_tokens=hard_run_tokens,
+        usage_auto_backfill_zcode=usage_backfill,
         inbox_github_labels=list(inbox_labels),
         inbox_auto_accept=inbox_auto_accept,
         warnings=tuple(warnings),
@@ -1035,6 +1062,7 @@ def config_entries(effective: EffectiveConfig) -> list[dict]:
         "budget.hard_stop_task_processing_tokens": cfg.hard_stop_task_processing_tokens,
         "budget.hard_stop_task_attempts": cfg.hard_stop_task_attempts,
         "budget.hard_stop_run_processing_tokens": cfg.hard_stop_run_processing_tokens,
+        "usage.auto_backfill_zcode": cfg.usage_auto_backfill_zcode,
     }
     return [
         {"key": key, "value": values[key], "origin": effective.origins[key]}
@@ -1133,6 +1161,8 @@ def parse_config_value(key: str, raw: str, *, profile_names: set[str] | None = N
             raise ConfigError([f"{key} {raw!r} invalid (expected {expect})"])
         return value
     if key == "plan.allow_class_downgrade":
+        return _parse_bool(key, raw)
+    if key == "usage.auto_backfill_zcode":
         return _parse_bool(key, raw)
     if key in PROFILE_KEYS:
         names = _parse_name_list(key, raw)

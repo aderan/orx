@@ -1578,6 +1578,7 @@ def task_complete(
         result = dispatch.task_complete(
             project, task_id, str(evidence),
             attempt_id=attempt, actual_model=actual_model,
+            session=session,
         )
     except DeliveryRejected as exc:
         _render_delivery_rejected(exc, json_out)

@@ -172,6 +172,11 @@ MISS_EXECUTION_FAILURE = "execution_failure"
 # G009 T010: a host (zcode) attempt whose usage could not be observed
 # because no harness session is bound to it — the 21/26 incident gap.
 MISS_HOST_SESSION_UNBOUND = "host_session_unbound"
+# G009 closeout auto-backfill: stated failures of the zcode-side read at
+# attempt closure — the subtree already belongs to another attempt's book,
+# or the aggregate could not be read back. Never zero-filled.
+MISS_ZCODE_SUBTREE_CONFLICT = "zcode_subtree_conflict"
+MISS_ZCODE_UNREADABLE = "zcode_unreadable"
 
 
 # ---------------------------------------------------------------------------

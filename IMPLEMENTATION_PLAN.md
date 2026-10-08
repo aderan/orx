@@ -374,6 +374,10 @@
 **Tests**: 详见IR verification，实施时先red再green。
 **Status**: Done（R009：T012–T013 全部交付；T013 终审=八条验收证据表见 docs/recovery-hardening-report.md，Goal G009 判 done；未发布版本）
 
+### 收尾（2026-10-08）
+
+- 用户决策两项收尾完成：① Cursor unrestricted 授权（全局配置，备份在案）+ cursor-strong 真实闭环实证（隔离仓 R004，1:53 一行修复全链路 passed）；② host attempts 用量自动补录 `_usage_autobill` 五闭合点 + `[usage] auto_backfill_zcode` 配置门（默认开）+ missing 词表两义 + CLI complete --session 转发修复；全量 1043 passed。详见 docs/recovery-hardening-report.md 收尾节。
+
 # IMPLEMENTATION_PLAN — orx-pbv（替换 StockMate pbv-loop）
 
 创建：2026-10-03。任务 Goal 原文由用户会话给出；替换契约见 `docs/pbv-mapping.md`（Stage 1 冻结基线）。

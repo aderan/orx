@@ -753,6 +753,8 @@ reason of `harness_omitted`. Recorded reasons are only:
 | `truncated` | the parsed text ends in the capture truncation marker and no usage object survived |
 | `execution_failure` | the launch failed or never started, and the stream had no usable usage object |
 | `host_session_unbound` | a host zcode attempt with no bound session and no discoverable one (G009 T010) |
+| `zcode_subtree_conflict` | the attempt's session subtree already belongs to another attempt's book at auto-backfill time — recording would double-count, so it is stated instead (G009 closeout) |
+| `zcode_unreadable` | the zcode-side aggregate could not be read back at auto-backfill time (G009 closeout) |
 
 A stored observation clears `usage_missing_reason`. Host attempts are
 not assessed by the CLI miss path unless something actually recorded a
