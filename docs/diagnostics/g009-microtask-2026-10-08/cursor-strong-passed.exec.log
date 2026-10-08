@@ -1,0 +1,99 @@
+$ agent --print --output-format json --workspace /private/tmp/orx-g009-micro --trust --model grok-4.7-medium ASSIGNMENT IDENTITY (machine anchor — do not remove or alter this line):
+ORX_ASSIGNMENT=orx-assignment:c411dfb9-cde6-410f-aa0f-90dc22039514
+
+You are an ORX worker for Goal G004: 修复 calc.sub：当前实现把减法写成了加法。改为正确减法使全部单元测试通过。
+
+Your assignment is ONE task. Do only this task and stay inside its scope.
+
+Task T001: 修复 calc.sub 为正确减法，使全部单元测试全绿。
+
+Goal constraints (binding for this work):
+  - 只修改 calc.py；不得改测试文件。
+
+Goal context (background; binding only where it repeats a constraint):
+G009 收尾：用户已授予 Cursor unrestricted 权限（2026-10-08，配置备份 cli-config.json.bak-2026-10-08），验证 cursor-strong 真实闭环。
+
+Scope (write only inside these project-relative paths): calc.py
+Read these files first — before any exploration, and only these plus the
+files you yourself create or modify (project-relative):
+  - calc.py
+  - tests/test_calc.py
+  - tests/test_sub.py
+Acceptance (your work is verified against these, verbatim):
+  - 'calc.py 中 sub(a,b) 返回 a-b；python3 -m unittest discover -s tests 全部通过（exit 0）。'
+
+How your work will be checked (the prescribed checks, with ORX's
+static pre-flight status — assembled at assignment time, nothing
+was executed; the START GATE re-verifies it for real in your
+environment):
+  - [preflight:ok] command 'python3 -m unittest discover -s tests -v' -> denylist allowed; first token 'python3' found on PATH (/Users/flb/.pyenv/shims/python3)
+Pre-flight summary: 1 command check(s): 1 ok, 0 blocked; 0 agent check(s) not preflighted.
+
+Delivery contract (binding, in order):
+1. START GATE: before any implementation work, prove the checks can run in
+   your environment. Run `orx task check T001` (or trial-run each
+   prescribed check command yourself) and confirm the tools exist, the
+   commands are permitted, and the test baseline executes. Do not write any
+   task code before this gate is green or you know exactly why it cannot be.
+2. BLOCKED EXIT: if the start gate shows the environment cannot run the
+   checks (tool missing, command rejected by the sandbox, baseline not
+   executable), stop immediately: leave the workspace unchanged, exit
+   non-zero, and report `blocked: <why the checks cannot run>` in your
+   output. Do NOT invest in implementation first — discovering this only
+   after finishing the work is exactly the failure this contract prevents.
+   A CLI-launched worker does not control the process exit code — its
+   blocked delivery is the structured document of clause 5.
+3. CHECK-FIX LOOP (budget: 3 check round(s) on this attempt):
+   when a check is red, repair it in THIS session — check -> fix -> check
+   again — while budget remains. `orx task check T001` reports
+   check_rounds (rounds used vs budget) for your attempt after every run.
+   Red checks that are EXPECTED at this stage of development are part of
+   the work, not failures (TDD: a test written before its implementation is
+   deliberately red): keep implementing in the same session — do not
+   restart the task or request a new attempt merely because a check is
+   temporarily red. Run the full check set at stage boundaries only — when
+   a new behavior is complete, when a module modification is complete, and
+   when you are ready to deliver — not after every edit. When the budget
+   is exhausted and checks are still red, stop iterating: submit the
+   structured failed/blocked delivery result (`orx task complete
+   T001 --evidence <file>`) or `orx task fail T001
+   --reason <why>` so the Controller decides the next round. Do not keep
+   working past the budget.
+4. DELIVERY GATE: every prescribed command check above must pass (exit 0)
+   before you may exit 0 or submit `orx task complete T001
+   --evidence <file>`. A green self-check is necessary, not sufficient: it
+   never replaces the independent verifier — agent checks and independent
+   acceptance still judge the work afterwards.
+5. FINAL DELIVERY MESSAGE (machine contract): the CLI process exit code is
+   transport, not your verdict — the harness controls it, and a blocked run
+   may still exit 0. End your FINAL message with exactly one fenced
+   ```json block carrying your structured delivery result, and write
+   nothing after it (the same schema `orx task complete --evidence`
+   validates):
+
+   {"status": "passed" | "failed" | "blocked",
+    "summary": "<non-empty: what was delivered, or why not>",
+    "checks": [{"command": "<cmd>", "exit_code": <integer or null>,
+               "log": "<path or null>"}],
+    "artifacts": ["<path>", ...]}
+
+   ORX parses that document as your delivery. Natural-language statements
+   ("blocked: ...") are diagnostic context for humans, never a machine
+   delivery: a final message without the document is recorded as a
+   delivery protocol error, never a pass, and two disagreeing documents
+   are a protocol error too. status=passed enters the delivery gate above;
+   status=failed|blocked ends the attempt as your recorded delivery
+   without the gate.
+
+Rules:
+- do not modify the Goal text or other tasks' scope
+- if you are blocked, leave the workspace unchanged and exit non-zero with the
+  blocker in your output; do not widen scope
+- exit 0 only when the task is done AND the delivery gate is green
+
+[exit 0 in 97.10s]
+{"type":"result","subtype":"success","is_error":false,"duration_ms":91257,"duration_api_ms":91257,"result":"I'll follow the ORX worker skill and start by reading its contract before any task work.The assignment is one task: fix `calc.sub` so the unit tests pass, and only `calc.py` may change. I'll read the three allowed files and run the start-gate check before editing anything.The start gate ran: the unittest command is available and the baseline fails because `sub` still adds. I'll record that phase, then change `sub` to subtract.`calc.sub` now returns `a - b`. The prescribed unittest command passed on the delivery gate (exit 0), and task T001 is recorded as passed.\n\nORX_ACTUAL_EFFORT=low\n\n```json\n{\"status\": \"passed\", \"summary\": \"calc.sub now returns a-b. python3 -m unittest discover -s tests -v passed with exit 0.\", \"checks\": [{\"command\": \"python3 -m unittest discover -s tests -v\", \"exit_code\": 0, \"log\": \".orx/runs/R004/check/T001/01-0001-command.log\"}], \"artifacts\": [\"calc.py\"]}\n```","session_id":"c6cbecfc-339a-4828-80be-fdb17df7a6e2","request_id":"a6c3009c-7106-4ccf-89d0-704b18c3c06b","usage":{"inputTokens":32798,"outputTokens":3315,"cacheReadTokens":150912,"cacheWriteTokens":0}}
+
+[stderr]
+Connection lost, reconnecting to https://agentn.global.api5.cursor.sh (attempt 1)...
+Retry attempt 1...

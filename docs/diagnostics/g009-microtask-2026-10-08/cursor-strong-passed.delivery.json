@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "summary": "calc.sub now returns a-b. python3 -m unittest discover -s tests -v passed with exit 0.",
+  "checks": [
+    {
+      "command": "python3 -m unittest discover -s tests -v",
+      "exit_code": 0,
+      "log": ".orx/runs/R004/check/T001/01-0001-command.log"
+    }
+  ],
+  "artifacts": [
+    "calc.py"
+  ],
+  "attempt": 6,
+  "channel": "cli_final_message",
+  "recorded_at": "2026-10-08T05:58:25.776103+00:00"
+}

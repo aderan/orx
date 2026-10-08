@@ -1,0 +1,10 @@
+diff --git a/calc.py b/calc.py
+index 5b9df8f..d13c48a 100644
+--- a/calc.py
++++ b/calc.py
+@@ -5,4 +5,4 @@ def mul(a, b):
+     return a * b
+ 
+ def sub(a, b):
+-    return a + b  # deliberately wrong: cursor-strong validation fix target
++    return a - b
