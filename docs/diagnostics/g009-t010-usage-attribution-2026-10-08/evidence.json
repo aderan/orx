@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "summary": "T010 delivered: one normalized provider usage vocabulary (adapters.base.normalized_usage: zcode/codex cache-subset processing=input+output with cache never added on top, cursor cache-separate input+cache+output, missing stays None, unknown harness claims nothing, never billing); read-only zcode session-tree usage aggregation with (session_id, logical_request_id, attempt_index) dedup, error-zero-row honesty, and controller-parent exclusion; discover_attempt_session directory matching now realpath-normalized on both sides (fixes the T009 /tmp-vs-/private/tmp binding gap); schema v12 widens usage_observations.source to admit 'zcode_db' with an additive backup-replace migration, no backfill, and one-observation-per-attempt-per-source singleton semantics (identical repeat idempotent, different rejected); orx usage gains the attribution books (roles from attempts with missing_reasons/unassessed counts and normalized partial sums, controller = root session's OWN usage live-read with unattributed descendants listed never merged, probe = separate empty-by-design book) plus the 'orx usage zcode' backfill command (host zcode attempts only; session = explicit > bound > one nonce discovery, never ORX_SESSION_REF which names the controller; bidirectional subtree-overlap rejection; host_session_unbound recorded when no session). 15 new deterministic tests (6 normalized vocabulary + 5 e2e attribution over a fake zcode db + 4 migration/backup-copy), all first written red. Prescribed gate 75 passed (exit 0); full suite 1022 passed, 0 xfail (baseline 1007 + 15); git diff --check clean; docs/m1.2-report.md reverted after regeneration per convention. Schema 11->12 ripples updated with the code: observability-contract sixth amendment (gate accepts 12, consumption canonical order native_cli > zcode_db > host_report > output_estimate, miss-reason table + host_session_unbound, normalized-presentation rules and the not-billing boundary), contract gate test, 21 schema-version assertions, and the package-acceptance chain expectation now anchored to orx.state.CODE_SCHEMA_VERSION (scripts/check_release.py is release-acceptance infrastructure imported and executed by tests/test_package_acceptance.py - treated as the tests bucket and disclosed here for the Controller to judge). Disclosed limitations: cursor cacheWriteTokens is not captured (constant 0 in the incident), the controller book depends on ORX_SESSION_REF and reads unbound from a plain terminal (honest missing, not zero), and this attempt's own ORX usage remains unrecorded until the controller backfills 'orx usage zcode --attempt 159'.",
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_adapters.py tests/test_host_progress_e2e.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R009/check/T010/01-0001-command.log"
+    }
+  ],
+  "artifacts": [
+    "src/orx/adapters/base.py",
+    "src/orx/zcode_sessions.py",
+    "src/orx/state.py",
+    "src/orx/dispatch.py",
+    "src/orx/cli.py",
+    "tests/test_adapters.py",
+    "tests/test_host_progress_e2e.py",
+    "tests/test_state.py",
+    "tests/test_observability_contract.py",
+    "tests/test_inbox.py",
+    "tests/test_lifecycle.py",
+    "tests/test_m12_acceptance.py",
+    "tests/test_package_acceptance.py",
+    "tests/test_subagent_contract.py",
+    "scripts/check_release.py",
+    "docs/observability-contract.md",
+    "docs/recovery-hardening-report.md",
+    "docs/diagnostics/g009-t010-usage-attribution-2026-10-08/prescribed.log",
+    "docs/diagnostics/g009-t010-usage-attribution-2026-10-08/fullsuite.log",
+    "IMPLEMENTATION_PLAN.md"
+  ],
+  "attempt": 159,
+  "session_ref": "sess_subagent_agent_5d27b110-b133-4aa3-8700-20e1905c42b0",
+  "nonce": "orx-assignment:bcef68e5-89c6-4874-a1af-b9ee234e3ac7",
+  "full_suite": {
+    "command": ".venv/bin/python -m pytest -q",
+    "exit_code": 0,
+    "result": "1022 passed, 0 xfail (baseline 1007 + 15 new)",
+    "log": "docs/diagnostics/g009-t010-usage-attribution-2026-10-08/fullsuite.log"
+  },
+  "prescribed_rerun": {
+    "command": ".venv/bin/python -m pytest -q tests/test_adapters.py tests/test_host_progress_e2e.py",
+    "exit_code": 0,
+    "result": "75 passed",
+    "log": "docs/diagnostics/g009-t010-usage-attribution-2026-10-08/prescribed.log"
+  },
+  "scope_disclosure": "scripts/check_release.py was touched (version pin anchored to orx.state.CODE_SCHEMA_VERSION). It is release-acceptance test infrastructure imported and executed by tests/test_package_acceptance.py; it was treated as belonging to the 'tests' scope bucket. No other out-of-scope path was written.",
+  "check_rounds_used": "2/3 (orx task check T010; both green, no red round needed beyond the deliberate TDD red before implementation)"
+}

@@ -2296,10 +2296,19 @@ def usage(
     --json keeps field profiles (profile, tasks, runtime_sec, input_tokens,
     output_tokens, cached_input_tokens, accuracy) and adds observations
     (source, accuracy, session_ref; host_report included), coverage,
-    sessions (session_ref), and runs (started_at, completed_at). The
-    envelope is {"ok": true, ...}. An unknown --profile exits 1. A missing
-    project exits 1. Exit 0 on success, 1 on a domain error, 2 on usage
-    errors. `orx usage record` writes one host_report.
+    sessions (session_ref), runs (started_at, completed_at), and
+    attribution: one book per role (controller/planner/worker/verifier,
+    each with attempts, observed, missing reasons, raw token sums, and the
+    normalized processing/uncached-input partial sums under that
+    harness's cache semantics), a live read-only controller book over the
+    root zcode session's OWN usage (subagent sessions stay in their own
+    attempts' books; unbound descendants are listed, never merged), and a
+    probe book that is empty by design (a probe never runs a completion).
+    Normalized processing is a per-provider volume measure — it is not
+    billing. The envelope is {"ok": true, ...}. An unknown --profile
+    exits 1. A missing project exits 1. Exit 0 on success, 1 on a domain
+    error, 2 on usage errors. `orx usage record` writes one host_report;
+    `orx usage zcode` records a host zcode attempt's subtree usage.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -2340,6 +2349,46 @@ def usage(
                     f"run {run['id']}  started_at {run['started_at'] or '-'}"
                     f"  completed_at {run['completed_at'] or '-'}"
                 )
+        _render_attribution(result.get("attribution"))
+
+
+def _render_attribution(attribution: dict | None) -> None:
+    """G009 T010 books: roles, controller, probe — each its own line, the
+    normalized numbers labeled as volume, never billing."""
+    if not attribution:
+        return
+    typer.echo(
+        f"{'attribution':<12} {'ATTEMPTS':>8} {'OBSERVED':>8}  "
+        f"{'PROCESSING':>12}  {'UNCACHED-IN':>11}  {'OUT':>10}  "
+        f"{'CACHE':>10}  MISSING"
+    )
+    for book in attribution.get("roles", []):
+        missing = book["unassessed"] + sum(book["missing_reasons"].values())
+        typer.echo(
+            f"{book['role']:<12} {book['attempts']:>8} {book['observed']:>8}  "
+            f"{_token_cell(book['normalized_processing_tokens']):>12}  "
+            f"{_token_cell(book['uncached_input_tokens']):>11}  "
+            f"{_token_cell(book['output_tokens']):>10}  "
+            f"{_token_cell(book['cached_input_tokens']):>10}  "
+            f"{missing or '-'}"
+        )
+    controller = attribution.get("controller") or {}
+    status = controller.get("status")
+    if status == "observed":
+        own = controller["own"]
+        typer.echo(
+            f"controller    own requests {own['requests']}"
+            f"  processing {_token_cell(own['normalized_processing_tokens'])}"
+            f"  uncached-in {_token_cell(own['uncached_input_tokens'])}"
+            f"  session {controller['session_ref']}"
+        )
+        for sid in controller.get("unattributed_sessions", []):
+            typer.echo(f"controller    unattributed session {sid} (bound to no attempt)")
+    else:
+        typer.echo(f"controller    {status or 'unknown'} (no usage recorded; not zero)")
+    probe = attribution.get("probe") or {}
+    typer.echo(f"probe         attempts {probe.get('attempts', 0)}  {probe.get('note', '')}")
+    typer.echo(f"note          {attribution.get('note', '')}")
 
 
 @usage_app.command("record")
@@ -2396,6 +2445,73 @@ def usage_record(
 
 
 app.add_typer(usage_app, name="usage")
+
+
+@usage_app.command("zcode")
+@handle_errors
+def usage_zcode(
+    attempt: int = typer.Option(
+        ..., "--attempt", help="Host zcode attempt id to record usage for."
+    ),
+    session: Optional[str] = typer.Option(
+        None, "--session",
+        help="Opaque zcode session id. Omit to use the attempt's bound session,"
+             " else one nonce discovery. Never guessed.",
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Record one zcode_db usage observation for a host zcode attempt.
+
+    The numbers are read back read-only from the attempt's session subtree
+    in the zcode database (ORX_ZCODE_DB, default ~/.zcode/cli/db/db.sqlite):
+    the attempt's own session plus anything it spawned, never the
+    controller parent. Requests are deduplicated by
+    (session, logical_request_id, attempt_index); cache stays inside input
+    (zcode subset semantics — processing is input + output, never
+    input + cache + output); error rows whose zeros are placeholders make
+    the accuracy `estimated`. A session or subtree already attributed to
+    another attempt is rejected — the same tokens are never counted
+    twice. No session at all records the missing reason
+    `host_session_unbound` instead of tokens.
+
+    Processing is a volume measure, not a billing figure. Exit 0 on
+    recorded (including an idempotent repeat), 1 on a domain error
+    (non-host attempt, unreadable aggregate, conflicting observation,
+    session still unbound), 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.usage_zcode_record(project, attempt, session=session)
+    finally:
+        project.close()
+    if result["status"] == "missing":
+        raise ORXError(
+            f"attempt {attempt} has no bound zcode session and discovery"
+            f" found none; usage_missing_reason={result['reason']}"
+            " (nothing was recorded — missing is not zero)"
+        )
+    if result["status"] == "unreadable":
+        raise ORXError(
+            f"zcode database model_usage unreadable for attempt {attempt}"
+            f" (session {result['session_ref']}); nothing was recorded"
+        )
+    _ok(json_out, **result)
+    if not json_out:
+        note = " (already recorded)" if result["idempotent"] else ""
+        aggregate = result.get("aggregate") or {}
+        typer.echo(
+            f"zcode_db attempt {result['attempt']}"
+            f"  session {result['session_ref']}"
+            f"  requests {aggregate.get('requests', '-')}"
+            f"  in {_token_cell(result['input_tokens'])}"
+            f"  out {_token_cell(result['output_tokens'])}"
+            f"  cache {_token_cell(result['cached_input_tokens'])}"
+            f"  accuracy {result['accuracy']}{note}"
+        )
+        typer.echo(
+            "processing is input + output under zcode cache-subset semantics;"
+            " it is a volume measure, not billing"
+        )
 
 
 # ---------------------------------------------------------------------------

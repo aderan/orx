@@ -90,6 +90,18 @@ import sys
 import tarfile
 from pathlib import Path
 
+# The schema version the CURRENT orx code migrates to. Pinned to the code's
+# own constant (imported lazily; direct execution keeps working) so a version
+# bump updates the release chain with the code, never separately.
+EXPECTED_SCHEMA_VERSION = None
+
+def _expected_schema_version() -> str:
+    global EXPECTED_SCHEMA_VERSION
+    if EXPECTED_SCHEMA_VERSION is None:
+        import orx.state
+        EXPECTED_SCHEMA_VERSION = str(orx.state.CODE_SCHEMA_VERSION)
+    return EXPECTED_SCHEMA_VERSION
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 NATIVE_AGENTS = ("orx-worker", "orx-verifier", "orx-verifier-strong")
@@ -1285,8 +1297,9 @@ def compare_v8_to_upgraded(old_db: Path, new_db: Path) -> tuple[dict, list[str]]
                 problems.append(f"meta[{key!r}] changed by the upgrade")
         if old_meta.get("schema_version") != "8":
             problems.append("source fixture meta is not schema_version 8")
-        if new_meta.get("schema_version") != "11":
-            problems.append("upgraded meta is not schema_version 11")
+        if new_meta.get("schema_version") != _expected_schema_version():
+            problems.append(
+                f"upgraded meta is not schema_version {_expected_schema_version()}")
         detail["rows_compared"] = sum(
             entry["rows"] for entry in detail["tables_checked"].values()
         )
@@ -1347,14 +1360,15 @@ def check_upgrade_chain(fixture_dir: Path, venv_python: Path, orx_bin: Path,
         "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
     conn.close()
     report["upgraded_schema_version"] = int(version)
-    if version != "11":
-        report["problems"].append(f"upgraded schema version {version!r} != '11'")
+    if version != _expected_schema_version():
+        report["problems"].append(
+            f"upgraded schema version {version!r} != {_expected_schema_version()!r}")
 
     detail, problems = compare_v8_to_upgraded(src_db, proj / ".orx" / "state.db")
     report["identity"] = detail
     report["problems"] += problems
 
-    # The REAL v0.3.0 read entry refuses the v11 file and changes nothing.
+    # The REAL v0.3.0 read entry refuses the upgraded file and changes nothing.
     v030_src = extract_v030_source(repo_root, workdir / "v030-src")
     sanity = run_v030_cli(venv_python, v030_src, ["version", "--json"],
                           cwd=workdir, env=env)

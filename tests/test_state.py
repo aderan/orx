@@ -86,7 +86,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 11
+        assert store.schema_version() == 12
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -337,7 +337,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -372,7 +372,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -412,7 +412,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -516,7 +516,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -602,7 +602,7 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 11
+            assert reopened.schema_version() == 12
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()
@@ -721,7 +721,7 @@ def test_replan_mapping_persists_renumbered_correspondence(project, goal):
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         again = reopened.replan_mapping_for(rev2)
         assert again is not None
         assert {t.task_id: t.classification for t in again.tasks} == {
@@ -979,7 +979,7 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1064,7 +1064,7 @@ def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch)
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1092,7 +1092,7 @@ def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 11
+            assert reopened.schema_version() == 12
             assert reopened.goal_get("G888").objective == "wal kept 9"
         finally:
             reopened.close()
@@ -1152,7 +1152,7 @@ def test_attempt_progress_append_latest_all_consistent_across_reopen(project, go
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         again_all = reopened.attempt_progress_all(attempt.id)
         assert [(r.id, r.sequence, r.phase, r.message, r.received_at) for r in again_all] == [
             (r.id, r.sequence, r.phase, r.message, r.received_at) for r in all_rows
@@ -1281,7 +1281,7 @@ def test_v9_to_v10_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1342,7 +1342,7 @@ def test_v10_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1369,7 +1369,7 @@ def test_v10_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 11
+            assert reopened.schema_version() == 12
             assert reopened.goal_get("G999").objective == "wal kept 10"
         finally:
             reopened.close()
@@ -1403,7 +1403,7 @@ def test_v10_to_v11_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         cols = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert "nonce" in cols
         # The legacy row is not rewritten: its nonce stays NULL and marker
@@ -1466,7 +1466,7 @@ def test_v11_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 11
+        assert reopened.schema_version() == 12
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1516,3 +1516,187 @@ def test_attempts_close_for_tasks_stamps_disposition_not_span(tmp_path):
         assert store.attempt_get(parked.id).ended_at == "2026-10-06T00:00:00+00:00"
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T010 (schema v12): the usage source CHECK widens to admit 'zcode_db'
+# (a host attempt's usage read back from the zcode database's own
+# model_usage). Additive only: rows, sources, and accuracies survive; old
+# rows are never rewritten and unknown stays unknown.
+
+def _narrow_usage_check_v11(conn) -> None:
+    """Restore the pre-v12 usage source CHECK (no zcode_db)."""
+    conn.executescript("""
+CREATE TABLE usage_observations_v11 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  profile TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  task_id TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  source TEXT NOT NULL CHECK (source IN ('native_cli', 'output_estimate', 'host_report')),
+  accuracy TEXT NOT NULL CHECK (accuracy IN ('exact', 'estimated', 'unknown')),
+  created_at TEXT NOT NULL
+);
+INSERT INTO usage_observations_v11
+  SELECT id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+         cached_input_tokens, source, accuracy, created_at
+  FROM usage_observations;
+DROP TABLE usage_observations;
+ALTER TABLE usage_observations_v11 RENAME TO usage_observations;
+""")
+
+
+def test_v11_to_v12_migration_widens_usage_source_without_backfill(tmp_path):
+    """A v11 database reopens at v12 with the widened CHECK: existing
+    observations keep their exact values and sources, nothing gains or
+    loses tokens, and a zcode_db observation becomes insertable."""
+    db = tmp_path / "v11.db"
+    store = Store.open(db)
+    goal, run = store.goal_create("legacy usage", ["a"], [], "")
+    rev1 = store.revision_create(run.id, "standard", "p", {"tasks": ["T001"]}).id
+    store.task_insert(rev1, "T001", "legacy task", {}, ["a"], ["true"], {}, "running")
+    host = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="zcode-worker",
+        driver="host", harness="zcode", model_id="m",
+        requested_effort="high", task_id="T001",
+    )
+    store.usage_add(host.id, "zcode-worker", run.id, "T001",
+                    100, 10, 90, "host_report", "estimated")
+    _narrow_usage_check_v11(store.conn)
+    store.conn.execute("UPDATE meta SET value = '11' WHERE key = 'schema_version'")
+    store.close()
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 12
+        rows = reopened.conn.execute(
+            "SELECT source, input_tokens, output_tokens, cached_input_tokens,"
+            " accuracy FROM usage_observations").fetchall()
+        assert [(r["source"], r["input_tokens"], r["output_tokens"],
+                 r["cached_input_tokens"], r["accuracy"]) ==
+                ("host_report", 100, 10, 90, "estimated") for r in rows]
+        # the widened CHECK admits the new source
+        reopened.usage_add(host.id, "zcode-worker", run.id, "T001",
+                           1000, 50, 980, "zcode_db", "exact")
+        sources = sorted(r["source"] for r in reopened.conn.execute(
+            "SELECT source FROM usage_observations").fetchall())
+        assert sources == ["host_report", "zcode_db"]
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v11.db.migrate-*")), "stale migration backups"
+
+
+def test_v12_usage_record_zcode_singleton_per_attempt(tmp_path):
+    """usage_record_zcode stores ONE zcode_db observation per attempt: an
+    identical repeat is idempotent, a different one is a conflict, and the
+    recording clears any earlier usage_missing_reason."""
+    db = tmp_path / "fresh.db"
+    store = Store.open(db)
+    try:
+        goal, run = store.goal_create("zcode singleton", ["a"], [], "")
+        rev1 = store.revision_create(run.id, "standard", "p", {"tasks": ["T001"]}).id
+        store.task_insert(rev1, "T001", "t", {}, ["a"], ["true"], {}, "running")
+        host = store.attempt_create(
+            revision_row_id=rev1, role="worker", profile="zcode-worker",
+            driver="host", harness="zcode", model_id="m",
+            requested_effort="high", task_id="T001",
+        )
+        store.attempt_mark_usage_missing(host.id, "host_session_unbound")
+        first = store.usage_record_zcode(host.id, 1000, 50, 980, "estimated")
+        assert first["idempotent"] is False
+        assert first["source"] == "zcode_db"
+        assert store.attempt_get(host.id).usage_missing_reason is None
+        again = store.usage_record_zcode(host.id, 1000, 50, 980, "estimated")
+        assert again["idempotent"] is True
+        assert len(store.conn.execute(
+            "SELECT id FROM usage_observations WHERE attempt_id = ?",
+            (host.id,)).fetchall()) == 1
+        with pytest.raises(ConflictError, match="zcode_db"):
+            store.usage_record_zcode(host.id, 999, 50, 980, "estimated")
+        # NULL cached stays NULL; counts are validated, never coerced
+        other = store.attempt_create(
+            revision_row_id=rev1, role="verifier", profile="zcode-verifier",
+            driver="host", harness="zcode", model_id="m",
+            requested_effort="medium", task_id="T001",
+        )
+        stored = store.usage_record_zcode(other.id, 10, 1, None, "exact")
+        assert stored["cached_input_tokens"] is None
+        with pytest.raises(ORXError):
+            store.usage_record_zcode(other.id, -1, 1, None, "exact")
+        with pytest.raises(ORXError):
+            store.usage_record_zcode(other.id, 1, 1, None, "unknown")
+    finally:
+        store.close()
+
+
+def test_v12_migration_failure_preserves_original_database(tmp_path, monkeypatch):
+    """A failing v12 migration leaves the v11 file untouched and usable."""
+    db = tmp_path / "keep12.db"
+    store = Store.open(db)
+    goal, _run = store.goal_create("do not lose", ["a"], [], "")
+    _narrow_usage_check_v11(store.conn)
+    store.conn.execute("UPDATE meta SET value = '11' WHERE key = 'schema_version'")
+    store.close()
+
+    def boom(_conn):
+        raise RuntimeError("v12 failed")
+
+    monkeypatch.setitem(state_mod.MIGRATIONS, 12, boom)
+    with pytest.raises(RuntimeError, match="v12 failed"):
+        Store.open(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert version == "11"
+        assert conn.execute(
+            "SELECT objective FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()[0] == "do not lose"
+    finally:
+        conn.close()
+    assert not list(tmp_path.glob("keep12.db.migrate-*"))
+
+
+def test_v12_backup_copy_of_v11_database_still_migrates(tmp_path):
+    """A backup/copy of a v11 file (the recovery story's copied database)
+    opens on its own, migrates to v12, and keeps every row — while the
+    original file is not modified by reading the copy."""
+    import shutil
+    db = tmp_path / "state.db"
+    store = Store.open(db)
+    goal, run = store.goal_create("copy me", ["a"], [], "")
+    rev1 = store.revision_create(run.id, "standard", "p", {"tasks": ["T001"]}).id
+    store.task_insert(rev1, "T001", "t", {}, ["a"], ["true"], {}, "running")
+    host = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="zcode-worker",
+        driver="host", harness="zcode", model_id="m",
+        requested_effort="high", task_id="T001",
+    )
+    store.usage_add(host.id, "zcode-worker", run.id, "T001",
+                    100, 10, 90, "native_cli", "exact")
+    _narrow_usage_check_v11(store.conn)
+    store.conn.execute("UPDATE meta SET value = '11' WHERE key = 'schema_version'")
+    store.close()
+
+    backup = tmp_path / "backup-copy.db"
+    shutil.copy2(db, backup)
+    opened = Store.open(backup)
+    try:
+        assert opened.schema_version() == 12
+        rows = opened.conn.execute(
+            "SELECT source, input_tokens FROM usage_observations").fetchall()
+        assert [(r["source"], r["input_tokens"]) for r in rows] == \
+            [("native_cli", 100)]
+    finally:
+        opened.close()
+    # the original v11 file is still a v11 file and still migrates itself
+    original = Store.open(db)
+    try:
+        assert original.schema_version() == 12
+    finally:
+        original.close()

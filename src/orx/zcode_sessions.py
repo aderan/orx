@@ -101,12 +101,19 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
     dispatch prompt. Without one (legacy attempts), the marker fallback
     matches a first part naming "attempt <id>".
 
+    Directory matching resolves symlinks on both sides (G009 T009/T010):
+    the project root arrives resolved (``/private/tmp/...`` on macOS) while
+    the session records the spelling it was spawned with (``/tmp/...``).
+    Both spellings of the same directory match; different directories
+    never do.
+
     Returns {"candidates": [...], "decision": "unique"|"none"|"ambiguous",
              "basis": str} — the caller decides what to store; this
     function never writes anything anywhere.
     """
     path = zcode_db_path(db)
     root = str(project_root.resolve())
+    root_real = os.path.realpath(root)
     try:
         conn = _open_ro(path)
     except sqlite3.Error as e:  # pragma: no cover - environment dependent
@@ -114,11 +121,18 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
     try:
         rows = conn.execute(
             "SELECT id, parent_id, title, time_created, directory "
-            "FROM session WHERE directory=? AND parent_id IS NOT NULL "
-            "ORDER BY time_created", (root,)).fetchall()
+            "FROM session WHERE parent_id IS NOT NULL "
+            "ORDER BY time_created").fetchall()
         if created_within_ms is not None and now_ms is not None:
             rows = [r for r in rows
                     if now_ms - r["time_created"] <= created_within_ms]
+
+        def directory_matches(directory) -> bool:
+            if directory == root:
+                return True
+            return os.path.realpath(directory) == root_real
+
+        rows = [r for r in rows if directory_matches(r["directory"])]
         cands: list[Candidate] = []
         for r in rows:
             part = conn.execute(
@@ -153,15 +167,17 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
             basis = (
                 "zcode subagent session whose first text part carries the "
                 "attempt's one-time identity token "
-                f"ORX_ASSIGNMENT={nonce} with session.directory equal to "
-                "the project root and a non-null parent (subagent "
+                f"ORX_ASSIGNMENT={nonce} with session.directory resolving to "
+                "the same directory as the project root (symlink spellings "
+                "match) and a non-null parent (subagent "
                 "structure); read-only lookup, no writes"
             )
         else:
             basis = (
                 "zcode subagent session whose first text part names "
-                f"'attempt {attempt_id}' with session.directory equal to the "
-                "project root and a non-null parent (subagent structure); "
+                f"'attempt {attempt_id}' with session.directory resolving to "
+                "the same directory as the project root (symlink spellings "
+                "match) and a non-null parent (subagent structure); "
                 "read-only lookup, no writes"
             )
         return {
@@ -290,3 +306,177 @@ def session_facts(session_id: str, db: str | None = None) -> dict:
         return {**base, "found": True, "facts": facts, "unreadable": unreadable}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# G009 T010: read-only usage aggregation over the zcode session tree.
+#
+# The incident audit needed per-book token attribution (controller root
+# session vs worker/verifier subagent sessions) and the dedup rules that
+# keep one request from being counted twice:
+#
+# - identity of one model request is (session_id, logical_request_id,
+#   attempt_index); a row repeating that triple is a duplicate record of
+#   the SAME request, dropped from every sum;
+# - ZCode's cache_read is a SUBSET of input (computed_total = input +
+#   output; see adapters.base.HARNESS_CACHE_SEMANTICS) so no derived total
+#   here ever adds cache on top of input;
+# - an error-status row whose token columns are all zero carries
+#   placeholder zeros, not evidence of a free request: it is counted as a
+#   request and named in ``error_rows_zero_tokens`` so readers can keep
+#   the caveat the audit recorded;
+# - turn_usage / message tokens are NOT added: model_usage is the
+#   per-request authority and summing two granularities would double count.
+
+
+def session_tree(session_id: str, db: str | None = None) -> dict:
+    """One session plus every descendant (session.parent_id recursion).
+
+    Read-only. Returns {"root": session_id, "sessions": [root, ...]} with
+    descendants in discovery order. A session id that matches no row
+    returns an empty list — never an error, never a guess about other
+    sessions.
+    """
+    path = zcode_db_path(db)
+    conn = _open_ro(path)
+    try:
+        rows = conn.execute(
+            "WITH RECURSIVE tree(sid) AS ("
+            "  SELECT id FROM session WHERE id = ?"
+            "  UNION ALL"
+            "  SELECT s.id FROM session s JOIN tree t ON s.parent_id = t.sid"
+            ") SELECT sid FROM tree",
+            (session_id,),
+        ).fetchall()
+        sessions = [r["sid"] for r in rows]
+        return {"root": session_id, "sessions": sessions}
+    except sqlite3.OperationalError:
+        # Schema stand-ins without the recursive shape: the root alone is
+        # the honest answer — no descendants are ever inferred.
+        return {"root": session_id, "sessions": [session_id]}
+    finally:
+        conn.close()
+
+
+def _zero_aggregate(session_ids) -> dict:
+    return {
+        "session_ids": list(session_ids),
+        "requests": 0,
+        "status_counts": {},
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_input_tokens": None,
+        "computed_total_tokens": None,
+        "uncached_input_tokens": None,
+        "max_request_input_tokens": None,
+        "mean_request_input_tokens": None,
+        "duplicate_request_rows_dropped": 0,
+        "error_rows_zero_tokens": 0,
+        "unreadable": [],
+    }
+
+
+def model_usage_aggregate(session_ids, db: str | None = None) -> dict:
+    """Aggregate model_usage over an explicit set of sessions.
+
+    Dedup: (session_id, logical_request_id, attempt_index) identifies one
+    request; a repeated triple is dropped and counted in
+    ``duplicate_request_rows_dropped``. Token sums never add cache on top
+    of input (ZCode subset semantics): ``computed_total_tokens`` sums the
+    provider's own column and ``uncached_input_tokens`` is input minus
+    cache read. Missing columns/tables land in ``unreadable`` and their
+    sums stay None — never zero.
+    """
+    ids = list(dict.fromkeys(session_ids))
+    if not ids:
+        return _zero_aggregate([])
+    path = zcode_db_path(db)
+    conn = _open_ro(path)
+    try:
+        columns = _columns(conn, "model_usage")
+        if not columns:
+            result = _zero_aggregate(ids)
+            result["unreadable"].append("model_usage")
+            return result
+        required = {"session_id", "logical_request_id", "attempt_index",
+                    "status"}
+        missing = sorted(required - columns)
+        if missing:
+            result = _zero_aggregate(ids)
+            result["unreadable"].extend(f"model_usage.{name}" for name in missing)
+            return result
+        qmarks = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT * FROM model_usage WHERE session_id IN ({qmarks})",
+            ids,
+        ).fetchall()
+        seen: set[tuple] = {}
+        dropped = 0
+        counted = []
+        for row in rows:
+            key = (row["session_id"], row["logical_request_id"],
+                   row["attempt_index"])
+            if key in seen:
+                dropped += 1
+                continue
+            seen[key] = True
+            counted.append(row)
+        result = _zero_aggregate(ids)
+        result["duplicate_request_rows_dropped"] = dropped
+        result["requests"] = len(counted)
+        status_counts: dict[str, int] = {}
+        for row in counted:
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        result["status_counts"] = status_counts
+
+        def column_sum(name: str, alias: str) -> None:
+            if name in columns:
+                result[alias] = sum(int(row[name]) for row in counted)
+            else:
+                result["unreadable"].append(f"model_usage.{name}")
+
+        column_sum("input_tokens", "input_tokens")
+        column_sum("output_tokens", "output_tokens")
+        column_sum("cache_read_input_tokens", "cache_read_input_tokens")
+        column_sum("computed_total_tokens", "computed_total_tokens")
+        if "input_tokens" in columns:
+            inputs = [int(row["input_tokens"]) for row in counted]
+            result["max_request_input_tokens"] = max(inputs) if inputs else 0
+            result["mean_request_input_tokens"] = (
+                sum(inputs) / len(inputs) if inputs else 0.0
+            )
+        else:
+            result["unreadable"].append("model_usage.input_tokens")
+        if ("input_tokens" in columns and "cache_read_input_tokens" in columns
+                and result["input_tokens"] is not None
+                and result["cache_read_input_tokens"] is not None):
+            result["uncached_input_tokens"] = (
+                result["input_tokens"] - result["cache_read_input_tokens"]
+            )
+        if "status" in columns:
+            tokenish = ("input_tokens", "output_tokens",
+                        "cache_read_input_tokens", "computed_total_tokens")
+            zero_token_columns = [name for name in tokenish if name in columns]
+            result["error_rows_zero_tokens"] = sum(
+                1 for row in counted
+                if row["status"] == "error"
+                and zero_token_columns
+                and all(int(row[name]) == 0 for name in zero_token_columns)
+            )
+        return result
+    finally:
+        conn.close()
+
+
+def session_tree_usage(session_id: str, db: str | None = None) -> dict:
+    """model_usage aggregate over one session's whole subtree.
+
+    The subtree is the session plus every descendant — the unit a host
+    worker's own book covers (its session and anything it spawned). The
+    PARENT session is never included: the controller book and the worker
+    book stay separate by construction.
+    """
+    tree = session_tree(session_id, db=db)
+    aggregate = model_usage_aggregate(tree["sessions"], db=db)
+    aggregate["session_ids"] = tree["sessions"]
+    return aggregate

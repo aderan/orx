@@ -10,6 +10,42 @@
 
 ### G009/R009 轮次记录
 
+- **T010（2026-10-08 交付，attempt 159）**：统一 provider 用量口径并补齐
+  host/controller/probe 观测。六件落地：(1) adapters.base.normalized_usage
+  展示层统一词汇——zcode/codex=cache_subset（input 已含缓存，
+  processing=input+output，加缓存即双算；uncached=input−cached，矛盾时
+  None 不裁剪）、cursor=cache_separate（input/cacheRead/output 三桶相加，
+  cacheRead>>input 正常）、shell/未知零主张；缺失字段 None 不为零；
+  NORMALIZED_NOT_BILLING_NOTE 固定"处理量非账单"。(2) zcode_sessions
+  只读会话树聚合：session_tree（parent_id 递归）+model_usage_aggregate
+  （(session_id, logical_request_id, attempt_index) 去重、error 全零行计入
+  error_rows_zero_tokens=零是占位非免费、computed_total=input+output 缓存
+  从不叠加）；子树=自身+后代，控制器父会话永不混入 worker 本。
+  (3) discover_attempt_session 目录匹配 realpath 归一——T009 活体缺口
+  （/tmp↔/private/tmp 别名）修复，确定性 symlink 测试钉住。(4) state v12：
+  usage source CHECK 加宽 zcode_db（backup-replace 迁移不回填；单例语义
+  host_report/zcode_db 共享 _usage_record_singleton：相同幂等不同冲突）。
+  (5) orx usage 新增 attribution 五本账：roles 按 attempt.role 分账带
+  missing_reasons/unassessed 分布与 normalized 部分和+incomplete 计数；
+  controller 本=根会话自身只读活查（子代理归各自 attempt、无主后代单列
+  unattributed）；probe 本恒在且注明空是设计；unbound/unavailable 显式
+  缺失不为零。(6) 补录入口 orx usage zcode：仅 host zcode attempt，session
+  =显式>绑定>一次 nonce 发现（绝不读 ORX_SESSION_REF 防控制器子树记入
+  worker 的双算），重叠双向拒绝，无会话记 host_session_unbound，error 零值
+  行→accuracy=estimated。15 例新增先红后绿（normalized 6+e2e 归因 5+
+  迁移 4，全确定性伪 zcode 库零付费调用）；门禁两文件 75 passed
+  （check 2/3 轮）；全量 1022 passed、0 xfail（基线 1007+15），
+  docs/m1.2-report.md 按约定还原。schema 11→12 涟漪随版本更新：
+  observability-contract 第六修正案（gate 放行 12、consumption 权威序
+  native_cli>zcode_db>host_report>output_estimate、miss 词表+
+  host_session_unbound、归一化展示规则）+gate 测试+21 处断言+包验收链
+  期望锚定 orx.state.CODE_SCHEMA_VERSION（scripts/check_release.py 为
+  test_package_acceptance 导入执行的验收基建，按 tests 桶处理、交付报告
+  显式披露）。已知限制如实记录：cursor cacheWriteTokens 未入库（incident
+  中恒 0）、controller 本依赖 ORX_SESSION_REF（CLI 终端常 unbound=诚实
+  缺失）、本 attempt 自身 ORX usage 仍缺待控制器补录。详见
+  docs/recovery-hardening-report.md T010。
+
 - **T009（2026-10-08 交付，attempt 157）**：运行隔离真实微任务，验证投产
   profile 与切换接手者。host_context 任务由控制器会话亲自组织：隔离仓库
   /tmp/orx-g009-micro（预置红测试+一行修复，stdlib unittest），四次真实
@@ -256,7 +292,7 @@
 **Goal**: 完成 T010–T011。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: Not Started
+**Status**: In Progress（R009：T010 已交付，见上方轮次记录；T011 待做；阶段终验待独立 verifier）
 
 ## Stage 5: 兼容终验与交付
 **Goal**: 完成 T012–T013。

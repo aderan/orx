@@ -169,6 +169,84 @@ MISS_HARNESS_OMITTED = "harness_omitted"  # hook ran; the stream had no usage ev
 MISS_MALFORMED = "malformed_output"
 MISS_TRUNCATED = "truncated"
 MISS_EXECUTION_FAILURE = "execution_failure"
+# G009 T010: a host (zcode) attempt whose usage could not be observed
+# because no harness session is bound to it — the 21/26 incident gap.
+MISS_HOST_SESSION_UNBOUND = "host_session_unbound"
+
+
+# ---------------------------------------------------------------------------
+# G009 T010: one normalized usage vocabulary across providers.
+#
+# The incident audit (docs/cursor-system-analysis-2026-10-07.md) fixed two
+# DIFFERENT provider cache vocabularies that must never be summed blindly:
+#
+# - cache SUBSET (zcode, codex): the reported input already contains the
+#   cache-read prefix. Normalized processing is input + output — adding
+#   cache on top would count the same tokens twice. Uncached input is
+#   input - cache_read.
+# - cache SEPARATE (cursor): input / cacheRead / output are disjoint
+#   buckets; a cacheRead far larger than input is the normal shape
+#   (a131: 46730/2341/166272). Processing is input + cache_read + output
+#   and the input bucket is uncached by definition.
+#
+# Normalized processing is a VOLUME measure for comparing work, never a
+# billing figure: model mix, cache pricing, plan windows, and provider
+# weighting are all outside this database. Nothing here converts tokens
+# to money, and nothing here is stored — raw provider fields are the
+# stored truth; this derivation lives at the presentation layer only.
+
+USAGE_CACHE_SUBSET = "cache_subset"
+USAGE_CACHE_SEPARATE = "cache_separate"
+
+HARNESS_CACHE_SEMANTICS: dict[str, str | None] = {
+    "zcode": USAGE_CACHE_SUBSET,
+    "codex": USAGE_CACHE_SUBSET,
+    "cursor": USAGE_CACHE_SEPARATE,
+    "shell": None,  # a plain executable reports no model tokens at all
+}
+
+NORMALIZED_NOT_BILLING_NOTE = (
+    "normalized processing is a per-provider volume measure"
+    " (raw fields kept verbatim); it is not billing"
+)
+
+
+def normalized_usage(harness: str | None, input_tokens: int | None,
+                     output_tokens: int | None,
+                     cached_input_tokens: int | None) -> dict:
+    """Raw provider fields plus the derived processing/uncached numbers.
+
+    The raw fields are returned verbatim. The derived fields follow the
+    harness's cache semantics above; a field the observation did not
+    carry stays None (unknown), never zero, and a derivation whose
+    operands are missing is itself None. An harness with no declared
+    semantics makes no claim at all (all derived fields None).
+    """
+    semantics = HARNESS_CACHE_SEMANTICS.get(harness or "")
+    processing: int | None = None
+    uncached: int | None = None
+    if semantics == USAGE_CACHE_SUBSET:
+        if input_tokens is not None and output_tokens is not None:
+            processing = input_tokens + output_tokens
+        if input_tokens is not None and cached_input_tokens is not None:
+            difference = input_tokens - cached_input_tokens
+            # cached > input contradicts the subset semantics: unknown,
+            # never negative, never clipped into a plausible number.
+            uncached = difference if difference >= 0 else None
+    elif semantics == USAGE_CACHE_SEPARATE:
+        uncached = input_tokens
+        if (input_tokens is not None and output_tokens is not None
+                and cached_input_tokens is not None):
+            processing = input_tokens + cached_input_tokens + output_tokens
+    return {
+        "harness": harness,
+        "cache_semantics": semantics,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "normalized_processing_tokens": processing,
+        "uncached_input_tokens": uncached,
+    }
 
 _TRUNCATION_SUFFIX = re.compile(r"\.\.\. \[truncated at \d+ bytes\]\s*$")
 

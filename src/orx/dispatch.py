@@ -5524,6 +5524,178 @@ def _usage_entry(name: str, attempts: list, rows: list) -> dict:
     }
 
 
+# G009 T010: attribution books. Attempts carry the role; the harness on
+# the attempt row picks the cache semantics for the normalized numbers.
+# Missing stays missing: an unobserved attempt contributes no tokens (its
+# bucket fields are None) and is counted, never zero-filled.
+
+_ROLE_ORDER = ("controller", "planner", "worker", "verifier")
+
+
+def _role_bucket(role: str, attempts: list, rows: list,
+                 attempts_by_id: dict) -> dict:
+    observed_ids = {row["attempt_id"] for row in rows}
+    missing_reasons: dict[str, int] = {}
+    for attempt in attempts:
+        if attempt.id in observed_ids or not attempt.usage_missing_reason:
+            continue
+        missing_reasons[attempt.usage_missing_reason] = (
+            missing_reasons.get(attempt.usage_missing_reason, 0) + 1
+        )
+    # Normalized sums are partial sums: each observation derives its own
+    # processing/uncached numbers under its harness's cache semantics, the
+    # bucket adds the derivable ones, and `normalized_incomplete_
+    # observations` counts the observations that could not derive one —
+    # the gap is reported, never padded, never silently zero.
+    processing: int | None = None
+    uncached: int | None = None
+    incomplete = 0
+    if rows:
+        processing = 0
+        uncached = 0
+        for row in rows:
+            attempt = attempts_by_id.get(row["attempt_id"])
+            harness = attempt.harness if attempt is not None else None
+            view = adapters.base.normalized_usage(
+                harness, row["input_tokens"], row["output_tokens"],
+                row["cached_input_tokens"],
+            )
+            row_processing = view["normalized_processing_tokens"]
+            row_uncached = view["uncached_input_tokens"]
+            if row_processing is None or row_uncached is None:
+                incomplete += 1
+            if row_processing is not None:
+                processing += row_processing
+            if row_uncached is not None:
+                uncached += row_uncached
+    return {
+        "role": role,
+        "attempts": len(attempts),
+        "observed": len(observed_ids.intersection(a.id for a in attempts)),
+        "unassessed": sum(
+            1 for attempt in attempts
+            if attempt.id not in observed_ids and not attempt.usage_missing_reason
+        ),
+        "missing_reasons": missing_reasons,
+        "input_tokens": _token_sum(rows, "input_tokens"),
+        "output_tokens": _token_sum(rows, "output_tokens"),
+        "cached_input_tokens": _token_sum(rows, "cached_input_tokens"),
+        "normalized_processing_tokens": processing,
+        "uncached_input_tokens": uncached,
+        "normalized_incomplete_observations": incomplete,
+    }
+
+
+def _controller_bucket(project: Project, attempts: list) -> dict:
+    """The controller book: the ROOT zcode session's own usage, live and
+    read-only. Never the subtree — every subagent session bound to an
+    attempt belongs to that attempt's book, and any descendant bound to
+    nothing is listed as unattributed instead of being merged here.
+    Missing is explicit: unbound (no session reference in the
+    environment), unavailable (no readable zcode database), or observed.
+    """
+    from . import zcode_sessions
+
+    base = {
+        "bucket": "controller",
+        "session_ref": None,
+        "status": "unbound",
+        "own": _attribution_zero_usage(),
+        "unattributed_sessions": [],
+        "unattributed": _attribution_zero_usage(),
+    }
+    ref = _host_session_ref()
+    if ref is None:
+        return base
+    base["session_ref"] = ref
+    try:
+        tree = zcode_sessions.session_tree(ref)
+        bound = {a.session_ref for a in attempts if a.session_ref}
+        own = zcode_sessions.model_usage_aggregate([ref])
+        unattributed_ids = [sid for sid in tree["sessions"]
+                            if sid != ref and sid not in bound]
+        unattributed = (zcode_sessions.model_usage_aggregate(unattributed_ids)
+                        if unattributed_ids else _attribution_zero_usage())
+    except zcode_sessions.ZcodeDbUnavailable:
+        base["status"] = "unavailable"
+        return base
+    base["status"] = "observed"
+    base["own"] = _attribution_usage_fields(own)
+    base["unattributed_sessions"] = unattributed_ids
+    base["unattributed"] = _attribution_usage_fields(unattributed)
+    return base
+
+
+def _attribution_zero_usage() -> dict:
+    return _attribution_usage_fields({
+        "requests": 0,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_input_tokens": None,
+        "computed_total_tokens": None,
+        "uncached_input_tokens": None,
+        "status_counts": {},
+        "error_rows_zero_tokens": 0,
+        "duplicate_request_rows_dropped": 0,
+    })
+
+
+def _attribution_usage_fields(aggregate: dict) -> dict:
+    """The zcode-side aggregate fields the attribution view carries, with
+    the normalized processing derived under zcode's subset semantics."""
+    view = adapters.base.normalized_usage(
+        "zcode", aggregate.get("input_tokens"),
+        aggregate.get("output_tokens"),
+        aggregate.get("cache_read_input_tokens"),
+    )
+    return {
+        "requests": aggregate.get("requests"),
+        "status_counts": aggregate.get("status_counts"),
+        "input_tokens": aggregate.get("input_tokens"),
+        "output_tokens": aggregate.get("output_tokens"),
+        "cache_read_input_tokens": aggregate.get("cache_read_input_tokens"),
+        "uncached_input_tokens": view["uncached_input_tokens"],
+        "normalized_processing_tokens": view["normalized_processing_tokens"],
+        "error_rows_zero_tokens": aggregate.get("error_rows_zero_tokens"),
+        "duplicate_request_rows_dropped":
+            aggregate.get("duplicate_request_rows_dropped"),
+    }
+
+
+def _attribution(project: Project, attempts: list, rows: list) -> dict:
+    attempts_by_id = {attempt.id: attempt for attempt in attempts}
+    rows_by_attempt: dict[int, list] = {}
+    for row in rows:
+        rows_by_attempt.setdefault(row["attempt_id"], []).append(row)
+    by_role: dict[str, list] = {}
+    for attempt in attempts:
+        by_role.setdefault(attempt.role, []).append(attempt)
+    ordered = [role for role in _ROLE_ORDER if role in by_role]
+    ordered.extend(sorted(set(by_role) - set(_ROLE_ORDER)))
+    roles = [
+        _role_bucket(role, by_role[role],
+                     [row for a in by_role[role]
+                      for row in rows_by_attempt.get(a.id, [])],
+                     attempts_by_id)
+        for role in ordered
+    ]
+    return {
+        "roles": roles,
+        "controller": _controller_bucket(project, attempts),
+        "probe": {
+            "bucket": "probe",
+            "attempts": 0,
+            "observed": 0,
+            "note": (
+                "a probe never runs a completion, so this book is empty by"
+                " design — listed separately so nothing merges into it and"
+                " no omission is hidden"
+            ),
+        },
+        "note": adapters.base.NORMALIZED_NOT_BILLING_NOTE,
+    }
+
+
 def _measurement_accuracy(rows: list) -> str:
     """Accuracy of stored observations only. Unobserved attempts do not change it.
 
@@ -5644,6 +5816,11 @@ def usage(project: Project, profile: str | None = None) -> dict:
         "coverage": coverage,
         "sessions": sessions,
         "runs": runs,
+        # G009 T010: the attribution books. Roles come from attempts;
+        # controller is a live read-only zcode lookup; probe is its own
+        # empty-by-design book. Normalized processing is per provider and
+        # is never billing.
+        "attribution": _attribution(project, attempts, rows),
     }
 
 
@@ -5659,3 +5836,120 @@ def usage_record(
     return project.store.usage_record_host(
         attempt_id, input_tokens, output_tokens, cached_input_tokens, accuracy,
     )
+
+
+def usage_zcode_record(project: Project, attempt_id: int,
+                       session: str | None = None) -> dict:
+    """Record one zcode_db usage observation for a HOST zcode attempt.
+
+    Fills the incident's 21-of-26 gap: host attempts ended with no usage
+    observation at all because ORX never reads the zcode database's own
+    model_usage. The numbers here are read back read-only from the
+    attempt's session SUBTREE (its own session plus anything it spawned —
+    never the controller parent), with the request-level dedup
+    (session_id, logical_request_id, attempt_index) zcode_sessions
+    performs. Rules that keep the books honest:
+
+    - only host zcode attempts qualify (the CLI adapters record their own
+      native usage);
+    - the session is the explicit argument, else the attempt's bound
+      session_ref, else one nonce discovery — never a guess. The
+      environment's ORX_SESSION_REF is deliberately NOT consulted here:
+      inside a host run it names the CONTROLLER session, and attributing
+      the controller's subtree to a worker attempt is exactly the
+      double-count this command exists to prevent;
+    - a session (or an overlapping subtree) already attributed to another
+      attempt is a conflict: the same tokens are never counted twice;
+    - no session at all records ``host_session_unbound`` as the missing
+      reason — missing is stated, never zero-filled;
+    - accuracy is ``estimated`` when the aggregate carries error rows
+      whose zeros are placeholders or dropped duplicate rows, ``exact``
+      otherwise;
+    - processing stays a volume measure; nothing here is a bill.
+    """
+    from . import zcode_sessions
+
+    store = project.store
+    attempt = store.attempt_get(attempt_id)
+    if attempt.driver != "host" or attempt.harness != "zcode":
+        raise ORXError(
+            f"attempt {attempt_id} is driver={attempt.driver} harness={attempt.harness};"
+            " zcode_db observations are recorded for host zcode attempts only"
+        )
+    # Explicit --session only: resolve_session_ref(None) would fall back to
+    # ORX_SESSION_REF, which names the controller inside a host run.
+    explicit = resolve_session_ref(session) if session is not None else None
+    session_ref = explicit if explicit is not None else attempt.session_ref
+    discovery = None
+    if session_ref is None:
+        discovery = zcode_sessions.discover_attempt_session(
+            attempt.id, project.root, nonce=attempt.nonce,
+        )
+        session_ref = zcode_sessions.first_session_id(discovery)
+    if session_ref is None:
+        store.attempt_mark_usage_missing(
+            attempt.id, adapters.base.MISS_HOST_SESSION_UNBOUND)
+        return {
+            "status": "missing",
+            "attempt": attempt.id,
+            "session_ref": None,
+            "reason": adapters.base.MISS_HOST_SESSION_UNBOUND,
+            "session_discovery": discovery,
+        }
+    if explicit is not None and explicit != attempt.session_ref:
+        store.attempt_update(attempt.id, session_ref=explicit)
+        attempt = store.attempt_get(attempt.id)
+    # Overlap guard: another attempt's bound session must not be inside
+    # this subtree, and this session must not be inside another attempt's
+    # subtree — either way the same request rows would land in two books.
+    tree = zcode_sessions.session_tree(session_ref)
+    tree_set = set(tree["sessions"])
+    for other in store.attempts_all():
+        if other.id == attempt.id or not other.session_ref:
+            continue
+        if other.session_ref in tree_set:
+            raise ConflictError(
+                f"session {other.session_ref} is already attributed to attempt"
+                f" {other.id}; recording it for attempt {attempt_id} would count"
+                " the same tokens twice"
+            )
+        if session_ref in zcode_sessions.session_tree(other.session_ref)["sessions"]:
+            raise ConflictError(
+                f"session {session_ref} lies inside the subtree already"
+                f" attributed to attempt {other.id}"
+                f" (root {other.session_ref}); the same tokens would count twice"
+            )
+    aggregate = zcode_sessions.model_usage_aggregate(tree["sessions"])
+    if aggregate["input_tokens"] is None or aggregate["output_tokens"] is None:
+        return {
+            "status": "unreadable",
+            "attempt": attempt.id,
+            "session_ref": session_ref,
+            "aggregate": aggregate,
+        }
+    accuracy = (
+        "estimated"
+        if (aggregate["error_rows_zero_tokens"]
+            or aggregate["duplicate_request_rows_dropped"])
+        else "exact"
+    )
+    stored = store.usage_record_zcode(
+        attempt.id,
+        aggregate["input_tokens"],
+        aggregate["output_tokens"],
+        aggregate["cache_read_input_tokens"],
+        accuracy,
+    )
+    return {
+        "status": "recorded",
+        "attempt": stored["attempt"],
+        "session_ref": session_ref,
+        "source": "zcode_db",
+        "accuracy": accuracy,
+        "input_tokens": stored["input_tokens"],
+        "output_tokens": stored["output_tokens"],
+        "cached_input_tokens": stored["cached_input_tokens"],
+        "idempotent": stored["idempotent"],
+        "aggregate": aggregate,
+        "session_discovery": discovery,
+    }

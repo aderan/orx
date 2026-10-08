@@ -7,6 +7,97 @@ attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区�
 
 ---
 
+## T010 · 统一 provider 用量口径并补齐 host/controller/probe 观测
+
+**输入commit**：T009 交付后 2bcbe40（attempt 159；host 子代理会话
+sess_subagent_agent_5d27b110-b133-4aa3-8700-20e1905c42b0，nonce
+orx-assignment:bcef68e5-89c6-4874-a1af-b9ee234e3ac7 经
+claim --discover-session 绑定成功——本仓库根无 symlink，走既有精确
+匹配路径；/tmp 别名路径由新增确定性 symlink 测试钉住）。
+
+**红信号（先写行为回归，全部失败后转绿；15 例新增）**：
+normalized_usage 词汇 6 例（test_adapters：zcode/codex 子集口径
+processing=input+output 缓存绝不叠加、cursor 独立桶
+input+cache+output 且 cacheRead>>input 正常、缺失字段 None 不为零、
+未知 harness 零主张、子集矛盾 cached>input 时 uncached=None 且原始
+字段原样保留）；e2e 归因 5 例（test_host_progress_e2e：伪 zcode 库
+session/part/model_usage 上的会话树聚合去重与 error 零值诚实、
+目录别名（symlink 拼写）下 nonce 发现绑定、usage zcode 记录子树/
+幂等/重叠拒绝/host_session_unbound 缺失留痕/非 host-zcode 拒绝、
+controller/worker/verifier/planner/probe 五本账分立且 controller 只记
+根会话自身、controller unbound/unavailable 显式缺失不为零）；
+state v12 迁移 4 例（test_state：CHECK 加宽不回填、zcode_db 单例
+幂等/冲突、迁移失败原库保全、备份副本独立迁移）。
+
+**实现选择**：
+
+1. **统一词汇在 adapters.base.normalized_usage**（展示层推导，从不
+   入库）：HARNESS_CACHE_SEMANTICS 固定两义——zcode/codex
+   cache_subset（input 已含缓存，processing=input+output，加缓存即
+   双算；uncached=input−cached，cached>input 矛盾时 None 不裁剪）、
+   cursor cache_separate（三桶相加，input 桶即未缓存）、shell/未知
+   无主张。NORMALIZED_NOT_BILLING_NOTE 固定"处理量非账单"措辞，
+   CLI/JSON 两面都携带；不新增 fee/cost 字段。
+2. **zcode 侧读回（zcode_sessions）**：session_tree（parent_id 递归，
+   只读）+ model_usage_aggregate（按 (session_id, logical_request_id,
+   attempt_index) 去重并计 dropped；error 行全零 token 计入
+   error_rows_zero_tokens——零是占位不是免费证据；computed_total 汇总
+   provider 自有列=input+output，从不把缓存加在 input 之上）+
+   session_tree_usage 组合。子树=自身+后代，父（控制器）永不混入。
+3. **目录别名修复（T009 活体缺口）**：discover_attempt_session 的
+   directory 匹配改为两侧 os.path.realpath 归一——项目根已 resolve
+   （macOS /private/tmp/...）而会话记录生成时拼写（/tmp/...）时同样
+   命中；不同目录永不误匹配。本 attempt 的 claim 绑定即活体证据。
+4. **入库（state v12）**：usage_observations.source CHECK 加宽
+   zcode_db（v2/v7 同款 backup-replace 迁移，加宽不改列不回填，
+   旧值逐字保留）；usage_record_host/usage_record_zcode 收敛为共享
+   _usage_record_singleton（每 attempt 每 source 单例：相同幂等、
+   不同 ConflictError、入库即清 usage_missing_reason）。
+5. **归属面（dispatch.usage().attribution）**：roles 按 attempt.role
+   分账（controller/planner/worker/verifier + 未知角色排序在后），
+   每本带 attempts/observed/unassessed/missing_reasons 分布/原始
+   token 和（_token_sum 缺失即 None）/normalized processing 与
+   uncached 的部分和 + normalized_incomplete_observations 计数；
+   controller 本=根会话（ORX_SESSION_REF）自身 usage 的只读活查，
+   子代理会话归各自 attempt，绑定到无 attempt 的后代列
+   unattributed_sessions 单列不并入；probe 本恒在、注明"探针从不跑
+   completion，空是设计"——单列防漏算防混入。ZcodeDbUnavailable→
+   unavailable、无 env→unbound，皆显式非零。
+6. **补录入口 dispatch.usage_zcode_record + `orx usage zcode`**：
+   仅 host zcode attempt；session 解析=显式 --session > attempt 绑定
+   >一次 nonce 发现（**绝不读 ORX_SESSION_REF**——host 运行内它命名
+   控制器会话，把控制器子树记进 worker 正是本命令要防的双算）；
+   重叠防护双向（他 attempt 会话在本子树内、或本会话在他子树内皆
+   ConflictError）；不可解析记 host_session_unbound（MISS 词汇新
+   成员）；error 零值行或去重丢弃时 accuracy=estimated；model_usage
+   不可读返回 unreadable 不写库。
+
+**绿验证**：门禁两文件 75 passed（16.6s；attempt 159 check 2/3 轮）；
+全量 1022 passed、0 xfail（基线 1007+15）；docs/m1.2-report.md 全量
+重跑后按约定还原。schema 版本 11→12 的既定涟漪全部随版本更新：
+observability-contract.md gate 放行 12（第六修正案：zcode_db、
+host_session_unbound、目录别名、归一化展示规则与"非账单"边界；
+consumption 权威序 native_cli>zcode_db>host_report>output_estimate）、
+gate 测试 12=ok/13=refuse、21 处 ==11 断言、包验收链期望改为锚定
+orx.state.CODE_SCHEMA_VERSION（scripts/check_release.py——tests/
+test_package_acceptance.py 导入执行的验收基建，按 tests 桶处理并在
+交付报告显式披露）。
+
+**真实/模拟来源、用量、缺失字段**：本任务零付费模型调用（15 例
+新增测试全部确定性：伪 zcode 库+伪造 token 行+冻结断言）；实现期
+对真实 ~/.zcode/db.sqlite 仅做两次只读 PRAGMA/schema 查询取证
+（mode=ro）。本 attempt 的 ORX usage 仍缺（host attempt 观测需任务
+完成后由控制器补录 `orx usage zcode --attempt 159`——round 记录如
+实保留该缺失，不用估算填充）。已知限制：cursor cacheWriteTokens
+未入库（ incident 中恒 0，capture 词汇未扩展——后续任务可加）；
+controller 本的会话号依赖 ORX_SESSION_REF，CLI 终端里通常 unset
+（显示 unbound，是诚实缺失不是零）。
+
+**耗时区间与提交**：实现+验证约 4 小时会话墙钟（含探索与全量
+两跑）；提交见 git log `G009/R009 T010`。
+
+---
+
 ## T009 · 运行隔离真实微任务，验证投产 profile 与切换接手者
 
 **输入commit**：T008 交付后 40a5fcb（attempt 157；host 控制器会话

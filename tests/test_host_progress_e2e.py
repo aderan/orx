@@ -488,3 +488,377 @@ def test_no_doc_line_about_heartbeat_claims_savings_or_automation():
             assert _negated(lower, "automatic heartbeat"), (path, line)
             assert _negated(lower, "keepalive"), (path, line)
             assert _negated(lower, "lease"), (path, line)
+
+
+# ---------------------------------------------------------------------------
+# G009 T010: provider usage attribution over the zcode session tree.
+# A fake zcode database (session/part/model_usage stand-ins behind
+# ORX_ZCODE_DB) replays the incident shapes the audit fixed: dedup of the
+# same logical request, error rows whose zeros are placeholders, the
+# /tmp-vs-/private/tmp directory alias that left T009's host attempts
+# unbound, and the controller/worker/verifier/probe books that must stay
+# separate. No paid model runs anywhere in this section.
+
+import json
+import sqlite3
+import time
+
+from typer.testing import CliRunner
+
+from orx import zcode_sessions
+from orx.cli import app
+from orx.records import ConflictError, ORXError
+
+runner = CliRunner()
+
+ZCODE_USAGE_SCHEMA = """
+CREATE TABLE session (id TEXT, parent_id TEXT, directory TEXT,
+    project_id TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);
+CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,
+    data TEXT, sequence INTEGER);
+CREATE TABLE model_usage (
+  id TEXT PRIMARY KEY,
+  logical_request_id TEXT,
+  attempt_index INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+  computed_total_tokens INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+def make_zcode_usage_db(path, directory, *, root_id="sess-root",
+                        sessions=(), usages=()):
+    """sessions: (session_id, parent_id, first_text_or_None) — every row
+    carries `directory` verbatim (the alias spelling is the point).
+    usages: (row_id, logical_request_id, attempt_index, session_id, status,
+    input, output, cache_read, computed_total). Re-writable like the
+    session-identity stand-in: an existing file is replaced wholesale."""
+    if path.exists():
+        path.unlink()
+    now = int(time.time() * 1000)
+    conn = sqlite3.connect(path)
+    conn.executescript(ZCODE_USAGE_SCHEMA)
+    rows = [(root_id, None, directory, "controller", now, now)]
+    parts = []
+    for sid, parent, text in sessions:
+        rows.append((sid, parent if parent is not None else root_id, directory,
+                     f"subagent {sid}", now - 60_000, now - 30_000))
+        if text is not None:
+            parts.append((f"p_{sid}", f"m_{sid}", sid,
+                          json.dumps({"type": "text", "text": text},
+                                     separators=(",", ":")), 1))
+    conn.executemany("INSERT INTO session VALUES(?,?,?,?,?,?,?)",
+                     [(r[0], r[1], r[2], "proj", r[3], r[4], r[5])
+                      for r in rows])
+    conn.executemany("INSERT INTO part VALUES(?,?,?,?,?)", parts)
+    conn.executemany(
+        "INSERT INTO model_usage(id, logical_request_id, attempt_index,"
+        " session_id, status, input_tokens, output_tokens,"
+        " cache_read_input_tokens, computed_total_tokens)"
+        " VALUES(?,?,?,?,?,?,?,?,?)", usages)
+    conn.commit()
+    conn.close()
+
+
+def _usage_row(project, attempt_id: int, source: str):
+    rows = [row for row in project.store.usage_rows()
+            if row["attempt_id"] == attempt_id and row["source"] == source]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_session_tree_usage_dedupes_requests_and_names_error_zeros(tmp_path):
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, "worker prompt"),
+                  ("sess-grandchild", "sess-worker", None)],
+        usages=[
+            # root: two distinct requests
+            ("r1", "lr1", 0, "sess-root", "completed", 100, 10, 90, 110),
+            ("r2", "lr2", 0, "sess-root", "completed", 50, 5, 40, 55),
+            # worker: one request recorded twice under the same logical id
+            # and attempt index (the double-count the audit guarded against)
+            ("r3", "lr3", 0, "sess-worker", "completed", 1000, 50, 980, 1050),
+            ("r3-dup", "lr3", 0, "sess-worker", "completed", 1000, 50, 980, 1050),
+            # a grandchild request belongs to the worker subtree
+            ("r4", "lr4", 0, "sess-grandchild", "completed", 7, 1, 3, 8),
+            # an error row whose zeros are placeholders, not a free request
+            ("r5", "lr5", 0, "sess-worker", "error", 0, 0, 0, 0),
+        ],
+    )
+    tree = zcode_sessions.session_tree("sess-root", db=str(zdb))
+    assert tree["sessions"][0] == "sess-root"
+    assert set(tree["sessions"]) == {"sess-root", "sess-worker", "sess-grandchild"}
+
+    agg = zcode_sessions.session_tree_usage("sess-root", db=str(zdb))
+    # the duplicate logical request is counted exactly once
+    assert agg["duplicate_request_rows_dropped"] == 1
+    assert agg["requests"] == 5
+    assert agg["status_counts"] == {"completed": 4, "error": 1}
+    assert agg["input_tokens"] == 100 + 50 + 1000 + 7
+    assert agg["output_tokens"] == 10 + 5 + 50 + 1
+    assert agg["cache_read_input_tokens"] == 90 + 40 + 980 + 3
+    # zcode subset semantics: computed total = input + output, cache is
+    # already inside input and is never added on top
+    assert agg["computed_total_tokens"] == agg["input_tokens"] + agg["output_tokens"]
+    assert agg["uncached_input_tokens"] == \
+        agg["input_tokens"] - agg["cache_read_input_tokens"]
+    assert agg["error_rows_zero_tokens"] == 1
+
+    # one session alone: the controller book never includes descendants
+    own = zcode_sessions.model_usage_aggregate(["sess-root"], db=str(zdb))
+    assert own["requests"] == 2
+    assert own["input_tokens"] == 150
+    assert own["uncached_input_tokens"] == 20
+
+
+def test_claim_discovery_binds_through_directory_alias(tmp_path, monkeypatch):
+    """T009's live gap: the project root resolves through a symlink
+    (/tmp -> /private/tmp on macOS) while the zcode session records the
+    spelling it was spawned with. Discovery must bind anyway."""
+    real = tmp_path / "realproj"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to("realproj")
+    monkeypatch.chdir(real)
+    project = make_project(real)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="alias discovery", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        dispatch.run_slice(project)
+        attempt = project.store.attempt_latest_for_task(
+            project.store.revision_active(
+                project.store.run_for_goal(goal.id).id).id, "T001")
+        assert attempt.session_ref is None
+
+        zdb = tmp_path / "zcode.sqlite"
+        make_zcode_usage_db(
+            zdb, str(alias),  # the ALIAS spelling, not project.root
+            sessions=[("sess-worker", None,
+                       f"ORX_ASSIGNMENT={attempt.nonce}\nrest of prompt")],
+        )
+        monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+        claimed = dispatch.task_claim(project, "T001", discover_session=True)
+        assert claimed["session_ref"] == "sess-worker"
+        assert project.store.attempt_get(attempt.id).session_ref == "sess-worker"
+    finally:
+        project.close()
+
+
+def test_usage_zcode_record_subtree_idempotent_and_overlapping(tmp_path, monkeypatch):
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None), ("sess-extra", None, None)],
+        usages=[
+            ("r1", "lr1", 0, "sess-worker", "completed", 1000, 50, 980, 1050),
+            ("r2", "lr2", 0, "sess-worker", "error", 0, 0, 0, 0),
+            ("r3", "lr3", 0, "sess-extra", "completed", 5, 1, 0, 6),
+        ],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="zcode usage record", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        dispatch.run_slice(project)
+        revision = project.store.revision_active(
+            project.store.run_for_goal(goal.id).id)
+        worker = project.store.attempt_latest_for_task(revision.id, "T001")
+        assert (worker.driver, worker.harness) == ("host", "zcode")
+
+        recorded = dispatch.usage_zcode_record(project, worker.id,
+                                               session="sess-worker")
+        assert recorded["status"] == "recorded"
+        assert recorded["source"] == "zcode_db"
+        # error-zero row keeps the measurement honest: estimated, not exact
+        assert recorded["accuracy"] == "estimated"
+        row = _usage_row(project, worker.id, "zcode_db")
+        assert (row["input_tokens"], row["output_tokens"],
+                row["cached_input_tokens"]) == (1000, 50, 980)
+        assert project.store.attempt_get(worker.id).usage_missing_reason is None
+        # re-recording the same session is idempotent
+        again = dispatch.usage_zcode_record(project, worker.id,
+                                            session="sess-worker")
+        assert again["status"] == "recorded" and again["idempotent"] is True
+        assert len([r for r in project.store.usage_rows()
+                    if r["attempt_id"] == worker.id]) == 1
+
+        # a second attempt cannot claim a subtree that already belongs to
+        # another attempt's session: same tokens must never be counted twice
+        other = project.store.attempt_create(
+            revision_row_id=revision.id, role="verifier", profile="host-verifier",
+            driver="host", harness="zcode", model_id="m",
+            requested_effort="high", task_id="T001",
+        )
+        project.store.attempt_update(other.id, session_ref="sess-worker")
+        with pytest.raises(ConflictError, match="already attributed"):
+            dispatch.usage_zcode_record(project, other.id)
+
+        # a host attempt with no session and no discoverable one records a
+        # missing reason, never zero tokens
+        unbound = project.store.attempt_create(
+            revision_row_id=revision.id, role="verifier", profile="host-verifier",
+            driver="host", harness="zcode", model_id="m",
+            requested_effort="medium", task_id="T001",
+        )
+        missing = dispatch.usage_zcode_record(project, unbound.id)
+        assert missing["status"] == "missing"
+        assert missing["reason"] == "host_session_unbound"
+        assert project.store.attempt_get(unbound.id).usage_missing_reason == \
+            "host_session_unbound"
+        assert [r for r in project.store.usage_rows()
+                if r["attempt_id"] == unbound.id] == []
+
+        # the record command rejects non-zcode attempts outright
+        cli_attempt = project.store.attempt_create(
+            revision_row_id=revision.id, role="worker", profile="cli-x",
+            driver="cli", harness="cursor", model_id="m",
+            requested_effort="high", task_id="T001", run_id="R001",
+        )
+        with pytest.raises(ORXError, match="host zcode"):
+            dispatch.usage_zcode_record(project, cli_attempt.id)
+    finally:
+        project.close()
+
+
+def test_usage_attribution_separates_controller_worker_verifier_probe(
+        tmp_path, monkeypatch):
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None), ("sess-loose", None, None)],
+        usages=[
+            # controller root session's own requests
+            ("c1", "lc1", 0, "sess-root", "completed", 300, 30, 280, 330),
+            ("c2", "lc2", 0, "sess-root", "completed", 100, 10, 90, 110),
+            # a worker subagent session (bound to an attempt below)
+            ("w1", "lw1", 0, "sess-worker", "completed", 1000, 50, 980, 1050),
+            # a subagent nobody bound: visible as unattributed, never merged
+            ("u1", "lu1", 0, "sess-loose", "completed", 40, 4, 30, 44),
+        ],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.setenv("ORX_SESSION_REF", "sess-root")
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="attribution books", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        dispatch.run_slice(project)
+        revision = project.store.revision_active(
+            project.store.run_for_goal(goal.id).id)
+        worker = project.store.attempt_latest_for_task(revision.id, "T001")
+        project.store.attempt_update(worker.id, session_ref="sess-worker")
+        dispatch.usage_zcode_record(project, worker.id)
+
+        # an unobserved host verifier attempt: missing, not zero
+        verifier = project.store.attempt_create(
+            revision_row_id=revision.id, role="verifier", profile="host-verifier",
+            driver="host", harness="zcode", model_id="m",
+            requested_effort="medium", task_id="T001",
+        )
+        # an out-of-session CLI planner with cursor-style disjoint buckets
+        planner = project.store.attempt_create(
+            revision_row_id=None, role="planner", profile="cursor-frontier",
+            driver="cli", harness="cursor", model_id="m",
+            requested_effort="high", run_id=project.store.run_for_goal(goal.id).id,
+        )
+        project.store.usage_add(
+            planner.id, "cursor-frontier", planner.run_id, None,
+            10, 4, 500, "native_cli", "exact",
+        )
+
+        attribution = dispatch.usage(project)["attribution"]
+        roles = {entry["role"]: entry for entry in attribution["roles"]}
+
+        worker_book = roles["worker"]
+        assert worker_book["attempts"] == 1
+        assert worker_book["observed"] == 1
+        assert worker_book["normalized_processing_tokens"] == 1050
+        assert worker_book["uncached_input_tokens"] == 20
+        assert worker_book["cached_input_tokens"] == 980
+
+        verifier_book = roles["verifier"]
+        assert verifier_book["attempts"] == 1
+        assert verifier_book["observed"] == 0
+        assert verifier_book["unassessed"] == 1
+        assert verifier_book["input_tokens"] is None
+        assert verifier_book["normalized_processing_tokens"] is None
+
+        planner_book = roles["planner"]
+        assert planner_book["normalized_processing_tokens"] == 514
+        assert planner_book["uncached_input_tokens"] == 10
+
+        # the controller book is the ROOT session's own usage only — the
+        # worker subagent's tokens are in the worker book, the unbound
+        # subagent is named, never silently merged into controller
+        controller = attribution["controller"]
+        assert controller["status"] == "observed"
+        assert controller["session_ref"] == "sess-root"
+        assert controller["own"]["requests"] == 2
+        assert controller["own"]["input_tokens"] == 400
+        assert controller["own"]["normalized_processing_tokens"] == 440
+        assert controller["unattributed_sessions"] == ["sess-loose"]
+        assert controller["unattributed"]["input_tokens"] == 40
+
+        # the probe book is its own line: probes never run completions, so
+        # it stays empty by design instead of borrowing worker tokens
+        probe = attribution["probe"]
+        assert probe["attempts"] == 0
+        assert probe["observed"] == 0
+        assert "never runs a completion" in probe["note"]
+
+        # processing volume is never presented as billing
+        assert "not billing" in attribution["note"]
+
+        # the human surface shows the separate books
+        monkeypatch.chdir(tmp_path)
+        human = runner.invoke(app, ["usage"])
+        assert human.exit_code == 0, human.stdout
+        text = human.stdout
+        assert "controller" in text
+        assert "probe" in text
+        assert "not billing" in text
+    finally:
+        project.close()
+
+
+def test_usage_attribution_controller_missing_is_explicit(tmp_path, monkeypatch):
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+    monkeypatch.delenv("ORX_ZCODE_DB", raising=False)
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        attribution = dispatch.usage(project)["attribution"]
+        assert attribution["controller"]["status"] == "unbound"
+        assert attribution["controller"]["own"]["input_tokens"] is None
+        # a set ref with an unusable db is unavailable, still never zero
+        monkeypatch.setenv("ORX_SESSION_REF", "sess-root")
+        monkeypatch.setenv("ORX_ZCODE_DB", str(tmp_path / "missing.sqlite"))
+        attribution = dispatch.usage(project)["attribution"]
+        assert attribution["controller"]["status"] == "unavailable"
+        assert attribution["controller"]["own"]["input_tokens"] is None
+    finally:
+        project.close()

@@ -1857,3 +1857,75 @@ def test_codex_permission_axes_mirror_the_real_launch_argv(tmp_path, bindir):
     assert permission_argv_axes(profile, "worker")["sandbox"] == "workspace-write"
     assert permission_argv_axes(profile, "planner")["sandbox"] == "read-only"
     assert permission_argv_axes(profile, "verifier")["sandbox"] == "read-only"
+
+
+# ---------------------------------------------------------------------------
+# G009 T010: one normalized usage vocabulary across providers. Raw fields
+# stay verbatim; the derived processing/uncached numbers follow each
+# provider's own cache semantics as the incident audit fixed them
+# (docs/cursor-system-analysis-2026-10-07.md): ZCode/GLM and Codex cache
+# reads are a SUBSET of input (processing = input + output; adding cache
+# on top would count the same tokens twice), Cursor CLI reports disjoint
+# input / cacheRead / output buckets (processing = input + cache + output;
+# cacheRead >> input is normal). Processing is never billing.
+
+from orx.adapters.base import normalized_usage
+
+
+def test_normalized_usage_zcode_cache_read_is_inside_input():
+    view = normalized_usage("zcode", 1000, 50, 980)
+    assert view["cache_semantics"] == "cache_subset"
+    assert view["input_tokens"] == 1000
+    assert view["cached_input_tokens"] == 980
+    # cache is already inside input: processing adds output only, never
+    # input + cache + output (that would double count the cached prefix)
+    assert view["normalized_processing_tokens"] == 1050
+    assert view["uncached_input_tokens"] == 20
+
+
+def test_normalized_usage_codex_input_already_includes_cache():
+    view = normalized_usage("codex", 89121, 624, 78336)
+    assert view["cache_semantics"] == "cache_subset"
+    assert view["normalized_processing_tokens"] == 89121 + 624
+    assert view["uncached_input_tokens"] == 89121 - 78336
+
+
+def test_normalized_usage_cursor_buckets_are_disjoint():
+    view = normalized_usage("cursor", 10, 4, 500)
+    assert view["cache_semantics"] == "cache_separate"
+    # separate buckets: all three add; a cache read far larger than the
+    # input bucket is the normal shape (a131: 46730/2341/166272)
+    assert view["normalized_processing_tokens"] == 514
+    # the cursor input bucket is uncached by definition
+    assert view["uncached_input_tokens"] == 10
+
+
+def test_normalized_usage_missing_fields_stay_unknown_not_zero():
+    subset_missing_cache = normalized_usage("zcode", 1000, 50, None)
+    assert subset_missing_cache["normalized_processing_tokens"] == 1050
+    assert subset_missing_cache["uncached_input_tokens"] is None
+    separate_missing_cache = normalized_usage("cursor", 10, None, 500)
+    assert separate_missing_cache["normalized_processing_tokens"] is None
+    assert separate_missing_cache["uncached_input_tokens"] == 10
+    subset_missing_input = normalized_usage("zcode", None, 50, 10)
+    assert subset_missing_input["normalized_processing_tokens"] is None
+    assert subset_missing_input["uncached_input_tokens"] is None
+
+
+def test_normalized_usage_unknown_harness_makes_no_claim():
+    for harness in ("shell", "plan9", ""):
+        view = normalized_usage(harness, 5, 1, 0)
+        assert view["cache_semantics"] is None
+        assert view["normalized_processing_tokens"] is None
+        assert view["uncached_input_tokens"] is None
+
+
+def test_normalized_usage_subset_contradiction_is_unknown_raw_stays():
+    # cached > input contradicts the subset semantics: the derived uncached
+    # number is unknown (None), never negative, never clipped; the raw
+    # provider fields are still presented exactly as reported.
+    view = normalized_usage("zcode", 5, 1, 9)
+    assert view["uncached_input_tokens"] is None
+    assert view["input_tokens"] == 5
+    assert view["cached_input_tokens"] == 9
+    assert view["normalized_processing_tokens"] == 6

@@ -1,7 +1,7 @@
-# ORX observability read contract (schema v8/v9/v10/v11)
+# ORX observability read contract (schema v8/v9/v10/v11/v12)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
-v9, 2026-10-06 for v10, 2026-10-06 for v11). This document is the supported
+v9, 2026-10-06 for v10, 2026-10-06 for v11, 2026-10-08 for v12). This document is the supported
 way to analyze `.orx/state.db` from outside this repository. The analysis
 implementation (`orx-analytics`) lives in a separate repository and is not
 shipped here; this contract names no fixed checkout location for it — where
@@ -18,7 +18,7 @@ against `tests/fixtures/observability/seed.sql`.
 
 `meta.schema_version` is the integer version of the file, stored as text.
 The gate accepts **exactly the explicitly supported versions — `8`, `9`,
-`10`, and `11`** and refuses every other value: never a range, never "at
+`10`, `11`, and `12`** and refuses every other value: never a range, never "at
 least X".
 
 | File value | Reader action |
@@ -29,7 +29,8 @@ least X".
 | `9` | read everything except the v10 progress queries and the v11 nonce column; `attempt_progress` and `attempts.nonce` do not exist on a v9 file |
 | `10` | read everything except the v11 nonce column; `attempts.nonce` does not exist on a v10 file |
 | `11` | read everything, including the v11 identity-anchor queries below |
-| integer greater than 11 | refuse; do not rewrite the file |
+| `12` | read everything; the usage `source` CHECK admits `zcode_db` (see the sixth amendment) |
+| integer greater than 12 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -112,12 +113,48 @@ treat it as a terminal non-delivery disposition. The gate continues to
 accept `8`, `9`, and `10` explicitly; only the `nonce` column and the
 `superseded` disposition require `11`.
 
+The sixth amendment, dated 2026-10-08 (G009 T010 provider usage
+attribution), adds **v12**. v12 is additive and changes no column: the
+`usage_observations.source` CHECK widens to admit `zcode_db`.
+
+| Change | Meaning |
+|---|---|
+| `source = 'zcode_db'` (new CHECK value) | A host (zcode) attempt's usage read back read-only from the zcode database's own `model_usage` rows, aggregated over the attempt's session SUBTREE (its own session plus anything it spawned — never the controller parent) with requests deduplicated by `(session_id, logical_request_id, attempt_index)`. One row per attempt for this source: an identical repeat is idempotent and a different one is rejected, so the same tokens are never counted twice. Existing rows are untouched; nothing is backfilled. |
+| `usage_missing_reason = 'host_session_unbound'` (new reason) | A host zcode attempt ended with no observation because no harness session is bound to it and nonce discovery found none. Missing is stated, never zero-filled. |
+| session discovery directory matching | The lookup now resolves symlinks on both sides: the project root arrives resolved (`/private/tmp/...` on macOS) while the session records the spelling it was spawned with (`/tmp/...`). Both spellings of one directory match; different directories never do. |
+
+**Normalized presentation (G009 T010).** The stored token columns keep
+the runner's own meaning — the rules above ("do not compute
+`input_tokens - cached_input_tokens`", "do not rescale one harness onto
+another") still govern STORED data and any reader of raw columns. The
+`orx usage` attribution view additionally derives, per observation, from
+the harness's own cache semantics, and labels them:
+
+- **cache subset** (zcode, codex): the reported input already contains
+  the cache-read prefix. Normalized processing = `input + output`
+  (adding cache on top would count the same tokens twice); uncached
+  input = `input - cached` when both are present.
+- **cache separate** (cursor): input / cacheRead / output are disjoint
+  buckets; processing = `input + cached + output`; the input bucket is
+  uncached by definition.
+
+A derivation whose operands are missing is NULL, never zero; a bucket's
+sums are partial sums with the incomplete observation count published.
+Normalized processing is a volume measure for comparing work. **It is
+not billing** — model mix, cache pricing, plan windows, and provider
+weighting are outside this database, and no fee column exists. The
+attribution books keep controller (the root zcode session's OWN usage,
+read live and read-only; subagent sessions belong to their attempts'
+books; descendants bound to no attempt are listed, never merged),
+planner, worker, verifier, and probe (empty by design: a probe never
+runs a completion) separate.
+
 ```sql
 -- query: schema_gate
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9', '10', '11') THEN 'ok'
+  ) IN ('8', '9', '10', '11', '12') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```
@@ -715,6 +752,7 @@ reason of `harness_omitted`. Recorded reasons are only:
 | `malformed_output` | a usage event was present and not usable |
 | `truncated` | the parsed text ends in the capture truncation marker and no usage object survived |
 | `execution_failure` | the launch failed or never started, and the stream had no usable usage object |
+| `host_session_unbound` | a host zcode attempt with no bound session and no discoverable one (G009 T010) |
 
 A stored observation clears `usage_missing_reason`. Host attempts are
 not assessed by the CLI miss path unless something actually recorded a
@@ -743,8 +781,9 @@ source, then the lowest `usage_observations.id`:
 | Order | `source` |
 |---|---|
 | 1 | `native_cli` |
-| 2 | `host_report` |
-| 3 | `output_estimate` |
+| 2 | `zcode_db` |
+| 3 | `host_report` |
+| 4 | `output_estimate` |
 
 Token sums add the canonical rows only. SQLite `SUM` skips NULL, so a
 sum is a **partial sum** whenever the matching `*_missing` count is
@@ -762,9 +801,10 @@ not store it, does not create a ledger table, and does not implement the
 dedupe product. The rule the external tool applies is:
 
 - Identity is `(project_id, attempt_id, source)`.
-- `source` is one of `native_cli`, `output_estimate`, `host_report`.
-  A ledger line that was typed in and then recorded with `orx usage
-  record` is `host_report`.
+- `source` is one of `native_cli`, `output_estimate`, `host_report`,
+  `zcode_db`. A ledger line that was typed in and then recorded with
+  `orx usage record` is `host_report`; `zcode_db` rows come from the
+  zcode database read-back and are never typed in.
 - If `usage_observations` already has that `attempt_id` and that
   `source`, the ledger line is a duplicate and is excluded from any sum.
 - If it has the attempt but not that source, the line is eligible to be
@@ -899,9 +939,10 @@ WITH ranked AS (
       PARTITION BY u.attempt_id
       ORDER BY CASE u.source
         WHEN 'native_cli' THEN 1
-        WHEN 'host_report' THEN 2
-        WHEN 'output_estimate' THEN 3
-        ELSE 4
+        WHEN 'zcode_db' THEN 2
+        WHEN 'host_report' THEN 3
+        WHEN 'output_estimate' THEN 4
+        ELSE 5
       END,
       u.id
     ) AS n

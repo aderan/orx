@@ -22,7 +22,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 11
+CODE_SCHEMA_VERSION = 12
 
 
 def mint_nonce() -> str:
@@ -586,6 +586,52 @@ def _migrate_v11(conn: sqlite3.Connection) -> None:
     )
 
 
+# v12 (G009 T010): widen the usage_observations source CHECK to admit
+# 'zcode_db' — a host attempt's usage read back from the zcode database's
+# own model_usage rows (the 21-of-26 incident gap: host attempts had no
+# observation at all). Additive only: every row, source, and accuracy
+# survives verbatim; no column changes; nothing is backfilled (old rows
+# keep reading exactly as they did). The rebuild follows the v2/v7
+# backup-replace pattern inside the copy-then-replace migration.
+SCHEMA_V12_USAGE = """
+CREATE TABLE usage_observations_v12 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+  profile TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  task_id TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cached_input_tokens INTEGER,
+  source TEXT NOT NULL CHECK (source IN ('native_cli', 'output_estimate', 'host_report', 'zcode_db')),
+  accuracy TEXT NOT NULL CHECK (accuracy IN ('exact', 'estimated', 'unknown')),
+  created_at TEXT NOT NULL
+);
+INSERT INTO usage_observations_v12 (
+  id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+  cached_input_tokens, source, accuracy, created_at
+)
+SELECT id, attempt_id, profile, run_id, task_id, input_tokens, output_tokens,
+       cached_input_tokens, source, accuracy, created_at
+FROM usage_observations;
+DROP TABLE usage_observations;
+ALTER TABLE usage_observations_v12 RENAME TO usage_observations;
+"""
+
+
+def _migrate_v12(conn: sqlite3.Connection) -> None:
+    has_usage = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_observations' LIMIT 1"
+    ).fetchone()
+    if has_usage:
+        conn.executescript(SCHEMA_V12_USAGE)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -599,6 +645,7 @@ MIGRATIONS: dict[int, callable] = {
     9: _migrate_v9,
     10: _migrate_v10,
     11: _migrate_v11,
+    12: _migrate_v12,
 }
 
 
@@ -1192,7 +1239,7 @@ def _nonnegative_count(name: str, value, *, allow_none: bool = False):
     return value
 
 
-def _host_report_key(row: sqlite3.Row) -> tuple:
+def _singleton_source_key(row: sqlite3.Row) -> tuple:
     return (
         row["input_tokens"],
         row["output_tokens"],
@@ -1201,7 +1248,8 @@ def _host_report_key(row: sqlite3.Row) -> tuple:
     )
 
 
-def _host_report_payload(attempt: Attempt, row: sqlite3.Row, *, idempotent: bool) -> dict:
+def _singleton_source_payload(attempt: Attempt, row: sqlite3.Row, *,
+                              source: str, idempotent: bool) -> dict:
     return {
         "attempt": attempt.id,
         "profile": attempt.profile,
@@ -1210,7 +1258,7 @@ def _host_report_payload(attempt: Attempt, row: sqlite3.Row, *, idempotent: bool
         "input_tokens": row["input_tokens"],
         "output_tokens": row["output_tokens"],
         "cached_input_tokens": row["cached_input_tokens"],
-        "source": "host_report",
+        "source": source,
         "accuracy": row["accuracy"],
         "idempotent": idempotent,
     }
@@ -2666,6 +2714,43 @@ class Store:
         second insert cannot inflate token totals. Cached may exceed input.
         Missing cached stays NULL. No runner normalization and no fee.
         """
+        return self._usage_record_singleton(
+            attempt_id, "host_report",
+            input_tokens, output_tokens, cached_input_tokens, accuracy,
+        )
+
+    def usage_record_zcode(
+        self,
+        attempt_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int | None,
+        accuracy: str,
+    ) -> dict:
+        """Persist one zcode_db observation for an attempt (G009 T010).
+
+        The numbers come from the zcode database's own model_usage rows
+        (aggregated by the caller over the attempt's session subtree, with
+        the request-level dedup zcode_sessions performs). Same discipline
+        as a host_report: one row per attempt for this source, identical
+        repeat is idempotent, a different one is a conflict, tokens are
+        never normalized into a fee, and a stored observation clears an
+        earlier usage_missing_reason.
+        """
+        return self._usage_record_singleton(
+            attempt_id, "zcode_db",
+            input_tokens, output_tokens, cached_input_tokens, accuracy,
+        )
+
+    def _usage_record_singleton(
+        self,
+        attempt_id: int,
+        source: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int | None,
+        accuracy: str,
+    ) -> dict:
         input_tokens = _nonnegative_count("input", input_tokens)
         output_tokens = _nonnegative_count("output", output_tokens)
         cached_input_tokens = _nonnegative_count(
@@ -2686,23 +2771,26 @@ class Store:
             existing = self.conn.execute(
                 "SELECT * FROM usage_observations WHERE attempt_id = ? AND source = ?"
                 " ORDER BY id",
-                (attempt_id, "host_report"),
+                (attempt_id, source),
             ).fetchall()
             if existing:
                 mismatched = [
-                    row for row in existing if _host_report_key(row) != incoming
+                    row for row in existing
+                    if _singleton_source_key(row) != incoming
                 ]
                 if mismatched:
                     row = mismatched[0]
                     raise records.ConflictError(
-                        f"attempt {attempt_id} already has a host_report observation "
+                        f"attempt {attempt_id} already has a {source} observation "
                         f"(input={row['input_tokens']}, output={row['output_tokens']}, "
                         f"cached={row['cached_input_tokens']}, accuracy={row['accuracy']}); "
                         f"refusing to replace it with input={input_tokens}, "
                         f"output={output_tokens}, cached={cached_input_tokens}, "
                         f"accuracy={accuracy}"
                     )
-                return _host_report_payload(attempt, existing[0], idempotent=True)
+                return _singleton_source_payload(
+                    attempt, existing[0], source=source, idempotent=True
+                )
             self.usage_add(
                 attempt.id,
                 attempt.profile,
@@ -2711,15 +2799,17 @@ class Store:
                 input_tokens,
                 output_tokens,
                 cached_input_tokens,
-                "host_report",
+                source,
                 accuracy,
             )
             stored = self.conn.execute(
                 "SELECT * FROM usage_observations WHERE attempt_id = ? AND source = ?"
                 " ORDER BY id DESC LIMIT 1",
-                (attempt_id, "host_report"),
+                (attempt_id, source),
             ).fetchone()
-        return _host_report_payload(attempt, stored, idempotent=False)
+        return _singleton_source_payload(
+            attempt, stored, source=source, idempotent=False
+        )
 
     def usage_rows(self, profile: str | None = None) -> list[sqlite3.Row]:
         if profile is None:
