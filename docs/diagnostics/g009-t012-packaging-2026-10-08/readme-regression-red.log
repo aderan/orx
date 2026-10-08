@@ -1,0 +1,20 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_readme_links_the_upgrade_doc_and_states_the_supported_versions ______
+
+    def test_readme_links_the_upgrade_doc_and_states_the_supported_versions():
+        """README links docs/upgrade-0.3.1.md, and its observability statement
+        matches what the read contract actually accepts: v8/v9/v10/v11/v12 —
+        T010's sixth amendment widened the gate to 12, and T012 kept the README
+        statement and this pin in step — with the v8-established /
+        v9-v10-v11-v12-added history kept as context."""
+        flat = _flat(REPO_ROOT / "README.md")
+        assert "docs/upgrade-0.3.1.md" in flat            # the doc is linked
+>       assert "v8/v9/v10/v11/v12" in flat                # current observation
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'v8/v9/v10/v11/v12' in '# ORX ORX controls agent scheduling to carry out a Goal: it validates plans, routes assignments, records execution, a...efinitions must match; unrelated user entries preserved; resource rows survive because profile identity is the name). '
+
+tests/test_delivery_gate_e2e.py:828: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_delivery_gate_e2e.py::test_readme_links_the_upgrade_doc_and_states_the_supported_versions
+1 failed in 0.68s

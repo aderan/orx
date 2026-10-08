@@ -10,6 +10,38 @@
 
 ### G009/R009 轮次记录
 
+- **T012（2026-10-08 交付，attempt 163）**：执行兼容、打包、迁移及全量
+  验证，整理使用文档。零生产代码改动、零付费调用。(1) 文档回归先行：
+  T010 已把读取契约推到 schema v12（gate SQL 8–12），但 README 观测表述、
+  Docs 索引与 docs/package-acceptance.md §3 升级链描述仍停在 v11，其中
+  README 允许清单被 test_delivery_gate_e2e 钉成"当前事实"——测试先行更新
+  （加 12、钉旧串 "8, 9, 10, and 11" 不得残留）对未修 README 实跑红，再修
+  文档转绿；README 升级提示框 "migrates to v11" 改诚实双值（发布 0.3.1→
+  v11、当前未发布树→v12——同版本号下源码树与发布包 schema 已分叉）；
+  package-acceptance 升级链描述随 CODE_SCHEMA_VERSION 锚定改写并引用实测
+  拒读原文（`schema version 12 is newer than supported version 8; upgrade
+  orx`），改前文档与机器行为不符（链已升 v12 文档仍写 v11）；README 不加
+  新节（G009 新命令面成文在 routing-strategy Recovery/预算节、
+  observability-contract 第六修正案与报告各条目，不复制第二份）。
+  (2) 兼容/打包/迁移全走既有机器：全量 1036 passed 0 xfail（START GATE
+  首轮与终验两跑；docs/m1.2-report.md 纯生成差异按约定还原）；
+  scripts/check_release.py 全链 exit 0 problems 空（uv build --wheel 临时
+  目录、干净 venv、包内资源探针、preset 保语义、全部打包技能逐字节漂移
+  刷新、stand-in Goal 闭环、fixture 再生核对、v8→12 逐行身份+真实 v0.3.0
+  拒读+备份恢复）；版本保持 0.3.1、无 tag 无发布（硬边界）；sdist 追加
+  一次性验证（repo 布局 11 个资源文件、sdist→wheel 复构含全部 6 个打包
+  资源）；v12 迁移四例+test_m12 legacy 链+包验收链全在全量内跑过，无缺口
+  未无理由重复（T011 对 skills/orx-controller、skills/orx-agent、agents/
+  orx-worker.md 的资源改动由包验收链逐字节自动受验）。(3) 诚实审计：
+  git diff 5589242..HEAD 无 skip/skipif/xfail 新增（唯一命中=T001
+  xfail(strict) 脚手架注释文字，标记本体已由 T002/T003 移除，当前 tests/
+  零 skip/xfail 标记）；仓库无 formatter/linter 配置如实说明、不引入工具
+  凑检查；事故勘误只在仓库（外部 ZCode memory 超范围）。
+  docs/recovery-hardening-report.md 补 T012 条目+头部修正（终验指针
+  T012→T013、T001–T005 记录位置说明）。证据
+  docs/diagnostics/g009-t012-packaging-2026-10-08/（check-release.json、
+  sdist-build.log、sdist-contents.txt、wheel-from-sdist.log）。
+
 - **T011（2026-10-08 交付，attempt 161）**：用对照实测压缩 controller 与
   worker 上下文，形成预算策略。四件落地：(1) worker 提示词压缩零信息
   损失——每条验证条目从出现两次（清单+preflight 行）合并为一次（preflight
@@ -340,7 +372,7 @@
 **Goal**: 完成 T012–T013。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: Not Started
+**Status**: In Progress（R009：T012 已交付（attempt 163 撞 1308 后经 observe→shared-failure note→recover 关闭，attempt 164 控制器收尾：全量 1036 绿 + diff-check clean + 打包 problems=[] + 零新增 skip + 版本保持 0.3.1 未发布）；T013 独立终审待做）
 
 # IMPLEMENTATION_PLAN — orx-pbv（替换 StockMate pbv-loop）
 

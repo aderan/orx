@@ -178,10 +178,10 @@ Human columns are `PROFILE`, `TASKS`, `RUNTIME`, `INPUT`, `OUTPUT`,
 
 Out-of-repo analysis reads `.orx/state.db` through
 [docs/observability-contract.md](docs/observability-contract.md): the
-v8/v9/v10/v11 tables — v8 established the observability schema; the v9,
-v10, and v11 amendments were additive — plus join keys and the SQL for
-the six report dimensions (the gate accepts exactly the supported
-versions 8, 9, 10, and 11). That contract is read-only. The analysis
+v8/v9/v10/v11/v12 tables — v8 established the observability schema; the
+v9, v10, v11, and v12 amendments were additive — plus join keys and the
+SQL for the six report dimensions (the gate accepts exactly the supported
+versions 8, 9, 10, 11, and 12). That contract is read-only. The analysis
 layer itself is not in this repository.
 
 ## Key invariants
@@ -300,10 +300,12 @@ Upgrading from 0.3.0? Follow
 [docs/upgrade-0.3.1.md](docs/upgrade-0.3.1.md): pause writers, take the
 SQLite-consistent backup (database + project config + run materials)
 before the new version first opens the old database (schema v8 migrates
-to v11 automatically; rollback restores that backup — never a hand-edited
-`schema_version`), then refresh skills with `orx skill update` and
-explicitly compare/replace the three role definitions. Editable installs
-update by checking out the release — no `uv tool upgrade`.
+automatically to the current schema version — v11 in the released 0.3.1,
+v12 in the current unreleased tree; rollback restores that backup —
+never a hand-edited `schema_version`), then refresh skills with `orx
+skill update` and explicitly compare/replace the three role definitions.
+Editable installs update by checking out the release — no `uv tool
+upgrade`.
 
 ## Docs
 
@@ -320,7 +322,7 @@ update by checking out the release — no `uv tool upgrade`.
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
 - [Observability read contract](docs/observability-contract.md) — schema
-  v8/v9/v10/v11 tables, joins, and read-only SQL for external analysis
+  v8/v9/v10/v11/v12 tables, joins, and read-only SQL for external analysis
 - [Upgrade to 0.3.1](docs/upgrade-0.3.1.md) — per-channel update steps
   (editable vs wheel), explicit role-file backup/compare/replace, the
   pre-upgrade SQLite-consistent backup with schema v8→v11 migration and

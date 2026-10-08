@@ -1,0 +1,1510 @@
+{
+  "probe_cwd": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/scratch",
+  "python": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/bin/python",
+  "orx_file": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/lib/python3.12/site-packages/orx/__init__.py",
+  "orx_version": "0.3.1",
+  "site_packages": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/lib/python3.12/site-packages",
+  "orx_in_site_packages": true,
+  "agents_source": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/lib/python3.12/site-packages/orx/agents",
+  "agents_in_site_packages": true,
+  "agents_present": {
+    "orx-worker": true,
+    "orx-verifier": true,
+    "orx-verifier-strong": true
+  },
+  "skills_source": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/lib/python3.12/site-packages/orx/skills",
+  "skills_in_site_packages": true,
+  "skills_present": {
+    "orx-controller": true,
+    "orx-agent": true
+  },
+  "preset_fresh": {
+    "profiles_added": [
+      "zcode-controller",
+      "zcode-verifier-flash",
+      "zcode-verifier-strong",
+      "zcode-worker"
+    ],
+    "agents": {
+      "orx-verifier": {
+        "installed": true,
+        "preserved_existing": false,
+        "note": null
+      },
+      "orx-verifier-strong": {
+        "installed": true,
+        "preserved_existing": false,
+        "note": null
+      },
+      "orx-worker": {
+        "installed": true,
+        "preserved_existing": false,
+        "note": null
+      }
+    },
+    "installed_contents_match_package": {
+      "orx-worker": true,
+      "orx-verifier": true,
+      "orx-verifier-strong": true
+    }
+  },
+  "preset_preserve": {
+    "agents": {
+      "orx-verifier": {
+        "installed": true,
+        "preserved_existing": false,
+        "note": null
+      },
+      "orx-verifier-strong": {
+        "installed": true,
+        "preserved_existing": false,
+        "note": null
+      },
+      "orx-worker": {
+        "installed": false,
+        "preserved_existing": true,
+        "note": null
+      }
+    },
+    "custom_content_intact": true
+  },
+  "wheel": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/dist/orx_agent-0.3.1-py3-none-any.whl",
+  "repo_root": "/Users/flb/Sources/Products/ORX",
+  "cli_flow": {
+    "steps": [
+      {
+        "step": "version",
+        "command": "orx version --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "version": "0.3.1"
+        }
+      },
+      {
+        "step": "preset-fresh",
+        "command": "orx preset install zcode --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "preset": "zcode",
+          "user_profiles": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/profiles.toml",
+          "profiles_added": [
+            "zcode-controller",
+            "zcode-verifier-flash",
+            "zcode-verifier-strong",
+            "zcode-worker"
+          ],
+          "profiles_preserved": [],
+          "user_config": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/config.toml",
+          "config_added": [
+            "controller.profile",
+            "plan.depth",
+            "plan.allow_class_downgrade",
+            "plan.light.profiles",
+            "plan.standard.profiles",
+            "plan.deep.profiles",
+            "worker.profiles",
+            "verify.profiles",
+            "runtime.max_parallel",
+            "runtime.command_timeout_sec"
+          ],
+          "config_preserved": [],
+          "agents": [
+            {
+              "name": "orx-verifier",
+              "installed": true,
+              "preserved_existing": false,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier.md"
+            },
+            {
+              "name": "orx-verifier-strong",
+              "installed": true,
+              "preserved_existing": false,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier-strong.md"
+            },
+            {
+              "name": "orx-worker",
+              "installed": true,
+              "preserved_existing": false,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-worker.md"
+            }
+          ],
+          "agents_dir": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents",
+          "conflicts": []
+        }
+      },
+      {
+        "step": "preset-preserve",
+        "command": "orx preset install zcode --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "preset": "zcode",
+          "user_profiles": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/profiles.toml",
+          "profiles_added": [],
+          "profiles_preserved": [
+            "zcode-controller",
+            "zcode-verifier-flash",
+            "zcode-verifier-strong",
+            "zcode-worker"
+          ],
+          "user_config": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/config.toml",
+          "config_added": [],
+          "config_preserved": [
+            "controller.profile",
+            "plan.depth",
+            "plan.allow_class_downgrade",
+            "plan.light.profiles",
+            "plan.standard.profiles",
+            "plan.deep.profiles",
+            "worker.profiles",
+            "verify.profiles",
+            "runtime.max_parallel",
+            "runtime.command_timeout_sec"
+          ],
+          "agents": [
+            {
+              "name": "orx-verifier",
+              "installed": false,
+              "preserved_existing": true,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier.md"
+            },
+            {
+              "name": "orx-verifier-strong",
+              "installed": false,
+              "preserved_existing": true,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier-strong.md"
+            },
+            {
+              "name": "orx-worker",
+              "installed": false,
+              "preserved_existing": true,
+              "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-worker.md"
+            }
+          ],
+          "agents_dir": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents",
+          "conflicts": []
+        }
+      },
+      {
+        "step": "skill-install",
+        "command": "orx skill install orx-agent orx-controller orx-pbv --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "canonical_root": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.agents/skills",
+          "installed": [
+            "orx-agent",
+            "orx-controller",
+            "orx-pbv"
+          ],
+          "refreshed": [],
+          "symlinked_into": [
+            "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.zcode"
+          ]
+        }
+      },
+      {
+        "step": "skill-update",
+        "command": "orx skill update --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "canonical_root": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.agents/skills",
+          "installed": [],
+          "refreshed": [
+            "orx-controller",
+            "orx-agent",
+            "orx-pbv"
+          ],
+          "symlinked_into": [
+            "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.zcode"
+          ]
+        }
+      },
+      {
+        "step": "init",
+        "command": "orx init . --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+          "created": [
+            ".orx/state.db"
+          ],
+          "inherited": [
+            ".orx/config.toml",
+            ".orx/profiles.toml"
+          ]
+        }
+      },
+      {
+        "step": "goal-new",
+        "command": "orx goal new --objective Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict) --acceptance the stand-in artifact exists --acceptance the structured delivery result is accepted --constraint no paid model, no analytics: host work stays parked --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "goal": {
+            "id": "G001",
+            "objective": "Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)",
+            "acceptance": [
+              "the stand-in artifact exists",
+              "the structured delivery result is accepted"
+            ],
+            "constraints": [
+              "no paid model, no analytics: host work stays parked"
+            ],
+            "status": "active"
+          },
+          "run": {
+            "id": "R001",
+            "status": "planning"
+          }
+        }
+      },
+      {
+        "step": "plan-submit",
+        "command": "orx plan submit --file plan-ir.json --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "revision": 1,
+          "depth": "standard",
+          "planner_profile": "host-manual",
+          "tasks": 2,
+          "superseded_revision": null,
+          "cancelled_tasks": [],
+          "assignment": null
+        }
+      },
+      {
+        "step": "status-after-plan",
+        "command": "orx status --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "goal": {
+            "id": "G001",
+            "objective": "Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)",
+            "acceptance": [
+              "the stand-in artifact exists",
+              "the structured delivery result is accepted"
+            ],
+            "constraints": [
+              "no paid model, no analytics: host work stays parked"
+            ],
+            "status": "active"
+          },
+          "run": {
+            "id": "R001",
+            "status": "running",
+            "started_at": "2026-10-08T04:02:38.010597+00:00",
+            "completed_at": null
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "standard",
+            "planner_profile": "host-manual",
+            "status": "active"
+          },
+          "tasks": [
+            {
+              "id": "T001",
+              "objective": "deliver the stand-in artifact with the structured evidence",
+              "status": "runnable",
+              "profile": null,
+              "dependencies": [],
+              "blocked_by": [],
+              "failure_reason": null,
+              "session_ref": null,
+              "check_rounds": null,
+              "progress": {
+                "attempt": null,
+                "state": "unknown",
+                "phase": null,
+                "message": null,
+                "received_at": null,
+                "age_sec": null,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 0,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 0,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            },
+            {
+              "id": "T002",
+              "objective": "close the stand-in loop with a command-verified delivery",
+              "status": "pending",
+              "profile": null,
+              "dependencies": [
+                "T001"
+              ],
+              "blocked_by": [
+                "T001"
+              ],
+              "failure_reason": null,
+              "session_ref": null,
+              "check_rounds": null,
+              "progress": {
+                "attempt": null,
+                "state": "unknown",
+                "phase": null,
+                "message": null,
+                "received_at": null,
+                "age_sec": null,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 0,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 0,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            }
+          ],
+          "verification": {
+            "passed": 0,
+            "failed": 0,
+            "awaiting_agent": 0
+          },
+          "resources": [
+            {
+              "profile": "zcode-controller",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801714+00:00"
+            },
+            {
+              "profile": "zcode-worker",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801883+00:00"
+            },
+            {
+              "profile": "zcode-verifier-flash",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801890+00:00"
+            },
+            {
+              "profile": "zcode-verifier-strong",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801894+00:00"
+            }
+          ],
+          "result": "running"
+        }
+      },
+      {
+        "step": "run-park-t001",
+        "command": "orx run --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "started": [],
+          "host_required": [
+            {
+              "task": "T001",
+              "objective": "deliver the stand-in artifact with the structured evidence",
+              "profile": "zcode-worker",
+              "attempt": 1,
+              "prompt": "ASSIGNMENT IDENTITY (machine anchor \u2014 do not remove or alter this line):\nORX_ASSIGNMENT=orx-assignment:ce63b1c4-b351-48d7-ba5c-2ee08e42f556\n\nYou are an ORX worker for Goal G001: Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)\n\nYour assignment is ONE task. Do only this task and stay inside its scope.\n\nTask T001: deliver the stand-in artifact with the structured evidence\n\nGoal constraints (binding for this work):\n  - no paid model, no analytics: host work stays parked\n\nScope (write only inside these project-relative paths): src/\nRead these files first \u2014 before any exploration, and only these plus the\nfiles you yourself create or modify (project-relative):\n  (not specified)\nAcceptance (your work is verified against these, verbatim):\n  - 'the stand-in artifact exists'\n\nHow your work will be checked (the prescribed checks, with ORX's\nstatic pre-flight status \u2014 assembled at assignment time, nothing\nwas executed; the START GATE re-verifies it for real in your\nenvironment):\n  - [preflight:ok] command 'true' -> denylist allowed; first token 'true' is a shell builtin\n  - [preflight:not-run] agent 'agent: review the stand-in artifact' -> agent entries are judged by an independent verifier; not part of the command gate\nPre-flight summary: 1 command check(s): 1 ok, 0 blocked; 1 agent check(s) not preflighted.\n\nDelivery contract (binding, in order):\nDelivery contract (binding, in order): the four-clause delivery\ncontract in your agent definition (orx-worker: 1. START GATE \u2014 prove the\nprescribed checks can run BEFORE implementing; 2. BLOCKED EXIT \u2014 when they\ncannot, leave the workspace unchanged and exit non-zero with the blocker\nin your output; 3. CHECK-FIX LOOP; 4. DELIVERY GATE) applies to this task\nVERBATIM. Task-bound facts:\n- check budget: 3 check round(s) on this attempt; `orx task check T001` reports rounds used vs budget\n- stop and submit the structured failed/blocked delivery when the budget is exhausted and checks are still red\n- completion: `orx task complete T001 --evidence <file>` only when every command check is green; a green self-check is necessary, not sufficient \u2014 the independent verifier still judges the work\nRules:\n- do not modify the Goal text or other tasks' scope\n- if you are blocked, leave the workspace unchanged and exit non-zero with the\n  blocker in your output; do not widen scope\n- exit 0 only when the task is done AND the delivery gate is green\n",
+              "prompt_file": ".orx/runs/R001/assignments/T001.md",
+              "preflight": [
+                {
+                  "kind": "command",
+                  "raw": "true",
+                  "command": "true",
+                  "denial": null,
+                  "token": "true",
+                  "token_status": "builtin",
+                  "token_path": null,
+                  "blocked": false,
+                  "reason": "denylist allowed; first token 'true' is a shell builtin"
+                },
+                {
+                  "kind": "agent",
+                  "raw": "agent: review the stand-in artifact",
+                  "command": null,
+                  "denial": null,
+                  "token": null,
+                  "token_status": null,
+                  "token_path": null,
+                  "blocked": false,
+                  "reason": "agent entries are judged by an independent verifier; not part of the command gate"
+                }
+              ],
+              "preread": [],
+              "execution": {
+                "mode": "subagent",
+                "agent_ref": "orx-worker",
+                "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+                "effort": "max",
+                "harness": "zcode",
+                "workdir": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+                "attempt": 1,
+                "nonce": "orx-assignment:ce63b1c4-b351-48d7-ba5c-2ee08e42f556",
+                "submit": "controller"
+              },
+              "claim": "orx task claim T001 --discover-session",
+              "session_identity": "claim binds the claiming subagent's zcode session id (deterministic first-prompt lookup); pass --session <id> instead when the caller knows its own id",
+              "isolation": "prompt_only"
+            }
+          ],
+          "waiting_external": [],
+          "recovery": [],
+          "failed": [],
+          "deferred": [],
+          "routing_errors": [],
+          "quota_preflight": [],
+          "budget": {
+            "attempts": 0,
+            "attempts_with_usage": 0,
+            "attempts_unassessed": 0,
+            "attempts_unnormalized": 0,
+            "processing_tokens_recorded": 0,
+            "scope": "run",
+            "limits": {
+              "hard_stop_run_processing_tokens": 150000000
+            },
+            "soft_warn": false,
+            "hard_stop": false,
+            "hard_stop_reason": null,
+            "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+          }
+        }
+      },
+      {
+        "step": "claim-t001",
+        "command": "orx task claim T001 --session sess-standin-worker --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T001",
+          "status": "running",
+          "attempt": 1,
+          "driver": "host",
+          "session_ref": "sess-standin-worker",
+          "session_discovery": null,
+          "execution": {
+            "mode": "subagent",
+            "agent_ref": "orx-worker",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "effort": "max",
+            "harness": "zcode",
+            "workdir": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+            "attempt": 1,
+            "nonce": "orx-assignment:ce63b1c4-b351-48d7-ba5c-2ee08e42f556",
+            "submit": "controller"
+          }
+        }
+      },
+      {
+        "step": "heartbeat-t001",
+        "command": "orx task heartbeat T001 --attempt 1 --phase implementing --message stand-in round --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T001",
+          "attempt": 1,
+          "sequence": 1,
+          "phase": "implementing",
+          "message": "stand-in round",
+          "received_at": "2026-10-08T04:02:38.455806+00:00"
+        }
+      },
+      {
+        "step": "legacy-evidence-rejected",
+        "command": "orx task complete T001 --evidence legacy-evidence.json --attempt 1 --json",
+        "exit_code": 1,
+        "envelope": {
+          "ok": false,
+          "error": "evidence rejected for task T001: the delivery result must be structured JSON (status, checks, artifacts, summary) \u2014 field 'status' is missing (the delivery result: one of passed | failed | blocked); field 'checks' is missing (a list \u2014 one {command/exit_code/log} object per command check you ran; [] when none could run)",
+          "evidence_errors": [
+            "field 'status' is missing (the delivery result: one of passed | failed | blocked)",
+            "field 'checks' is missing (a list \u2014 one {command/exit_code/log} object per command check you ran; [] when none could run)"
+          ]
+        },
+        "stderr": ""
+      },
+      {
+        "step": "status-after-rejection",
+        "command": "orx status --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "goal": {
+            "id": "G001",
+            "objective": "Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)",
+            "acceptance": [
+              "the stand-in artifact exists",
+              "the structured delivery result is accepted"
+            ],
+            "constraints": [
+              "no paid model, no analytics: host work stays parked"
+            ],
+            "status": "active"
+          },
+          "run": {
+            "id": "R001",
+            "status": "running",
+            "started_at": "2026-10-08T04:02:38.010597+00:00",
+            "completed_at": null
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "standard",
+            "planner_profile": "host-manual",
+            "status": "active"
+          },
+          "tasks": [
+            {
+              "id": "T001",
+              "objective": "deliver the stand-in artifact with the structured evidence",
+              "status": "running",
+              "profile": "zcode-worker",
+              "dependencies": [],
+              "blocked_by": [],
+              "failure_reason": null,
+              "session_ref": "sess-standin-worker",
+              "check_rounds": {
+                "used": 0,
+                "budget": 3
+              },
+              "progress": {
+                "attempt": 1,
+                "state": "reported",
+                "phase": "implementing",
+                "message": "stand-in round",
+                "received_at": "2026-10-08T04:02:38.455806+00:00",
+                "age_sec": 0.20677,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 1,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 1,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            },
+            {
+              "id": "T002",
+              "objective": "close the stand-in loop with a command-verified delivery",
+              "status": "pending",
+              "profile": null,
+              "dependencies": [
+                "T001"
+              ],
+              "blocked_by": [
+                "T001"
+              ],
+              "failure_reason": null,
+              "session_ref": null,
+              "check_rounds": null,
+              "progress": {
+                "attempt": null,
+                "state": "unknown",
+                "phase": null,
+                "message": null,
+                "received_at": null,
+                "age_sec": null,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 0,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 0,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            }
+          ],
+          "verification": {
+            "passed": 0,
+            "failed": 0,
+            "awaiting_agent": 0
+          },
+          "resources": [
+            {
+              "profile": "zcode-controller",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801714+00:00"
+            },
+            {
+              "profile": "zcode-worker",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801883+00:00"
+            },
+            {
+              "profile": "zcode-verifier-flash",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801890+00:00"
+            },
+            {
+              "profile": "zcode-verifier-strong",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801894+00:00"
+            }
+          ],
+          "result": "running"
+        }
+      },
+      {
+        "step": "complete-t001",
+        "command": "orx task complete T001 --evidence evidence.json --attempt 1 --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T001",
+          "status": "verifying",
+          "verdict": "pending",
+          "verification": {
+            "passed": 1,
+            "failed": 0,
+            "awaiting_agent": 1
+          },
+          "attempt": 1,
+          "delivery": {
+            "status": "passed",
+            "checks_run": 1
+          }
+        }
+      },
+      {
+        "step": "verify-report",
+        "command": "orx verify --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "checked": [
+            {
+              "task": "T001",
+              "verdict": "pending"
+            }
+          ],
+          "agent_required": [
+            {
+              "task": "T001",
+              "entry": "agent: review the stand-in artifact",
+              "required_capabilities": [
+                "coding"
+              ],
+              "profile": "zcode-verifier-flash",
+              "driver": "host",
+              "attempt": 2,
+              "execution": {
+                "mode": "subagent",
+                "agent_ref": "orx-verifier",
+                "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+                "effort": "max",
+                "harness": "zcode",
+                "workdir": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+                "attempt": 2,
+                "nonce": "orx-assignment:065a4304-e777-45dc-a17a-e40feddf0914",
+                "submit": "controller"
+              },
+              "prompt": "ASSIGNMENT IDENTITY (machine anchor \u2014 do not remove or alter this line):\nORX_ASSIGNMENT=orx-assignment:065a4304-e777-45dc-a17a-e40feddf0914\n\nYou are an ORX verifier for Goal G001: Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)\n\nVerify ONE acceptance check for task T001 (deliver the stand-in artifact with the structured evidence).\n\nCheck to verify (exact instruction): review the stand-in artifact\nRequired capabilities: none\n\nGoal constraints (the work must respect these):\n  - no paid model, no analytics: host work stays parked\nTask acceptance criteria (judge against these, verbatim):\n  - 'the stand-in artifact exists'\nDeterministic checks already run for this task (do not re-run them):\n  - true -> exit 0 (passed)\n\nExecution evidence for this task:\n  - [completion] /private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project/evidence.json\n\nLook at the project workspace at the current working directory. Then print\nEXACTLY two final lines, nothing after them:\n\nORX_REASON=<one short line: what you checked, and for a fail what is missing>\nORX_VERDICT=pass\nor\nORX_VERDICT=fail\n\nA fail WITHOUT a reason line is an invalid verdict: the Controller cannot\nact on an unexplained failure. Nothing else counts as a verdict. Exit 0\nafter printing both lines.\n",
+              "prompt_file": ".orx/runs/R001/assignments/verify-T001-01.md",
+              "isolation": "prompt_only",
+              "submit_pass": "orx verify submit T001 --result pass --entry 'agent: review the stand-in artifact' --attempt 2 --discover-session",
+              "submit_fail": "orx verify submit T001 --result fail --entry 'agent: review the stand-in artifact' --attempt 2 --discover-session --reason \"<issues for the fix loop>\""
+            }
+          ],
+          "launched": []
+        }
+      },
+      {
+        "step": "verify-submit",
+        "command": "orx verify submit T001 --result pass --entry agent: review the stand-in artifact --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T001",
+          "entry": "agent: review the stand-in artifact",
+          "result": "pass",
+          "status": "passed",
+          "verdict": "passed",
+          "attempt": 2
+        }
+      },
+      {
+        "step": "run-park-t002",
+        "command": "orx run --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "started": [],
+          "host_required": [
+            {
+              "task": "T002",
+              "objective": "close the stand-in loop with a command-verified delivery",
+              "profile": "zcode-worker",
+              "attempt": 3,
+              "prompt": "ASSIGNMENT IDENTITY (machine anchor \u2014 do not remove or alter this line):\nORX_ASSIGNMENT=orx-assignment:7074fe00-c2fa-4905-934f-d22134e26fee\n\nYou are an ORX worker for Goal G001: Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)\n\nYour assignment is ONE task. Do only this task and stay inside its scope.\n\nTask T002: close the stand-in loop with a command-verified delivery\n\nGoal constraints (binding for this work):\n  - no paid model, no analytics: host work stays parked\n\nScope (write only inside these project-relative paths): src/\nRead these files first \u2014 before any exploration, and only these plus the\nfiles you yourself create or modify (project-relative):\n  (not specified)\nAcceptance (your work is verified against these, verbatim):\n  - 'the structured delivery result is accepted'\n\nHow your work will be checked (the prescribed checks, with ORX's\nstatic pre-flight status \u2014 assembled at assignment time, nothing\nwas executed; the START GATE re-verifies it for real in your\nenvironment):\n  - [preflight:ok] command 'true' -> denylist allowed; first token 'true' is a shell builtin\nPre-flight summary: 1 command check(s): 1 ok, 0 blocked; 0 agent check(s) not preflighted.\n\nDelivery contract (binding, in order):\nDelivery contract (binding, in order): the four-clause delivery\ncontract in your agent definition (orx-worker: 1. START GATE \u2014 prove the\nprescribed checks can run BEFORE implementing; 2. BLOCKED EXIT \u2014 when they\ncannot, leave the workspace unchanged and exit non-zero with the blocker\nin your output; 3. CHECK-FIX LOOP; 4. DELIVERY GATE) applies to this task\nVERBATIM. Task-bound facts:\n- check budget: 3 check round(s) on this attempt; `orx task check T002` reports rounds used vs budget\n- stop and submit the structured failed/blocked delivery when the budget is exhausted and checks are still red\n- completion: `orx task complete T002 --evidence <file>` only when every command check is green; a green self-check is necessary, not sufficient \u2014 the independent verifier still judges the work\nRules:\n- do not modify the Goal text or other tasks' scope\n- if you are blocked, leave the workspace unchanged and exit non-zero with the\n  blocker in your output; do not widen scope\n- exit 0 only when the task is done AND the delivery gate is green\n",
+              "prompt_file": ".orx/runs/R001/assignments/T002.md",
+              "preflight": [
+                {
+                  "kind": "command",
+                  "raw": "true",
+                  "command": "true",
+                  "denial": null,
+                  "token": "true",
+                  "token_status": "builtin",
+                  "token_path": null,
+                  "blocked": false,
+                  "reason": "denylist allowed; first token 'true' is a shell builtin"
+                }
+              ],
+              "preread": [],
+              "execution": {
+                "mode": "subagent",
+                "agent_ref": "orx-worker",
+                "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+                "effort": "max",
+                "harness": "zcode",
+                "workdir": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+                "attempt": 3,
+                "nonce": "orx-assignment:7074fe00-c2fa-4905-934f-d22134e26fee",
+                "submit": "controller"
+              },
+              "claim": "orx task claim T002 --discover-session",
+              "session_identity": "claim binds the claiming subagent's zcode session id (deterministic first-prompt lookup); pass --session <id> instead when the caller knows its own id",
+              "isolation": "prompt_only"
+            }
+          ],
+          "waiting_external": [],
+          "recovery": [],
+          "failed": [],
+          "deferred": [],
+          "routing_errors": [],
+          "quota_preflight": [],
+          "budget": {
+            "attempts": 2,
+            "attempts_with_usage": 0,
+            "attempts_unassessed": 2,
+            "attempts_unnormalized": 0,
+            "processing_tokens_recorded": 0,
+            "scope": "run",
+            "limits": {
+              "hard_stop_run_processing_tokens": 150000000
+            },
+            "soft_warn": false,
+            "hard_stop": false,
+            "hard_stop_reason": null,
+            "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+          }
+        }
+      },
+      {
+        "step": "claim-t002",
+        "command": "orx task claim T002 --session sess-standin-worker-2 --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T002",
+          "status": "running",
+          "attempt": 3,
+          "driver": "host",
+          "session_ref": "sess-standin-worker-2",
+          "session_discovery": null,
+          "execution": {
+            "mode": "subagent",
+            "agent_ref": "orx-worker",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "effort": "max",
+            "harness": "zcode",
+            "workdir": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+            "attempt": 3,
+            "nonce": "orx-assignment:7074fe00-c2fa-4905-934f-d22134e26fee",
+            "submit": "controller"
+          }
+        }
+      },
+      {
+        "step": "heartbeat-t002",
+        "command": "orx task heartbeat T002 --attempt 3 --phase checking --message closing the loop --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T002",
+          "attempt": 3,
+          "sequence": 1,
+          "phase": "checking",
+          "message": "closing the loop",
+          "received_at": "2026-10-08T04:02:39.315821+00:00"
+        }
+      },
+      {
+        "step": "complete-t002",
+        "command": "orx task complete T002 --evidence evidence-2.json --attempt 3 --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "task": "T002",
+          "status": "passed",
+          "verdict": "passed",
+          "verification": {
+            "passed": 3,
+            "failed": 0,
+            "awaiting_agent": 0
+          },
+          "attempt": 3,
+          "delivery": {
+            "status": "passed",
+            "checks_run": 1
+          }
+        }
+      },
+      {
+        "step": "status-final",
+        "command": "orx status --json",
+        "exit_code": 0,
+        "envelope": {
+          "ok": true,
+          "goal": {
+            "id": "G001",
+            "objective": "Package acceptance stand-in Goal: prove the installed wheel runs the full local loop (plan, execute, structured delivery, independent verdict)",
+            "acceptance": [
+              "the stand-in artifact exists",
+              "the structured delivery result is accepted"
+            ],
+            "constraints": [
+              "no paid model, no analytics: host work stays parked"
+            ],
+            "status": "done"
+          },
+          "run": {
+            "id": "R001",
+            "status": "done",
+            "started_at": "2026-10-08T04:02:38.010597+00:00",
+            "completed_at": "2026-10-08T04:02:39.427972+00:00"
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "standard",
+            "planner_profile": "host-manual",
+            "status": "active"
+          },
+          "tasks": [
+            {
+              "id": "T001",
+              "objective": "deliver the stand-in artifact with the structured evidence",
+              "status": "passed",
+              "profile": "zcode-verifier-flash",
+              "dependencies": [],
+              "blocked_by": [],
+              "failure_reason": null,
+              "session_ref": null,
+              "check_rounds": {
+                "used": 0,
+                "budget": 3
+              },
+              "progress": {
+                "attempt": 2,
+                "state": "unknown",
+                "phase": null,
+                "message": null,
+                "received_at": null,
+                "age_sec": null,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 1,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 1,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            },
+            {
+              "id": "T002",
+              "objective": "close the stand-in loop with a command-verified delivery",
+              "status": "passed",
+              "profile": "zcode-worker",
+              "dependencies": [
+                "T001"
+              ],
+              "blocked_by": [],
+              "failure_reason": null,
+              "session_ref": "sess-standin-worker-2",
+              "check_rounds": {
+                "used": 1,
+                "budget": 3
+              },
+              "progress": {
+                "attempt": 3,
+                "state": "reported",
+                "phase": "checking",
+                "message": "closing the loop",
+                "received_at": "2026-10-08T04:02:39.315821+00:00",
+                "age_sec": 0.215886,
+                "timeout_sec": 3600,
+                "hint": null,
+                "note": null
+              },
+              "budget": {
+                "attempts": 1,
+                "attempts_with_usage": 0,
+                "attempts_unassessed": 1,
+                "attempts_unnormalized": 0,
+                "processing_tokens_recorded": 0,
+                "scope": "task",
+                "limits": {
+                  "soft_warn_task_processing_tokens": 8000000,
+                  "hard_stop_task_processing_tokens": 50000000,
+                  "hard_stop_task_attempts": 8
+                },
+                "soft_warn": false,
+                "hard_stop": false,
+                "hard_stop_reason": null,
+                "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+              }
+            }
+          ],
+          "verification": {
+            "passed": 3,
+            "failed": 0,
+            "awaiting_agent": 0
+          },
+          "resources": [
+            {
+              "profile": "zcode-controller",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801714+00:00"
+            },
+            {
+              "profile": "zcode-worker",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801883+00:00"
+            },
+            {
+              "profile": "zcode-verifier-flash",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801890+00:00"
+            },
+            {
+              "profile": "zcode-verifier-strong",
+              "status": "unknown",
+              "note": "",
+              "updated_at": "2026-10-08T04:02:37.801894+00:00"
+            }
+          ],
+          "result": "done"
+        }
+      },
+      {
+        "step": "usage-error-exit-2",
+        "command": "orx status bogus-argument",
+        "exit_code": 2,
+        "stdout": "",
+        "stderr": "Usage: orx status [OPTIONS]\nTry 'orx status --help' for help.\n\u256d\u2500 Error \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Got unexpected extra argument(s) (bogus-argument)                            \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n"
+      }
+    ],
+    "problems": [],
+    "orx_bin": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/venv/bin/orx",
+    "orx_version": "0.3.1",
+    "packaged_skills": [
+      "orx-agent",
+      "orx-controller",
+      "orx-pbv"
+    ],
+    "preset_fresh": {
+      "ok": true,
+      "preset": "zcode",
+      "user_profiles": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/profiles.toml",
+      "profiles_added": [
+        "zcode-controller",
+        "zcode-verifier-flash",
+        "zcode-verifier-strong",
+        "zcode-worker"
+      ],
+      "profiles_preserved": [],
+      "user_config": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/config.toml",
+      "config_added": [
+        "controller.profile",
+        "plan.depth",
+        "plan.allow_class_downgrade",
+        "plan.light.profiles",
+        "plan.standard.profiles",
+        "plan.deep.profiles",
+        "worker.profiles",
+        "verify.profiles",
+        "runtime.max_parallel",
+        "runtime.command_timeout_sec"
+      ],
+      "config_preserved": [],
+      "agents": [
+        {
+          "name": "orx-verifier",
+          "installed": true,
+          "preserved_existing": false,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier.md"
+        },
+        {
+          "name": "orx-verifier-strong",
+          "installed": true,
+          "preserved_existing": false,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier-strong.md"
+        },
+        {
+          "name": "orx-worker",
+          "installed": true,
+          "preserved_existing": false,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-worker.md"
+        }
+      ],
+      "agents_dir": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents",
+      "conflicts": []
+    },
+    "preset_preserve": {
+      "ok": true,
+      "preset": "zcode",
+      "user_profiles": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/profiles.toml",
+      "profiles_added": [],
+      "profiles_preserved": [
+        "zcode-controller",
+        "zcode-verifier-flash",
+        "zcode-verifier-strong",
+        "zcode-worker"
+      ],
+      "user_config": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/config/config.toml",
+      "config_added": [],
+      "config_preserved": [
+        "controller.profile",
+        "plan.depth",
+        "plan.allow_class_downgrade",
+        "plan.light.profiles",
+        "plan.standard.profiles",
+        "plan.deep.profiles",
+        "worker.profiles",
+        "verify.profiles",
+        "runtime.max_parallel",
+        "runtime.command_timeout_sec"
+      ],
+      "agents": [
+        {
+          "name": "orx-verifier",
+          "installed": false,
+          "preserved_existing": true,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier.md"
+        },
+        {
+          "name": "orx-verifier-strong",
+          "installed": false,
+          "preserved_existing": true,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-verifier-strong.md"
+        },
+        {
+          "name": "orx-worker",
+          "installed": false,
+          "preserved_existing": true,
+          "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents/orx-worker.md"
+        }
+      ],
+      "agents_dir": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/zcode-agents",
+      "conflicts": []
+    },
+    "skills": {
+      "installed": [
+        "orx-agent",
+        "orx-controller",
+        "orx-pbv"
+      ],
+      "canonical_root": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.agents/skills",
+      "symlinked_into": [
+        "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/home/.zcode"
+      ],
+      "refreshed": [
+        "orx-controller",
+        "orx-agent",
+        "orx-pbv"
+      ],
+      "refresh_matches_package": true
+    },
+    "standin": {
+      "project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/cli-flow/standin-project",
+      "goal_id": "G001",
+      "run_id": "R001",
+      "revision": 1,
+      "plan_tasks": 2,
+      "single_goal_after_plan": true,
+      "tasks_after_plan": {
+        "T001": "runnable",
+        "T002": "pending"
+      },
+      "t001_parked": [
+        "T001"
+      ],
+      "attempt_t001": 1,
+      "heartbeat_sequence": 1,
+      "legacy_rejection": {
+        "exit_code": 1,
+        "ok": false,
+        "error": "evidence rejected for task T001: the delivery result must be structured JSON (status, checks, artifacts, summary) \u2014 field 'status' is missing (the delivery result: one of passed | failed | blocked); field 'checks' is missing (a list \u2014 one {command/exit_code/log} object per command check you ran; [] when none could run)"
+      },
+      "t001_status_after_rejection": "running",
+      "t001_after_complete": "verifying",
+      "agent_entries": [
+        "agent: review the stand-in artifact"
+      ],
+      "t001_verdict_status": "passed",
+      "t002_parked": [
+        "T002"
+      ],
+      "attempt_t002": 3,
+      "t002_after_complete": "passed",
+      "final_run_status": "done",
+      "final_task_statuses": {
+        "T001": "passed",
+        "T002": "passed"
+      },
+      "final_single_goal": true,
+      "usage_error_exit_code": 2
+    }
+  },
+  "fixture": {
+    "fixture": "/Users/flb/Sources/Products/ORX/tests/fixtures/release-0.3.0",
+    "sha256": "ec5cbf9164b733f8a26099fd81d6fb351ebff5d58db1802bc4f500f32c74901d",
+    "schema_version": 8,
+    "tables": {
+      "meta": 1,
+      "goals": 1,
+      "runs": 1,
+      "plan_revisions": 1,
+      "planning_assignments": 0,
+      "tasks": 2,
+      "task_dependencies": 1,
+      "task_events": 9,
+      "attempts": 3,
+      "evidence": 1,
+      "verifications": 2,
+      "routing_decisions": 3,
+      "resource_status": 1,
+      "external_events": 0,
+      "inbox_items": 0,
+      "usage_observations": 1
+    },
+    "tag_commit": "0f2629e6988ba5082a876257c910d78457bd1338"
+  },
+  "upgrade": {
+    "steps": [
+      {
+        "step": "backup-vacuum-into",
+        "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-release-check-3sxwvpdm/upgrade/backup-0.3.0.db",
+        "bytes": 118784
+      },
+      {
+        "step": "upgrade-open-new-version",
+        "exit_code": 0
+      }
+    ],
+    "problems": [],
+    "upgraded_envelope": {
+      "ok": true,
+      "goal": {
+        "id": "G001",
+        "objective": "0.3.0 sample: schema v8 library for the 0.3.1 package acceptance upgrade",
+        "acceptance": [
+          "the sample marker exists",
+          "the sample summary is written"
+        ],
+        "constraints": [
+          "no network during generation"
+        ],
+        "status": "active"
+      },
+      "run": {
+        "id": "R001",
+        "status": "running",
+        "started_at": "2026-10-06T15:51:57.858512+00:00",
+        "completed_at": null
+      },
+      "plan": {
+        "revision": 1,
+        "depth": "standard",
+        "planner_profile": "host-manual",
+        "status": "active"
+      },
+      "tasks": [
+        {
+          "id": "T001",
+          "objective": "produce the sample marker",
+          "status": "passed",
+          "profile": "orx-host",
+          "dependencies": [],
+          "blocked_by": [],
+          "failure_reason": null,
+          "session_ref": null,
+          "check_rounds": {
+            "used": 0,
+            "budget": 3
+          },
+          "progress": {
+            "attempt": 2,
+            "state": "unknown",
+            "phase": null,
+            "message": null,
+            "received_at": null,
+            "age_sec": null,
+            "timeout_sec": 3600,
+            "hint": null,
+            "note": null
+          },
+          "budget": {
+            "attempts": 1,
+            "attempts_with_usage": 1,
+            "attempts_unassessed": 0,
+            "attempts_unnormalized": 0,
+            "processing_tokens_recorded": 1333,
+            "scope": "task",
+            "limits": {
+              "soft_warn_task_processing_tokens": 8000000,
+              "hard_stop_task_processing_tokens": 50000000,
+              "hard_stop_task_attempts": 8
+            },
+            "soft_warn": false,
+            "hard_stop": false,
+            "hard_stop_reason": null,
+            "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+          }
+        },
+        {
+          "id": "T002",
+          "objective": "write the sample summary",
+          "status": "running",
+          "profile": "orx-host",
+          "dependencies": [
+            "T001"
+          ],
+          "blocked_by": [],
+          "failure_reason": null,
+          "session_ref": "sess-030-worker-2",
+          "check_rounds": {
+            "used": 0,
+            "budget": 3
+          },
+          "progress": {
+            "attempt": 3,
+            "state": "unknown",
+            "phase": null,
+            "message": null,
+            "received_at": null,
+            "age_sec": null,
+            "timeout_sec": 3600,
+            "hint": null,
+            "note": null
+          },
+          "budget": {
+            "attempts": 1,
+            "attempts_with_usage": 0,
+            "attempts_unassessed": 1,
+            "attempts_unnormalized": 0,
+            "processing_tokens_recorded": 0,
+            "scope": "task",
+            "limits": {
+              "soft_warn_task_processing_tokens": 8000000,
+              "hard_stop_task_processing_tokens": 50000000,
+              "hard_stop_task_attempts": 8
+            },
+            "soft_warn": false,
+            "hard_stop": false,
+            "hard_stop_reason": null,
+            "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+          }
+        }
+      ],
+      "verification": {
+        "passed": 2,
+        "failed": 0,
+        "awaiting_agent": 0
+      },
+      "resources": [
+        {
+          "profile": "orx-host",
+          "status": "available",
+          "note": "sample resource note from the v0.3.0 generator",
+          "updated_at": "2026-10-06T15:51:57.869412+00:00"
+        }
+      ],
+      "result": "running"
+    },
+    "upgraded_schema_version": 12,
+    "identity": {
+      "tables_checked": {
+        "attempts": {
+          "columns": 25,
+          "rows": 3
+        },
+        "evidence": {
+          "columns": 5,
+          "rows": 1
+        },
+        "external_events": {
+          "columns": 6,
+          "rows": 0
+        },
+        "goals": {
+          "columns": 8,
+          "rows": 1
+        },
+        "inbox_items": {
+          "columns": 9,
+          "rows": 0
+        },
+        "plan_revisions": {
+          "columns": 8,
+          "rows": 1
+        },
+        "planning_assignments": {
+          "columns": 8,
+          "rows": 0
+        },
+        "resource_status": {
+          "columns": 12,
+          "rows": 1
+        },
+        "routing_decisions": {
+          "columns": 9,
+          "rows": 3
+        },
+        "runs": {
+          "columns": 7,
+          "rows": 1
+        },
+        "task_dependencies": {
+          "columns": 3,
+          "rows": 1
+        },
+        "task_events": {
+          "columns": 8,
+          "rows": 9
+        },
+        "tasks": {
+          "columns": 13,
+          "rows": 2
+        },
+        "usage_observations": {
+          "columns": 11,
+          "rows": 1
+        },
+        "verifications": {
+          "columns": 11,
+          "rows": 2
+        }
+      },
+      "rows_compared": 26
+    },
+    "old_version_reported": "0.3.0",
+    "old_rejection": {
+      "exit_code": 1,
+      "output_tail": "{\n  \"ok\": false,\n  \"error\": \"state.db: schema version 12 is newer than supported version 8; upgrade orx\"\n}\n"
+    },
+    "restore": {
+      "exit_code": 0,
+      "goal_read_back": true
+    },
+    "source_sha256": {
+      "before": "ec5cbf9164b733f8a26099fd81d6fb351ebff5d58db1802bc4f500f32c74901d",
+      "after": "ec5cbf9164b733f8a26099fd81d6fb351ebff5d58db1802bc4f500f32c74901d"
+    }
+  },
+  "fixture_provenance": {
+    "problems": [],
+    "regenerated_schema_version": 8,
+    "regenerated_tables": {
+      "meta": 1,
+      "goals": 1,
+      "runs": 1,
+      "plan_revisions": 1,
+      "planning_assignments": 0,
+      "tasks": 2,
+      "task_dependencies": 1,
+      "task_events": 9,
+      "attempts": 3,
+      "evidence": 1,
+      "verifications": 2,
+      "routing_decisions": 3,
+      "resource_status": 1,
+      "external_events": 0,
+      "inbox_items": 0,
+      "usage_observations": 1
+    },
+    "matches_regeneration": true
+  },
+  "problems": []
+}

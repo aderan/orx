@@ -819,13 +819,15 @@ UPGRADE_DOC_FLAT = _flat(REPO_ROOT / "docs" / "upgrade-0.3.1.md")
 
 def test_readme_links_the_upgrade_doc_and_states_the_supported_versions():
     """README links docs/upgrade-0.3.1.md, and its observability statement
-    matches what the read contract actually accepts: v8/v9/v10/v11 — not
-    the stale v8/v9-only wording — with the v8-established/v9-v10-v11-added
-    history kept as context."""
+    matches what the read contract actually accepts: v8/v9/v10/v11/v12 —
+    T010's sixth amendment widened the gate to 12, and T012 kept the README
+    statement and this pin in step — with the v8-established /
+    v9-v10-v11-v12-added history kept as context."""
     flat = _flat(REPO_ROOT / "README.md")
     assert "docs/upgrade-0.3.1.md" in flat            # the doc is linked
-    assert "v8/v9/v10/v11" in flat                    # current observation
-    assert "8, 9, 10, and 11" in flat                 # the exact allowlist
+    assert "v8/v9/v10/v11/v12" in flat                # current observation
+    assert "8, 9, 10, 11, and 12" in flat             # the exact allowlist
+    assert "8, 9, 10, and 11" not in flat             # stale wording is gone
     assert "8 and 9 exactly" not in flat              # stale wording is gone
     assert "v8 established the observability schema" in flat  # history kept
     # The upgrade callout teaches the load-bearing order: backup before the

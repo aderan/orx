@@ -60,15 +60,18 @@ wheel 构建 + 临时 venv 安装，验收对象永远是**构建出的 wheel**�
    与已提交 fixture 完全一致）；
 8. **升级链**（`check_upgrade_chain`，docs/upgrade-0.3.1.md §6 的机器
    执行）：复制 fixture（源样例只读）→ `VACUUM INTO` 一致性备份 →
-   已安装新版以 `orx status` 打开副本触发 v8→v11 自动迁移 → 对全部
-   既有表的全部既有列逐行核对身份与数据（`meta` 仅
-   `schema_version` 8→11）→ 新增面默认值检查（新增表精确等于
-   replan 六表 + `attempt_progress` 且为空；`attempts` 仅增 `nonce`
-   列且旧行全 NULL）→ **真实 v0.3.0 读取入口**（其自身 CLI，经
-   `git archive` 源码在 wheel venv 解释器上运行）拒读 v11 库（exit 1，
-   `schema version 11 is newer than supported version 8`）且文件字节
-   不变 → 备份恢复到新目录后由真实 v0.3.0 读回样例 Goal → 源样例
-   sha256 前后一致。
+   已安装新版以 `orx status` 打开副本触发 v8→当前版本自动迁移
+   （期望随代码 `orx.state.CODE_SCHEMA_VERSION` 锚定，G009 T010 起
+   为 v12——v12 相对 v11 仅放宽 `usage_observations.source` CHECK 以
+   收 `zcode_db` 行，无新表新列）→ 对全部既有表的全部既有列逐行核对
+   身份与数据（`meta` 仅 `schema_version` 8→当前版本）→ 新增面默认值
+   检查（新增表精确等于 replan 六表 + `attempt_progress` 且为空；
+   `attempts` 仅增 `nonce` 列且旧行全 NULL）→ **真实 v0.3.0 读取入口**
+   （其自身 CLI，经 `git archive` 源码在 wheel venv 解释器上运行）拒读
+   升级后（v12）库（exit 1，`schema version 12 is newer than supported
+   version 8; upgrade orx`——脚本断言其稳定子串 `newer than supported
+   version 8`，随 `CODE_SCHEMA_VERSION` 前行）且文件字节不变 → 备份
+   恢复到新目录后由真实 v0.3.0 读回样例 Goal → 源样例 sha256 前后一致。
 
 ## 4. fixture 来源与再生成
 

@@ -3,9 +3,113 @@
 本报告是 docs/recovery-execution-goal-2026-10-07.md 定义的实施报告（"证据、暂停点与最终交付"）。
 每个任务记录：输入commit、红信号、实现选择、绿验证、真实/模拟来源、
 attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区间与提交。
-逐任务追加；Goal 终验（T012）时按八条验收汇总证据表。
+逐任务追加；Goal 终验（T013）时按八条验收汇总证据表。
+报告自 T006 建立：T001–T005 的任务记录在 IMPLEMENTATION_PLAN.md 的
+G009/R009 轮次记录与 docs/diagnostics/ 各目录，不在本报告补写。
 
 ---
+
+## T012 · 执行兼容、打包、迁移及全量验证，整理使用文档
+
+**输入commit**：T011 交付后 cef9e7f（attempt 163，session
+sess_subagent_agent_13533091-e3f3-4ec9-ace2-b5ea77a416aa，claim
+2026-10-08T03:56:52Z；START GATE 首轮 prescribed 两命令即绿——本任务
+以既有全量绿基线为起点，零付费模型调用，全部验证为本地命令）。
+usage：本 attempt 无 usage 观测行（纯本地命令任务，如实缺失非零）。
+
+**红信号（先写行为回归，再修文档；无新生产代码）**：T010 已把读取契约
+第六修正案推进到 v12（gate SQL `IN ('8','9','10','11','12')`），但仓库
+三处使用文档仍停在 v11 时代，其中一处被回归钉住为"当前事实"——钉住的
+就是错的。`tests/test_delivery_gate_e2e.py` 的 README 观测契约测试先行
+更新（允许清单断言 8/9/10/11→加 12、钉住旧串 "8, 9, 10, and 11" 不得
+残留），对未修 README 实跑红（`'v8/v9/v10/v11/v12' in flat` 失败），
+随后修 README 转绿。
+
+**实现选择（文档与既有机器，最小改动）**：
+
+1. **README 三处**：Usage 节观测表述——表族 v8/v9/v10/v11→+v12、
+   "v9, v10, and v11 amendments were additive"→加 v12、允许清单
+   "8, 9, 10, and 11"→"8, 9, 10, 11, and 12"（与被引契约的 gate 一致）；
+   Docs 索引同步 v8/v9/v10/v11/v12；升级提示框 "schema v8 migrates to
+   v11 automatically" 改为诚实双值表述（发布 0.3.1→v11；当前未发布树
+   →v12——同一 0.3.1 版本号下源码树与发布包的 schema 已分叉，README
+   不得只说其中一个）。docs/upgrade-0.3.1.md 是 0.3.1 发布故事（G007
+   冻结），不改写。
+2. **docs/package-acceptance.md §3 第 8 步**：升级链描述随 T010 的
+   `orx.state.CODE_SCHEMA_VERSION` 锚定更新——"v8→v11 自动迁移"→
+   "v8→当前版本（锚定 CODE_SCHEMA_VERSION，G009 T010 起为 v12）"，
+   补记 v12 相对 v11 仅放宽 `usage_observations.source` CHECK 收
+   `zcode_db` 行、无新表新列；v0.3.0 拒读消息引用本次实测原文
+   `schema version 12 is newer than supported version 8; upgrade orx`，
+   并说明脚本断言的是稳定子串（随版本前行）。改前实测该文档与机器
+   行为不符：链路已升 v12 而文档仍写 v11。
+3. **README 不加新节、不改写**（按交接约束）：G009 新命令面
+   （task observe/recover/note、agent preflight、usage zcode、doctor
+   permissions、budget/check_timeout 配置键）的成文在 T004–T011 已
+   落 docs/routing-strategy.md Recovery/预算节、observability-contract
+   第六修正案与本报告各条目，不在 README 复制第二份。
+
+**兼容、打包与迁移执行（全部既有机器；未新增检查、未发布）**：
+
+- **全量**：`.venv/bin/python -m pytest -q` **1036 passed, 0 xfail**
+  （START GATE 首轮与文档修改后终验各一跑；docs/m1.2-report.md 被
+  测试重写的纯生成差异——cutoff/mtime/修订号等活性读数——按约定
+  还原提交内容）。
+- **打包（wheel 链）**：既有入口 `uv run python scripts/check_release.py`
+  全绿（exit 0、problems 空）：`uv build --wheel` 构建于临时目录
+  （仓库 dist/ 不动）→ 干净 venv 安装 → 包内 agents/skills 资源探针 →
+  preset 全装+保语义 → 全部打包技能安装与漂移刷新逐字节一致 →
+  stand-in Goal 全闭环 → fixture 结构与再生核对 → 升级链 v8→12
+  逐行身份核对+真实 v0.3.0 拒读（字节不变）+备份恢复读回。
+  **版本保持 0.3.1**：pyproject 与 `src/orx/__init__.py` 未动，无新 tag、
+  无发布——发布由用户决定（硬边界）。
+- **打包（sdist 面，追加一次性验证）**：`uv build --sdist` 成功，sdist
+  以 repo 布局携带全部资源真源（agents 3 角色 + skills 3 技能含
+  orx-pbv references 共 11 个文件）；由 sdist 再构建的 wheel 同样含
+  全部 6 个打包资源（orx/agents/*、orx/skills/*/SKILL.md）——源码安装
+  路径与 force-include 一致。
+- **迁移覆盖核对（无缺口，未无理由重复）**：schema v12 由
+  tests/test_state.py 四例（v11→v12 增量不回填、zcode_db 单例幂等/
+  Conflict、迁移失败保原库、v11 备份/副本照常迁移）+
+  test_m12_acceptance.py（legacy v6→12 迁移+列语义）+ 包验收链
+  （v8→12 全行身份）覆盖，全部在全量内跑过；打包/技能资源变动由
+  包验收链逐字节钉住（T011 对 skills/orx-controller、skills/orx-agent、
+  agents/orx-worker.md 的改动因此自动受验）。
+- **诚实审计**：`git diff 5589242..HEAD -- tests/ src/ scripts/` 无
+  skip/skipif/xfail 新增（唯一命中为 T001 xfail(strict) 红基线脚手架的
+  注释文字；标记本体已由 T002/T003 按约定移除，当前 tests/ 零
+  skip/xfail 标记）；仓库无 formatter/linter 配置（无 ruff/black/
+  flake8/mypy 等配置与依赖，pyproject 仅 hatch+pytest），如实说明，
+  不为凑检查引入工具。
+
+**绿验证**：README 回归先红后绿；`tests/test_delivery_gate_e2e.py`
+33 passed；全量 1036 passed 0 xfail；`git diff --check` 干净；
+`uv run python scripts/check_release.py` exit 0 且 problems 空。
+
+**证据**：docs/diagnostics/g009-t012-packaging-2026-10-08/
+（check-release.json 完整链路报告与 stderr、sdist-build.log、
+sdist-contents.txt 含资源清单与 sha256、wheel-from-sdist.log
+sdist→wheel 资源核对）。
+
+**限制（如实）**：sdist→wheel 资源核对与 sdist 清单为一次性验证，未
+固化为测试——wheel 链已有全量固化，sdist 形态无既有检查机器，遵循
+"不无理由重复/不新造凑检查"约束；本任务零付费模型调用，故无 A/B 或
+用量对照可记；事故勘误维持只在仓库（外部 ZCode memory 更新超出本
+任务与仓库范围）。
+
+---
+
+**attempt 163 → 164 完成事实（控制器补记，2026-10-08 12:46 +0800）**：
+attempt 163（worker 子代理）完成全部文档/打包工作后在最终全量门禁执行中
+撞 GLM 1308（5h 窗口，reset 13:30:54 无时区；会话侧最后活动 12:13:01，
+55 模型步/9 Edit）——本 Goal 第二次同域配额故障。控制器 observe/note
+shared-failure/recover 按协议关闭 163（真实故障 12:13 vs 关闭 12:46，
+33 分钟；对照事故 6h26m），attempt 164 由控制器（host）认领收尾：
+审查半成品 diff → 还原测试再生的 docs/m1.2-report.md → 全量 1036
+passed (110.65s) → git diff --check clean → skip 审计零新增 →
+打包验收 problems=[]（版本保持 0.3.1，未发布）→ 本提交。两次 attempt
+的工作在同一个提交中交付，163 的用量由 zcode 会话侧事实记录（observe），
+164 无 ORX usage 观测行（控制器会话，如实缺失非零）。
 
 ## T011 · 用对照实测压缩 controller 与 worker 上下文，形成预算策略
 
