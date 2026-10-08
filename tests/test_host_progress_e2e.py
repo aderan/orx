@@ -31,6 +31,7 @@ from orx.records import ConflictError
 
 from conftest import (
     HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
     active_task,
     ir_for,
     make_project,
@@ -317,6 +318,82 @@ def test_scenario_b_confirmed_death_fail_retry_rejects_old_attempt(e2e, tmp_path
     assert [r.sequence for r in project.store.attempt_progress_all(old_attempt)] == [1]
     assert [r.sequence for r in project.store.attempt_progress_all(new_attempt)] == [1]
     assert len(_report_events(project)) == 2
+
+
+# ---------------------------------------------------------------------------
+# G009 T008 matrix combination: 旧结果迟到 x driver reroute. A resource
+# failure reroute closes the failed CLI attempt and hands the task to the
+# next rung's driver (here: a parked HOST assignment with its own attempt).
+# The dead rung's late delivery must be refused as a stale submission and
+# must not touch the new owner — the same identity discipline scenario (b)
+# pins for the fail/retry flow, on the reroute path.
+
+RERUN_RATE_LIMIT_PROFILES = HOST_PROFILES_TOML.replace(
+    'executable = "true"',
+    'executable = "/bin/sh"\n'
+    'args = ["-c", "echo rate limit exceeded >&2; exit 1"]',
+)
+
+
+def test_stale_cli_attempt_cannot_deliver_after_resource_reroute(
+        tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-fake", "host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=RERUN_RATE_LIMIT_PROFILES)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="stale after reroute", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+
+        # The CLI rung dies on a rate limit; the same slice reroutes by
+        # driver and parks a HOST assignment that owns the task now.
+        outcome = dispatch.run_slice(project)
+        [entry] = [e for e in outcome["host_required"] if e["task"] == "T001"]
+        assert entry["fallback_from"] == "cli-fake"
+        host_attempt = entry["attempt"]
+        old = next(a for a in project.store.attempts_all()
+                   if a.role == "worker" and a.profile == "cli-fake")
+        assert old.id != host_attempt and old.result == "failed"
+
+        # The dead rung delivers late: refused as a stale submission (the
+        # identity diagnosis fires before any status question), and the
+        # refusal changed nothing — the task is still the parked host
+        # assignment's, the host attempt still open.
+        with pytest.raises(ConflictError, match="stale"):
+            dispatch.task_complete(
+                project, "T001", str(write_evidence(tmp_path, "late-cli.json")),
+                attempt_id=old.id,
+            )
+        assert active_task(project, "T001").status == "waiting_host"
+        assert project.store.attempt_get(host_attempt).result is None
+        assert project.store.attempt_get(old.id).result == "failed"
+
+        # The new owner delivers normally: exactly one completion, and the
+        # run closes on the host attempt's evidence — B's state was never
+        # overwritten by A's late result.
+        claimed = dispatch.task_claim(project, "T001", session="sess-reroute-host")
+        assert claimed["attempt"] == host_attempt
+        result = dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "host-round.json")),
+            attempt_id=host_attempt,
+        )
+        assert result["status"] == "passed"
+        assert result["attempt"] == host_attempt
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+        completions = project.store.conn.execute(
+            "SELECT attempt_id FROM evidence WHERE kind = 'completion'"
+        ).fetchall()
+        assert [row["attempt_id"] for row in completions] == [host_attempt]
+    finally:
+        project.close()
 
 
 # ---------------------------------------------------------------------------

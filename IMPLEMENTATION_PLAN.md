@@ -10,6 +10,28 @@
 
 ### G009/R009 轮次记录
 
+- **T008（2026-10-08 交付，attempt 155）**：建立可重复的故障注入与组合验收矩阵。
+  仅测试与文档（生产代码零改动）：以验证计划 §第二层 12 行矩阵 + GLM 1308 注记 +
+  退避切换组合 + 探针适用范围为清单，逐行定位 T001–T007 用例（含 T006 的
+  tests/test_host_recovery_facts.py——不在门禁命令内但作矩阵证据引用），
+  补 7 例确定性组合测试后把全表回写 docs/recovery-validation-plan-2026-10-07.md
+  （新增"第二层执行矩阵：逐行证据定位"节，文件::用例 + 每行有限动作）。
+  新增组合：(1) 认证失效 e2e——auth 不属资源换挡类，恰一次 attempt、无同 slice
+  换挡、无登录循环、门禁跳过、retry 后下一 rung 通过（test_health）；
+  (2) 中文 GLM 1308 额度 × driver——host 停泊分支的额度类补位（test_routing）；
+  (3) host × 权限抑制——`orx task complete` 的同条件 blocked 三次后不再停泊，
+  三处留痕；(4) 抑制按任务域——T001 抑制后 T002 仍获该 profile（独立 streak）；
+  (5) 同 profile 配额 × override——学习 exhaustion 让位操作者 override，clear
+  恢复学习；(6) 控制器同故障域——planner/worker 同 quota_domain 时 plan_route
+  有界 RoutingError 如实停留，恢复者（override）出现才重开 planning；
+  (7) 陈旧身份 × 换挡——资源换挡停泊 host 后死亡 rung 迟到交付 stale 拒绝、
+  新 owner 唯一 completion。注入纪律钉住：仅 fake 进程/提供商/时钟，被测
+  dispatch 不 mock（独立 verifier 按矩阵逐行复核）。发现并记录生产缺口（未
+  修复，不在本任务写权限）：抑制的重启用缺少 T007 配置指纹消费者——被排除
+  profile 无法记录异指纹结果来自破尾部 streak，重开只能靠控制器改路由/配置，
+  见 docs/recovery-hardening-report.md T008。门禁六文件 189 passed
+  （基线 182+7）；全量 1007 passed、0 xfail（基线 1000+7）。
+
 - **T007（2026-10-08 交付，attempt 153）**：增加执行能力预检与验证结果的配置指纹。
   事故缝隙（a131/a132/a133）：控制器侧 PATH/denylist 检查与配置文件读取被当成
   "worker 能执行 checks"——真实 Cursor 配置 approvalMode=allowlist、shell allowlist
@@ -211,7 +233,7 @@
 **Goal**: 完成 T007–T009。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T007 已交付，见上方轮次记录；T008–T009 待做）
+**Status**: In Progress（R009：T007–T008 已交付，见上方轮次记录；T009 待做）
 
 ## Stage 4: 观测、上下文与预算治理
 **Goal**: 完成 T010–T011。

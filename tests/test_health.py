@@ -251,6 +251,92 @@ def test_rate_limited_cli_falls_back_to_host_parking(tmp_path, monkeypatch):
         project.close()
 
 
+def test_auth_failure_is_bounded_no_reroute_no_login_loop(tmp_path, monkeypatch):
+    """G009 T008 matrix row 认证失效 (docs/recovery-validation-plan-
+    2026-10-07.md §第二层): a CLI worker whose transport carries a
+    login-invalid response is an auth_required environment fact, NOT a
+    resource-fallback kind. The bounded actions: exactly ONE failed
+    attempt in the slice (no same-slice ladder hop — re-login is an
+    operator act, never something ORX retries), the profile gated so
+    later routes skip it with the audit reason, and after the operator
+    resolves the account an explicit retry routes the next rung which
+    serves the task. Never: a second launch of the dead profile, a login
+    retry loop, or a silent pass."""
+    from conftest import (HOST_CONFIG_TOML, HOST_PROFILES_TOML, active_task,
+                          ir_for, make_project, task_spec)
+    monkeypatch.chdir(tmp_path)
+    auth_script = tmp_path / "auth-dead.sh"
+    auth_script.write_text("#!/bin/sh\necho 'Error: Not logged in' >&2\nexit 1\n")
+    auth_script.chmod(0o755)
+    profiles = HOST_PROFILES_TOML + f"""
+[profiles.cli-auth-dead]
+driver = "cli"
+harness = "shell"
+executable = "{auth_script}"
+prompt_transport = "stdin"
+model = "m-auth"
+class = "economy"
+effort = "low"
+capabilities = ["coding"]
+"""
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-auth-dead", "cli-fake"]',
+    )
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="auth injection", acceptance=["done"],
+            constraints=[], context="")[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+
+        first = dispatch.run_slice(project)
+        # One failed attempt, auth-classified; auth is not a fallback kind,
+        # so the same slice launches nothing else.
+        assert first["started"] == [] and first["host_required"] == []
+        [failed] = first["failed"]
+        assert failed["error_kind"] == "auth_required"
+        assert "fallback_from" not in failed
+        assert active_task(project, "T001").status == "failed"
+
+        # Bounded: the profile is gated, no second launch anywhere.
+        row = project.store.resource_row("cli-auth-dead")
+        assert row.status == "auth_required"
+        attempts = project.store.conn.execute(
+            "SELECT profile,result FROM attempts WHERE role='worker'"
+        ).fetchall()
+        assert [a["profile"] for a in attempts] == ["cli-auth-dead"]
+        assert attempts[0]["result"] == "failed"
+
+        # A second slice without operator action repeats nothing.
+        again = dispatch.run_slice(project)
+        assert again["started"] == [] and again["failed"] == []
+        assert len(project.store.conn.execute(
+            "SELECT id FROM attempts WHERE role='worker'").fetchall()) == 1
+
+        # Operator re-login + explicit retry: routing SKIPS the gated rung
+        # (audit reason recorded) and the next rung serves the task.
+        dispatch.task_retry(project, "T001")
+        third = dispatch.run_slice(project)
+        [started] = third["started"]
+        assert started["profile"] == "cli-fake" and started["status"] == "passed"
+        decision = project.store.routing_decisions_all()[-1]
+        rejected = next(c for c in decision.candidates
+                        if c["profile"] == "cli-auth-dead")
+        assert rejected["kept"] is False
+        assert rejected["reject_reason"] == "auth_required"
+        # Still exactly one auth attempt: the dead rung was never re-paid.
+        assert len(project.store.conn.execute(
+            "SELECT id FROM attempts"
+            " WHERE role='worker' AND profile='cli-auth-dead'"
+        ).fetchall()) == 1
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+    finally:
+        project.close()
+
+
 def test_backoff_grows_with_streak_and_caps(tmp_path, monkeypatch):
     import time
     from datetime import datetime, timedelta, timezone

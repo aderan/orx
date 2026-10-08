@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from orx import dispatch, routing
+from orx import dispatch, health, routing
 from orx.records import PlanDepth, ResourceStatus, Role, RoutingError
 
-from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, active_task, ir_for, make_project, task_spec
+from conftest import (
+    HOST_CONFIG_TOML,
+    HOST_PROFILES_TOML,
+    active_task,
+    ir_for,
+    make_project,
+    task_spec,
+    write_evidence,
+)
 
 
 def route(project, **kwargs):
@@ -667,6 +675,81 @@ capabilities = ["coding"]
         project.close()
 
 
+# G009 T008 (matrix combination: quota x driver). The incident's quota
+# vocabulary on the reroute branch the rate-limit matrix already walks: the
+# failure class that actually hit the 2026-10-07 incident (Chinese GLM 1308,
+# timezone-less reset) must take the SAME driver-correct hop as any other
+# resource failure — never the "no adapter for harness" crash the incident
+# recorded on this branch.
+GLM_1308_MESSAGE = (
+    "1308: 当前套餐的5小时滚动窗口额度已用尽，重置时间 2026-10-07 04:24:23，"
+    "请稍后重试或升级套餐。"
+)
+GLM_NAIVE_RESET = "2026-10-07 04:24:23"
+
+
+def test_reroute_on_chinese_glm1308_quota_parks_host_rung(tmp_path, monkeypatch):
+    """quota_exhausted x CLI -> host: a CLI worker whose output IS the
+    Chinese GLM 1308 message (naive reset, verbatim) is diagnosed
+    quota_exhausted, the exhaustion is learned with the timezone-less reset
+    kept exactly as printed, and the immediate hop lands the HOST rung as a
+    parked assignment — the failed CLI attempt stays history and exactly one
+    CLI process was ever launched."""
+    monkeypatch.chdir(tmp_path)
+    fail_script = tmp_path / "glm-dead.sh"
+    fail_script.write_text(
+        "#!/bin/sh\necho '" + GLM_1308_MESSAGE + "'\nexit 1\n", encoding="utf-8")
+    fail_script.chmod(0o755)
+    profiles = HOST_PROFILES_TOML + (
+        "\n[profiles.cli-glm]\n"
+        'driver = "cli"\n'
+        'harness = "shell"\n'
+        f'executable = "{fail_script}"\n'
+        'prompt_transport = "stdin"\n'
+        'model = "m-glm"\n'
+        'class = "economy"\n'
+        'effort = "low"\n'
+        'capabilities = ["coding"]\n'
+    )
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-glm", "host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="glm quota falls to host", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        outcome = dispatch.run_slice(project)
+
+        # The host branch, not a crash and not a second CLI launch.
+        assert outcome["failed"] == [] and outcome["started"] == []
+        [entry] = [e for e in outcome["host_required"] if e["task"] == "T001"]
+        assert entry["profile"] == "host-worker"
+        assert entry["fallback_from"] == "cli-glm"
+        assert active_task(project, "T001").status == "waiting_host"
+
+        # The quota facts: exhausted, naive reset verbatim, Chinese text in
+        # the recorded attempt.
+        row = project.store.resource_row("cli-glm")
+        assert row.status == "exhausted"
+        assert row.quota_reset_at == GLM_NAIVE_RESET
+        assert row.last_error_kind == "quota_exhausted"
+        attempts = {a["profile"]: a for a in _worker_attempts(project)}
+        assert attempts["cli-glm"]["result"] == "failed"
+        assert "额度已用尽" in attempts["cli-glm"]["failure_reason"]
+        assert attempts["host-worker"]["result"] is None
+        assert len(_worker_attempts(project)) == 2  # one hop, bounded
+    finally:
+        project.close()
+
+
 # ---------------------------------------------------------------------------
 # G009 T004: same-condition blocker suppression — bounded launches with an
 # explainable stop. The incident (a131/a132/a133, 2026-10-07): three
@@ -950,6 +1033,159 @@ def test_task_retry_reports_the_suppressed_blocker(tmp_path, monkeypatch):
         project.close()
 
 
+# G009 T008 matrix combinations on the suppression machinery: the bound is
+# per driver (a HOST worker delivering the same permission blocker through
+# `orx task complete` is suppressed exactly like the CLI stand-in) and per
+# CONDITION (a genuinely changed blocker condition — what a permission
+# config change produces, cf. T007's config fingerprint — re-enables
+# consideration with a fresh streak instead of a dead profile forever).
+
+
+def _host_blocker_rounds(project, tmp_path, rounds: int):
+    """run -> parked host assignment -> claim -> blocked delivery -> retry,
+    `rounds` times. Each blocked delivery is the incident's permission
+    blocker through the HOST delivery path (`orx task complete`). Returns
+    the outcome of the final run_slice (which parks nothing once the
+    suppression bound is reached)."""
+    for _ in range(rounds):
+        parked = dispatch.run_slice(project)["host_required"][0]
+        dispatch.task_claim(project, "T001", session="sess-host-blocker")
+        blocked = write_evidence(
+            tmp_path, status="blocked",
+            summary="internal shell approval denied before execution",
+        )
+        result = dispatch.task_complete(project, "T001", str(blocked))
+        assert result["status"] == "failed"
+        assert active_task(project, "T001").status == "failed"
+        dispatch.task_retry(project, "T001")
+    return dispatch.run_slice(project)
+
+
+def test_host_worker_same_permission_blocker_is_suppressed_too(
+        tmp_path, monkeypatch):
+    """permission x host driver: the suppression bound is not a CLI-only
+    seam. A HOST worker that claims its assignment and delivers
+    status=blocked with the same permission blocker three times is not
+    parked a fourth time: the stop is explained (routing_errors[].suppressed
+    naming class/count/remedy), the task stays runnable, and exactly three
+    host attempts exist — no fourth paid assignment."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="host blocker suppression", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+
+        outcome = _host_blocker_rounds(project, tmp_path, 3)
+
+        # The fourth round parks nothing and launches nothing.
+        assert outcome["host_required"] == [] and outcome["started"] == []
+        [error] = [e for e in outcome["routing_errors"] if e["task"] == "T001"]
+        [suppressed] = error["suppressed"]
+        assert suppressed["profile"] == "host-worker"
+        assert suppressed["failure_class"] == "permission"
+        assert suppressed["count"] == 3 and suppressed["limit"] == 3
+        assert "shell approval denied" in suppressed["blocker"]
+        assert active_task(project, "T001").status == "runnable"
+
+        attempts = project.store.conn.execute(
+            "SELECT result FROM attempts"
+            " WHERE role='worker' AND profile='host-worker'"
+        ).fetchall()
+        assert [a["result"] for a in attempts] == ["blocked"] * 3
+    finally:
+        project.close()
+
+
+def test_suppression_is_task_scoped_other_tasks_still_get_the_profile(
+        tmp_path, monkeypatch):
+    """G009 T008 matrix pin (未解除的权限阻塞, the bounded half): the
+    suppression is per (task, profile) — a profile suppressed for ONE task
+    after the same-fingerprint bound is still launched for OTHER tasks,
+    with its own fresh streak there. What it deliberately is NOT: a
+    same-task re-enable after the permission condition changes — while
+    excluded, the profile cannot record the different-fingerprint attempt
+    that would break the trailing run, so the recorded remedy is a
+    controller routing/config change, not another launch (the missing
+    config-fingerprint consumer is documented in
+    docs/recovery-hardening-report.md T008, not silently invented here)."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cursor-blocked"]',
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=BLOCKED_CURSOR_PROFILES_TOML)
+    adapter = _adapters.get_adapter("cursor")
+    monkeypatch.setattr(adapter, "probe",
+                        lambda: _ProbeReport(True, "captured CLI stand-in"))
+    monkeypatch.setattr(
+        adapter, "build_worker_launch",
+        lambda **kwargs: _Launch(argv=["captured-agent"], cwd=tmp_path,
+                                  timeout=5))
+    monkeypatch.setattr(
+        _runtime, "run_launch",
+        lambda launch: _runtime.CommandResult(
+            command="captured-agent", exit_code=0,
+            stdout=_json.dumps(_BLOCKED_ENVELOPE), stderr="",
+            duration_sec=0.01, timed_out=False))
+    goal = dispatch.create_goal(
+        project, objective="task-scoped suppression", acceptance=["done"],
+        constraints=[], context="",
+    )[0]
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"],
+                  complexity="low"),
+        task_spec("T002", acceptance=goal.acceptance, verification=["true"],
+                  complexity="low"),
+    ]))
+    try:
+        # Three blocked rounds on T001 (T002 defers behind the
+        # one-process-per-slice cap each time).
+        for _ in range(3):
+            outcome = dispatch.run_slice(project)
+            assert active_task(project, "T001").status == "failed"
+            assert [f["task"] for f in outcome["failed"]] == ["T001"]
+            assert [d["task"] for d in outcome["deferred"]] == ["T002"]
+            dispatch.task_retry(project, "T001")
+
+        fourth = dispatch.run_slice(project)
+
+        # T001 is suppressed — no 4th launch, explainable stop, stays
+        # runnable exactly as the single-task case pins.
+        [error] = [e for e in fourth["routing_errors"] if e["task"] == "T001"]
+        assert error["suppressed"][0]["profile"] == "cursor-blocked"
+        assert error["suppressed"][0]["count"] == 3
+        assert active_task(project, "T001").status == "runnable"
+
+        # T002 still gets the profile: a REAL fresh attempt, its own
+        # streak, never T001's count.
+        [t002_failure] = [f for f in fourth["failed"] if f["task"] == "T002"]
+        assert t002_failure["profile"] == "cursor-blocked"
+        revision = active_task(project, "T001").revision_id
+        per_task = project.store.conn.execute(
+            "SELECT task_id, COUNT(*) FROM attempts"
+            " WHERE role='worker' AND profile='cursor-blocked'"
+            " GROUP BY task_id"
+        ).fetchall()
+        assert {row["task_id"]: row[1] for row in per_task} == {"T001": 3, "T002": 1}
+        assert health.blocker_streak(
+            project.store, revision, "T001", "cursor-blocked").count == 3
+        assert health.blocker_streak(
+            project.store, revision, "T002", "cursor-blocked").count == 1
+    finally:
+        project.close()
+
+
 # ---------------------------------------------------------------------------
 # G009 T005 (2026-10-07 incident): shared-quota failure domains in routing.
 # The controller and the worker died on the SAME provider quota at 02:05 —
@@ -1047,6 +1283,134 @@ def test_operator_override_beats_the_domain_gate(domain_project):
     assert result.selected == "glm-b" and result.reason == "fallback"
     reasons = {c.profile: c.reject_reason for c in result.candidates}
     assert reasons["glm-b"] is None
+
+
+def test_operator_override_outranks_learned_exhaustion_on_the_same_profile(
+        project):
+    """G009 T008 matrix combination: quota exhaustion x override on the
+    SAME profile. A learned exhaustion with a future reset gates the rung
+    (the baseline below); the operator's explicit AVAILABLE on that very
+    profile outranks the learned fact at routing — kept, primary, the audit
+    showing the override's `available` — and `orx resource clear` (the
+    explicit re-eligibility entry) returns the row to auto-learning with
+    the clear-vs-available difference visible in the row itself."""
+    from datetime import datetime, timedelta, timezone
+    store = project.store
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+
+    store.resource_learn("host-worker", status="exhausted", quota_reset_at=future)
+    baseline = route(project, role=Role.WORKER)
+    assert baseline.selected == "host-external"  # learned exhaustion gates
+
+    store.resource_set("host-worker", ResourceStatus.AVAILABLE,
+                       "operator topped the account up")
+    overridden = route(project, role=Role.WORKER)
+    assert overridden.selected == "host-worker"
+    assert overridden.reason == "primary" and overridden.fallback_used is False
+    candidate = next(c for c in overridden.candidates
+                     if c.profile == "host-worker")
+    assert candidate.kept and candidate.resource_status == "available"
+    row = store.resource_row("host-worker")
+    assert row.override == 1 and row.status == "available"
+    # The override is immune to further auto-learning while it stands.
+    health.record_attempt_outcome(store, "host-worker", ok=False,
+                                  error_kind="quota_exhausted",
+                                  quota_reset_at=future)
+    assert store.resource_row("host-worker").status == "available"
+
+    # clear != available: re-eligibility hands the row back to learning —
+    # the override flag is gone, so the next learned quota fact writes
+    # again (it was immune while the override stood, asserted above).
+    store.resource_clear("host-worker")
+    cleared_row = store.resource_row("host-worker")
+    assert cleared_row.override == 0
+    health.record_attempt_outcome(store, "host-worker", ok=False,
+                                  error_kind="quota_exhausted",
+                                  quota_reset_at=future)
+    assert store.resource_row("host-worker").status == "exhausted"
+    assert route(project, role=Role.WORKER).selected == "host-external"
+
+
+# G009 T008 matrix combination: 共同故障域 x controller. The incident had
+# controller and worker on ONE provider quota — the deterministic half of
+# "worker 与 controller 同时失去配额": the shared domain gates the planner
+# route exactly as it gates the worker ladder, the stop repeats honestly
+# until a recoverer exists, and an operator override on the planner (the
+# explicit re-eligibility a recoverer provides) re-opens planning.
+SHARED_DOMAIN_PROFILES_TOML = HOST_PROFILES_TOML + """
+[profiles.glm-plan]
+driver = "host"
+harness = "zcode"
+model = "m-plan-glm"
+class = "strong"
+effort = "high"
+capabilities = ["coding"]
+quota_domain = "glm-main"
+
+[profiles.glm-work]
+driver = "host"
+harness = "zcode"
+model = "m-work-glm"
+class = "strong"
+effort = "medium"
+capabilities = ["coding"]
+quota_domain = "glm-main"
+"""
+
+SHARED_DOMAIN_CONFIG_TOML = HOST_CONFIG_TOML.replace(
+    'profile = "host-planner"', 'profile = "glm-plan"'
+).replace(
+    'profiles = ["host-planner"]', 'profiles = ["glm-plan"]'
+).replace(
+    'profiles = ["host-worker", "host-external"]',
+    'profiles = ["glm-work", "host-worker"]',
+)
+
+
+def test_shared_quota_domain_gates_the_controller_until_a_recoverer(
+        tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path, config_toml=SHARED_DOMAIN_CONFIG_TOML,
+                           profiles_toml=SHARED_DOMAIN_PROFILES_TOML)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="shared domain controller gate",
+            acceptance=["done"], constraints=[], context="")[0]
+
+        # The worker's GLM 1308 exhaustion (naive reset — the incident's
+        # shape) kills the shared domain: BOTH roles are honestly down.
+        project.store.resource_learn("glm-work", status="exhausted",
+                                     quota_reset_at="2026-10-07 04:24:23")
+        for _ in range(2):  # the stop repeats, nothing auto-continues
+            with pytest.raises(RoutingError) as excinfo:
+                dispatch.plan_route(project)
+            assert "glm-plan: quota_domain_exhausted:glm-main" in str(excinfo.value)
+
+        # The worker ladder is gated the same way: the run routes the
+        # standalone recovery rung, not the dead domain.
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        outcome = dispatch.run_slice(project)
+        [entry] = outcome["host_required"]
+        assert entry["profile"] == "host-worker"
+        decision = project.store.routing_decisions_all()[-1]
+        reasons = {c["profile"]: c["reject_reason"] for c in decision.candidates}
+        assert reasons["glm-work"] == "exhausted"
+
+        # A recoverer for the controller (the operator moved the planner to
+        # a separate account) re-opens planning; the worker domain member
+        # stays gated until its own recovery.
+        project.store.resource_set("glm-plan", ResourceStatus.AVAILABLE,
+                                   "operator: planner on a separate account")
+        planned = dispatch.plan_route(project)
+        assert planned["mode"] == "host_required"
+        assert planned["assignment"]["profile"] == "glm-plan"
+        row = project.store.resource_row("glm-work")
+        assert row.status == "exhausted"  # untouched by the planner recovery
+    finally:
+        project.close()
 
 
 def test_all_candidates_unavailable_is_bounded_and_explained(domain_project):

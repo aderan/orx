@@ -7,6 +7,84 @@ attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区�
 
 ---
 
+## T008 · 建立可重复的故障注入与组合验收矩阵
+
+**输入commit**：T007 交付后工作树（attempt 155；session
+`sess_subagent_agent_93f38566-8edc-478c-97cf-e119cb3d563f`）。
+**范围**：仅测试与文档（tests、本报告、验证计划、IMPLEMENTATION_PLAN）；
+生产代码零改动。
+
+### 方法
+
+以 docs/recovery-validation-plan-2026-10-07.md §第二层 12 行矩阵 + GLM 1308
+注记 + §退避与切换组合验收 + §探针适用范围为清单，逐行定位 T001–T007 已落地
+用例，识别组合缺口后补 7 例确定性测试，再把全表回写验证计划文档（"第二层
+执行矩阵：逐行证据定位"节，标记执行时点全绿）。注入纪律与验收要求一致：只
+伪造外部进程（PATH 脚本、捕获的 CLI 信封）、提供商响应与时钟（store 内伪造
+reset 值/冻结 ORX 时钟缝隙），被测 dispatch 从不 mock。
+
+### 新增用例（7 例，先按现有语义写红点核对后转绿）
+
+1. **认证失效 e2e**（test_health.py::
+   test_auth_failure_is_bounded_no_reroute_no_login_loop）：登录失效响应 →
+   恰一次失败 attempt（无同 slice 换挡——auth 不属 RESOURCE_FALLBACK_KINDS）、
+   profile 门禁、二次 slice 零启动、retry 后路由下一 rung 通过、全程单次
+   auth attempt（无登录循环）。
+2. **中文 GLM 1308 × driver**（test_routing.py::
+   test_reroute_on_chinese_glm1308_quota_parks_host_rung）：额度类失败走
+   driver 正确的 host 停泊（事故类别的故障在 T003 分支矩阵上的补位）。
+3. **host × 权限抑制**（test_routing.py::
+   test_host_worker_same_permission_blocker_is_suppressed_too）：host 经
+   `orx task complete` 的同条件权限阻塞三次后不再停泊第 4 次，三处留痕，
+   恰 3 个 blocked attempt。
+4. **抑制按任务域**（test_routing.py::
+   test_suppression_is_task_scoped_other_tasks_still_get_the_profile）：
+   T001 抑制后 T002 仍获该 profile（独立 streak 1 vs 3，per-task attempt
+   计数定位）。
+5. **同 profile 配额 × override**（test_routing.py::
+   test_operator_override_outranks_learned_exhaustion_on_the_same_profile）：
+   学习 exhaustion 让位给操作者 override（primary、override=1、学习免疫），
+   clear 后学习恢复。
+6. **控制器同故障域**（test_routing.py::
+   test_shared_quota_domain_gates_the_controller_until_a_recoverer）：
+   planner 与 worker 同 quota_domain；worker naive-reset exhaustion 后
+   plan_route 两次同样 RoutingError（如实停留），操作者为 planner override
+   后 planning 重开，worker 门禁不受牵连。
+7. **陈旧身份 × 换挡**（test_host_progress_e2e.py::
+   test_stale_cli_attempt_cannot_deliver_after_resource_reroute）：
+   CLI 限流换挡停泊 host 后，死亡 rung 迟到交付 stale 拒绝、状态零变化，
+   新 owner 唯一 completion 入库。
+
+### 发现的生产缺口（记录，未在本任务修复——生产代码不在写权限内）
+
+- **抑制的重启用缺少配置指纹消费者**：同任务同 profile 的抑制解除目前只能
+  靠该 profile 记录一次异指纹/异类结果，但被排除的 profile 无法再被启动来
+  记录该结果（鸡生蛋）；T007 的权限配置指纹（preflight_invalid_reasons）
+  尚无任何机制消费来自动重开考虑。当前如实行为=控制器改路由/配置或换
+  profile（remedy 文案所述）。候选后续任务：run_slice/route 消费
+  "条件指纹变化"（preflight 指纹 ≠ blocker 事件时戳时的条件）作为显式
+  重开入口；在那之前矩阵以任务域作用域用例钉住现状。
+
+### 绿验证
+
+- 门禁：`.venv/bin/python -m pytest -q tests/test_health.py
+  tests/test_quota.py tests/test_routing.py tests/test_probes.py
+  tests/test_host_progress_e2e.py tests/test_delivery_gate_e2e.py`
+  → 189 passed（基线 182 + 新增 7；check log `.orx/runs/R009/check/T008/`）。
+- 全量：`.venv/bin/python -m pytest -q` → 见下方提交时记录（1007 passed、
+  0 xfail 预期：基线 1000 + 7）；docs/m1.2-report.md 不重跑不触碰。
+- `git diff --check` 干净。
+
+### 真实/模拟来源、用量、缺失字段
+
+全部新增用例为确定性替身（fake 脚本/捕获信封/伪造 reset 值），零付费模型
+调用、零网络；本任务不产生 usage observation（无 completion）。缺失字段：
+第三层真实微任务（真权限边界、nonce、真实执行）明确不在确定性矩阵内，由
+T009 验收，验证计划文档已按非宣称边界记录。耗时区间：约 2026-10-08
+09:20–10:20 (+08:00)。
+
+---
+
 ## T007 · 增加执行能力预检与验证结果的配置指纹
 
 **输入commit**：`222872f`（T006 交付，2026-10-08）。

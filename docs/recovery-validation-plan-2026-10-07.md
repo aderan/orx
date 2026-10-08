@@ -58,6 +58,83 @@
 
 GLM 1308 需重放中文原始消息及无时区 reset，不能只使用英语 Codex 限额消息。这是需要补充的验收场景，本次未宣称已经通过。
 
+## 第二层执行矩阵：逐行证据定位（G009 T008，2026-10-08 执行）
+
+下表把上方 12 行矩阵逐行定位到确定性用例（文件::用例），并给出每行被断言的
+有限动作。注入纪律：全部用例只伪造外部进程（PATH 脚本/捕获信封）、提供商
+响应（fake fetch/quota snapshot）与时钟（store 内伪造 reset 值或冻结 ORX 时钟
+缝隙）；被测的 dispatch/路由/健康学习/状态机/交付门禁从不 mock。标记
+【新增】的用例为 T008 补齐的组合缺口；其余为 T001–T007 已落地用例。
+
+| 场景 | 证据（tests/…） | 断言的有限动作 |
+|---|---|---|
+| 限流 | test_health.py::test_rate_limit_sets_bounded_cooldown；test_health.py::test_failing_worker_flips_health_and_routing_falls_back；test_health.py::test_rate_limited_cli_falls_back_to_host_parking；test_routing.py::test_reroute_to_host_rung_parks_host_assignment；test_routing.py::test_reroute_hop_is_bounded_once_per_slice | cooldown 窗口有界（2^n 封顶+jitter）且过期重开；同 slice 一次切换到下一 rung（CLI→CLI 执行、CLI→host 停泊 own nonce attempt）；每任务每 slice 至多一跳，双限流 rung 恰两 attempt 后停 FAILED |
+| 额度耗尽 | test_quota.py::test_run_slice_falls_back_to_next_rung_on_quota_failure；test_quota.py::test_routing_rejects_exhausted_until_reset_passes；test_health.py::test_naive_reset_stays_gated_on_both_sides_of_virtual_clock；test_health.py::test_probe_success_never_lifts_active_quota_exhaustion | reset 从失败文本解析并记录；reset 前不选该 rung、过期后仅作为 unknown 候选重新考虑（无虚假 available）；探针成功不清额度门禁（不宣称额度充足） |
+| 认证失效 | test_health.py::test_auth_failure_is_bounded_no_reroute_no_login_loop【新增】；test_health.py::test_auth_required_gates_routing；test_health.py::test_success_after_auth_required_recovers | 恰一次失败 attempt（无同 slice 换挡、无登录循环）；profile 门禁使后续路由带审计跳过；操作者解决后显式 retry 路由下一 rung 通过；成功恢复正常 |
+| 权限阻塞 | test_delivery_gate_e2e.py::test_cli_blocked_delivery_survives_a_green_controller_gate；::test_cli_blocked_delivery_survives_a_red_controller_gate | exit 0 + blocked 交付以 attempt result=blocked 记录、task 失败且 reason 为环境阻塞前缀；绿门禁与红门禁都不能改写 blocked；usage/session 照常记录 |
+| 未解除的权限阻塞 | test_routing.py::test_same_permission_blocker_is_not_relaunched_after_limit；::test_suppressed_rung_falls_through_to_next_profile；::test_suppression_limit_is_configurable；::test_host_worker_same_permission_blocker_is_suppressed_too【新增】；::test_suppression_is_task_scoped_other_tasks_still_get_the_profile【新增】 | 同指纹 blocker 达限后不再启动（第 4 轮零 attempt、零付费调用）；三处留痕（run 输出/路由审计/task event）带 class/count/remedy；抑制按 driver 无差别（host 经 task complete 的 blocked 同样受限）；抑制按任务域（其他任务仍获该 profile，独立 streak） |
+| 代码检查红 | test_delivery_gate_e2e.py::test_scenario_b_gate_reject_then_same_attempt_fix_all_green；test_health.py::test_passed_cli_delivery_with_red_gate_keeps_profile_healthy；test_quota.py::test_run_slice_keeps_non_resource_failures_failed | 门禁拒绝保留同 attempt 修复机会（check→fix→check→complete 全程一个 attempt）；代码红不写资源状态（profile 保持 available）；非资源失败不触发换挡 fallback |
+| 不同执行方式 | CLI→CLI：test_health.py::test_failing_worker_flips_health_and_routing_falls_back；CLI→host：test_routing.py::test_reroute_to_host_rung_parks_host_assignment、test_health.py::test_rate_limited_cli_falls_back_to_host_parking；CLI→external：test_routing.py::test_reroute_to_external_rung_parks_external_contract_only；host→CLI：test_routing.py::test_host_resource_failure_redispatches_to_cli_by_driver；host→host：test_routing.py::test_host_resource_failure_redispatches_to_next_host_rung；quota×driver【新增】：test_routing.py::test_reroute_on_chinese_glm1308_quota_parks_host_rung | 每条按目标 rung 自身 driver 分发（执行/停泊/正式外部契约）；host 故障先经显式结束事实（task fail）+操作者资源事实再经 run_slice 改派；身份绑定（新 attempt+新 nonce，失败档留历史）；中文 GLM 1308 额度类同样走 driver 正确的 host 停泊而非 adapter 崩溃 |
+| 所有候选失效 | test_routing.py::test_all_non_routable_is_an_error；::test_all_candidates_unavailable_is_bounded_and_explained | 单条错误逐 rung 列原因（含 quota_domain_exhausted）；任务留 runnable、零启动、二次 slice 同样有界停止；无换模型偷换 |
+| 旧结果迟到 | test_host_progress_e2e.py::test_scenario_b_confirmed_death_fail_retry_rejects_old_attempt；test_host_recovery_facts.py::test_recover_keeps_single_writer_and_rotates_the_nonce（T006）；【新增】test_host_progress_e2e.py::test_stale_cli_attempt_cannot_deliver_after_resource_reroute | 旧 attempt 迟到交付 stale 拒绝、迟到报告 closed/superseded 拒绝；fail/retry、recover、资源换挡三条路径下 B（新 attempt）状态均不被覆盖，最终只有新 attempt 的 completion 入库 |
+| 未确认死亡 | test_host_progress_e2e.py::test_scenario_a_overdue_hint_then_original_attempt_late_delivery；test_host_recovery_facts.py::test_lost_contact_but_still_writing_never_becomes_a_verdict（T006） | overdue 仅 CHECK HINT（零状态移动、零新 attempt）；失联仍在写=观察事实（verdict None），恢复仍需操作者确认终止事实；原始 attempt 的有效迟到交付仍可受理 |
+| 手动 override | test_health.py::test_override_protects_and_clear_reenables；::test_operator_override_never_auto_cleared_across_quota_paths；test_quota.py::test_refresh_never_touches_operator_overrides；::test_refresh_healthy_preflight_lifts_naive_reset_exhaustion；test_routing.py::test_operator_override_beats_the_domain_gate；【新增】::test_operator_override_outranks_learned_exhaustion_on_the_same_profile；test_probes.py::test_preflight_never_clears_quota_cooldown_or_override | 自动学习/预检/探针/额度刷新/域门五路均不解除 override；同 profile 上 override 直接压过已学习的 exhaustion（routing 保持 primary、行 override=1）；clear 与 available 区分可见（clear 后学习恢复写入）；操作者事实 > live dashboard |
+| 共同故障域 | test_host_recovery_facts.py::test_shared_failure_records_the_domain_fact_and_parks_explainably（T006）；test_quota.py::test_shared_domain_reroute_skips_sibling_rung；test_routing.py::test_shared_quota_domain_is_not_independent_capacity；【新增】::test_shared_quota_domain_gates_the_controller_until_a_recoverer | 独立观察者（task note shared_failure）记录事实且零状态移动、无自动继续、迟到交付仍受理；sibling 以 quota_domain_exhausted 审计拒绝（不伪装容量）；【新增】控制器 profile 同域时 plan_route 同样 RoutingError 有界停止（重复调用同样停止=如实停留），直到操作者为控制器显式恢复（override）才重新调度 planning，worker 域成员不受牵连地保持自己的门禁 |
+
+GLM 1308 补充验收（中文原始消息 + 无时区 reset）：test_quota.py::
+test_provider_error_kind_truth_table（中文 quota/rate/auth 词汇 + 1308 代码形状）、
+::test_provider_quota_reset_preserves_string_verbatim（naive/offset 逐字保留、
+标记位置无关、裸时间戳不算）、::test_chinese_glm1308_end_to_end_naive_reset_
+never_self_releases（真实 dispatch 栈端到端：诊断 quota_exhausted、逐字 naive
+reset、跨 slice 永不自动放开、agent_status 标注 timezone unknown、operator 显式
+恢复）；test_health.py::test_resource_error_kind_composes_english_then_provider、
+::test_failure_class_taxonomy 的中文 resource 行。矩阵执行时点：以上全部为绿。
+
+### 组合路径覆盖（T008 验收项）
+
+- **driver × 权限**：host 经 `orx task complete` 的同条件权限阻塞同样受限
+  （test_host_worker_same_permission_blocker_is_suppressed_too）；CLI 替身的
+  既有矩阵见"未解除的权限阻塞"行。
+- **driver × 配额**：中文 GLM 1308 额度失败 → host 停泊
+  （test_reroute_on_chinese_glm1308_quota_parks_host_rung）；限流版本的
+  CLI→host/external、host→CLI/host 见"不同执行方式"行。
+- **配额 × override（同 profile）**：test_operator_override_outranks_learned_
+  exhaustion_on_the_same_profile——学习到的 exhaustion 让位给同 profile 上的
+  操作者 override，clear 恢复学习。
+- **陈旧身份 × 换挡**：test_stale_cli_attempt_cannot_deliver_after_resource_
+  reroute——资源换挡后死亡 rung 的迟到交付 stale 拒绝，新 owner 正常交付。
+- **控制器同故障**：test_shared_quota_domain_gates_the_controller_until_a_
+  recoverer——planner 与 worker 同 quota_domain，worker 的 naive-reset
+  exhaustion 使 plan_route 有界停止；恢复者（操作者 override）出现前如实停留。
+- **认证 × 边界**：test_auth_failure_is_bounded_no_reroute_no_login_loop——
+  auth 不属资源换挡类：不换挡、不循环、单次尝试、门禁跳过、retry 后走下一档。
+
+### 退避与切换组合验收（本节证据）
+
+确定性半段：A 注入资源失败后 B 真实执行并交付（test_failing_worker_flips_
+health_and_routing_falls_back、test_run_slice_falls_back_to_next_rung_on_
+quota_failure——B 在同 slice 完成且任务通过）；正向恢复推进虚拟时钟跨 reset 后
+路由重新考虑 A（test_routing_rejects_exhausted_until_reset_passes、
+test_quota_domain_gate_releases_when_reset_passes）；真实恢复探针只证明当次
+请求（test_probe_success_never_lifts_active_quota_exhaustion、
+test_success_during_active_exhaustion_keeps_gate_recovers_after_reset）。
+真实微任务半段（隔离仓库 + nonce + 真实权限边界的第三层）不属确定性矩阵，
+按计划由 T009 的真实微任务认证入口验收，此处不宣称已通过。
+
+### 探针适用范围（本节证据）
+
+绑定与失效：test_probes.py::test_fingerprint_invalidates_on_every_bound_change
+（CLI 版本/profile model/effort/workspace/工具链首 token/配置轴值变化各自换
+指纹；同内容 touch 经 mtime tripwire 退役旧结果）；::test_preflight_axes_move_
+independently；::test_help_output_and_probe_success_are_not_permission（探针/
+help 成功不染指权限轴）；::test_refresh_failure_never_relabels_old_catalog_as_
+fresh（实际失败优先于旧成功——目录域）。probe passed 与额度充足分存：
+test_probe_success_never_lifts_active_quota_exhaustion、
+test_preflight_never_clears_quota_cooldown_or_override；额度快照走 quota.py
+独立 fetcher（test_quota.py 全部 fetcher 用例）。共享账号故障域关联：
+quota_domain 解析与域门（test_routing.py::test_quota_domain_field_parses_and_
+defaults_standalone 及域门三例）。
+
 ## 第三层：真实微任务
 
 准备一个隔离的最小仓库，按项目现有工具链放好测试和一个错误函数。通过真实 ORX 指派让拟投产 worker 完成：
