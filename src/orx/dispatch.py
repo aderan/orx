@@ -1748,13 +1748,31 @@ def run_slice(project: Project) -> dict:
             # session hint ride with the re-surfaced identity. Observation
             # only — it never parks, fails, retries, or opens an attempt.
             "progress": progress_observation(project, attempt),
+            # G009 T006: the read-only terminal-fact diagnostic and the
+            # explicit, fact-gated recovery step for this entry.
+            "observe": f"orx task observe {task.task_id}",
+            "recover": (
+                f"orx task recover {task.task_id}"
+                " --termination-fact \"<confirmed termination fact>\""
+            ),
             "contract": (
                 "no second writer: this attempt still owns the task. First check"
                 " the original subagent (handle = session_ref) for a late result"
                 f" and submit it with `orx task complete {task.task_id}"
                 f" --attempt {attempt.id} --evidence <file>`; only if it is"
                 f" confirmed dead: `orx task fail {task.task_id} --reason <why>`"
-                f" then `orx task retry {task.task_id}` routes a fresh attempt"
+                f" then `orx task retry {task.task_id}` routes a fresh attempt."
+                " Read the terminal facts first with"
+                f" `orx task observe {task.task_id}` (read-only: claim, changes,"
+                " session activity, closure — never a verdict); with a"
+                " confirmed termination fact"
+                f" `orx task recover {task.task_id} --termination-fact \"<fact>\"`"
+                " closes this attempt and reopens dispatch in one explicit"
+                " operator step. When the controller and the worker share one"
+                " failure domain (e.g. the same quota account), record it with"
+                f" `orx task note {task.task_id} --kind shared-failure"
+                " --detail \"<fact>\"` and stay parked: the open attempt keeps"
+                " ownership and its late delivery stays acceptable"
             ),
         })
 
@@ -3370,7 +3388,18 @@ def task_complete(
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
-    if TaskStatus(task.status) not in (TaskStatus.RUNNING, TaskStatus.WAITING_EXTERNAL):
+    # Gate order: a caller that QUOTES an attempt id is judged on that
+    # identity first — after the delivery document's own validation
+    # (ordering contract: evidence problems are named before identity
+    # problems) but before the status gate. A stale quoted attempt gets
+    # the stale-submission diagnosis whatever the task's current status
+    # (after `task recover` the task is runnable again; the late caller
+    # must learn its attempt is closed, not be misled by a status
+    # message). The un-quoted path keeps the status gate first.
+    _completable = TaskStatus(task.status) in (
+        TaskStatus.RUNNING, TaskStatus.WAITING_EXTERNAL
+    )
+    if attempt_id is None and not _completable:
         raise ConflictError(
             f"task {task_id} is {task.status}; `task complete` requires running or waiting_external"
         )
@@ -3419,6 +3448,12 @@ def task_complete(
                 f"stale submission: attempt {attempt_id} is not the latest attempt"
                 f" for task {task_id} (a newer attempt exists); a late completion"
                 " must not close it"
+            )
+        # The quoted identity is current; only now may the task's status
+        # refuse the completion (see the gate-order note above).
+        if not _completable:
+            raise ConflictError(
+                f"task {task_id} is {task.status}; `task complete` requires running or waiting_external"
             )
     else:
         attempt = store.attempt_latest_for_task(revision.id, task.task_id)
@@ -3972,6 +4007,490 @@ def _verification_counts(store: Store, revision: Revision) -> dict:
         "failed": sum(1 for v in rows if not v.passed),
         "awaiting_agent": pending,
     }
+
+
+# ---------------------------------------------------------------------------
+# Host failure facts, trusted observation, safe recovery (G009 T006).
+#
+# The a130 incident (2026-10-07): a host worker CLAIMED its task, worked
+# about an hour (114 model requests, 35 Edits, 3 Writes), hit the GLM 1308
+# quota failure at 02:05 — the same provider account the Controller was
+# failing on — and ORX only closed the attempt at 08:30, after the user
+# returned, recording "died at spawn / never claimed / no workspace
+# changes" although claim events and real edits existed. Three clocks
+# collapsed into one wrong verdict. The seams below keep them apart:
+#
+# - task_observe: an independently callable READ-ONLY diagnostic that binds
+#   terminal facts to session/attempt/nonce with a source per fact, keeps
+#   the real failure time (session facts), the observation time (heartbeat
+#   received_at / read_at), and the closure time (attempt ended_at)
+#   distinct, and renders NO verdict — silence in the heartbeat channel
+#   stays an observation (contract §1), and session activity newer than the
+#   last report is a fact, not a liveness claim.
+# - task_recover: the EXPLICIT operator-invoked recovery. It refuses to run
+#   without a confirmed termination fact supplied by the operator (the
+#   death decision stays human, contract §10), closes the terminated
+#   attempt BEFORE any new dispatch (single writer), and records the
+#   machine-read facts next to the operator's fact so the recorded reason
+#   can never again contradict the claim/change evidence it sits on.
+# - task_note: the append-only operator channel — the shared-failure
+#   parking fact (controller and worker down on one quota domain: the state
+#   stays explainably parked, nothing auto-continues) and corrections of
+#   misreported history, which APPEND a record quoting the original and
+#   never edit a stored row.
+
+#: Input-validation rejection reasons for the recovery surfaces: usage-class
+#: errors, exit 2 at the CLI (same discipline as HEARTBEAT_INPUT_REASONS).
+RECOVERY_INPUT_REASONS = (
+    "termination_fact_invalid",
+    "note_kind_invalid",
+    "note_detail_invalid",
+    "note_attempt_required",
+)
+
+#: The controlled operator-note kinds (task_note); the vocabulary is closed
+#: so the append-only channel cannot grow an unjudged event taxonomy.
+OPERATOR_NOTE_KINDS = ("shared_failure", "correction")
+
+_OBSERVATION_SEPARATION = (
+    "three distinct clocks, never collapsed: the real failure time is the"
+    " session-side last-activity fact (source: the zcode session row); the"
+    " observation time is when ORX received the last progress report and"
+    " when this read happened (source: ORX's clock); the closure time is"
+    " when the attempt was closed (source: the attempts row). Heartbeat"
+    " silence is not death; session activity is not life; no surface here"
+    " renders a verdict."
+)
+
+_SHARED_FAILURE_ENTRY = (
+    "explainably parked: no automatic continue. The open attempt still owns"
+    " the task — its late delivery stays acceptable; when the shared domain"
+    " recovers the original worker may still deliver. Only a confirmed"
+    " termination fact opens recovery: `orx task recover <task>"
+    " --termination-fact \"<fact>\"`"
+)
+
+
+def _epoch_ms_from_iso(ts: str | None) -> int | None:
+    """ISO ORX timestamp -> epoch ms, or None when not honestly computable."""
+    if not ts:
+        return None
+    try:
+        return int(_parse_ts(ts).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _iso_from_epoch_ms(value: int | None) -> str | None:
+    """Epoch ms -> ISO UTC for HUMAN display in recorded text. The raw epoch
+    value stays the source of truth in observe payloads; this conversion is
+    display-only and never invents a zone (epoch is timezone-neutral)."""
+    if value is None:
+        return None
+    from datetime import timezone as _tz
+
+    return datetime.fromtimestamp(value / 1000, tz=_tz.utc).isoformat()
+
+
+def _session_observation(project: Project, attempt) -> dict:
+    """Best-effort read-only session facts for one attempt (G009 T006).
+
+    Resolution order: the attempt's bound session_ref; then the nonce
+    lookup (same deterministic match `task claim --discover-session` uses,
+    but READ-ONLY here — a discovered id is reported, never stored); else
+    no handle. Unavailability of the zcode database is an honest fact in
+    the payload, never an error: the ORX-side facts still render."""
+    from . import zcode_sessions
+
+    def unavailable(error: str) -> dict:
+        return {
+            "session_id": None,
+            "lookup": "unavailable",
+            "available": False,
+            "error": error,
+            "facts": {},
+            "unreadable": [],
+            "verdict": None,
+        }
+
+    def render(session_id: str, lookup: str, discovery: dict | None = None) -> dict:
+        try:
+            payload = zcode_sessions.session_facts(session_id)
+        except zcode_sessions.ZcodeDbUnavailable as e:
+            return unavailable(str(e))
+        out = dict(payload)
+        out["lookup"] = lookup
+        out["available"] = True
+        if discovery is not None:
+            out["discovery"] = discovery
+        return out
+
+    if attempt.session_ref:
+        return render(attempt.session_ref, "session_ref")
+    if attempt.nonce:
+        try:
+            discovery = zcode_sessions.discover_attempt_session(
+                attempt.id, project.root, nonce=attempt.nonce,
+            )
+            sid = zcode_sessions.first_session_id(discovery)
+            if sid is not None:
+                # Observation only: the discovered id is NOT written to the
+                # attempt (binding identity is claim/complete's job).
+                return render(sid, "nonce", discovery)
+            return {
+                "session_id": None,
+                "lookup": "nonce",
+                "available": True,
+                "found": False,
+                "facts": {},
+                "unreadable": [],
+                "verdict": None,
+                "discovery": discovery,
+            }
+        except zcode_sessions.ZcodeDbUnavailable as e:
+            return unavailable(str(e))
+    return {
+        "session_id": None,
+        "lookup": "none",
+        "available": True,
+        "found": False,
+        "facts": {},
+        "unreadable": [],
+        "verdict": None,
+    }
+
+
+def _operator_notes(store: Store, revision: Revision, task_id: str) -> list[dict]:
+    """Appended operator notes (task_note) for one task, in append order."""
+    return [
+        {"event": e.event, "reason": e.reason, "at": e.created_at}
+        for e in store.task_events(revision.id, task_id)
+        if e.event in ("shared_failure_parked", "record_correction")
+    ]
+
+
+def task_observe(project: Project, task_id: str) -> dict:
+    """The independently callable, READ-ONLY terminal-fact observation for
+    one task's current attempt (G009 T006; a130 post-mortem entry).
+
+    Works in any task status — a diagnostic of a failed task is exactly the
+    post-mortem the incident needed. Writes nothing anywhere: no task
+    state, no attempt field (a nonce lookup never stores the session id),
+    no event, and the zcode database stays byte-identical. The payload
+    carries, each with its source: identity (attempt/nonce/session), claim
+    facts (claimed_at, session_ref), session terminal facts (created / last
+    activity / archived / model steps / edit and write counts, raw epoch
+    values), the G006 progress window, the closure facts, and the explicit
+    three-clocks separation. ``verdict`` is always None: observing never
+    judges life or death, and activity newer than the last report is
+    reported as the fact ``activity_after_last_report`` — never converted
+    into a liveness claim."""
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    session = _session_observation(project, attempt) if attempt is not None else {
+        "session_id": None, "lookup": "none", "available": True, "found": False,
+        "facts": {}, "unreadable": [], "verdict": None,
+    }
+    progress = progress_observation(project, attempt)
+    last_report_ms = _epoch_ms_from_iso(progress.get("received_at"))
+    activity = session["facts"].get("last_activity_ms", {}).get("value")
+    after_report = (
+        None
+        if last_report_ms is None or activity is None
+        else activity > last_report_ms
+    )
+    return {
+        "task": task.task_id,
+        "status": task.status,
+        "read_at": db_now(),
+        "attempt": (
+            {
+                "id": attempt.id,
+                "role": attempt.role,
+                "driver": attempt.driver,
+                "profile": attempt.profile,
+                "nonce": attempt.nonce,
+                "open": attempt.ended_at is None,
+            }
+            if attempt is not None else None
+        ),
+        "claim": (
+            {
+                "claimed_at": attempt.started_at,
+                "session_ref": attempt.session_ref,
+                "source": "orx.state.attempts.started_at + session_ref (claim-bound)",
+            }
+            if attempt is not None
+            else {"claimed_at": None, "session_ref": None, "source": "no attempt"}
+        ),
+        "session": session,
+        "progress": progress,
+        "activity_after_last_report": after_report,
+        "closure": (
+            {
+                "ended_at": attempt.ended_at,
+                "result": attempt.result,
+                "failure_reason": attempt.failure_reason,
+                "source": "orx.state.attempts.ended_at/result/failure_reason",
+            }
+            if attempt is not None
+            else {"ended_at": None, "result": None, "failure_reason": None,
+                  "source": "no attempt"}
+        ),
+        "notes": _operator_notes(store, revision, task.task_id),
+        "separation": _OBSERVATION_SEPARATION,
+        "verdict": None,
+    }
+
+
+def _observed_facts_line(project: Project, attempt) -> str:
+    """The machine-read facts recorded NEXT TO an operator's recovery fact
+    (the a130 misreport guard): claim time, session handle, session-side
+    activity, change counts, heartbeat window state, closure moment. Facts
+    that cannot be read honestly render as 'unknown', never invented."""
+    session = _session_observation(project, attempt)
+    facts = session["facts"]
+
+    def val(name):
+        return facts.get(name, {}).get("value")
+
+    progress = progress_observation(project, attempt)
+    claimed = attempt.started_at or "never"
+    last_activity = _iso_from_epoch_ms(val("last_activity_ms")) or "unknown"
+    archived = _iso_from_epoch_ms(val("archived_ms")) or (
+        "none" if "archived_ms" in facts else "unknown"
+    )
+    edits = val("edit_calls")
+    writes = val("write_calls")
+    steps = val("model_steps")
+    return (
+        f"observed: claimed_at={claimed},"
+        f" session={session.get('session_id') or 'none'},"
+        f" last_activity={last_activity}, archived={archived},"
+        f" edits={edits if edits is not None else 'unknown'},"
+        f" writes={writes if writes is not None else 'unknown'},"
+        f" model_steps={steps if steps is not None else 'unknown'},"
+        f" heartbeat={progress['state']},"
+        f" report_received={progress.get('received_at') or 'none'},"
+        f" closed_at={db_now()}"
+    )
+
+
+def _recovery_input_error(reason: str, message: str) -> ORXError:
+    """A usage-class rejection for the recovery surfaces (exit 2 at the
+    CLI): existing exception family, machine reason rides on the instance."""
+    exc = ORXError(message)
+    exc.reason = reason
+    return exc
+
+
+def task_recover(project: Project, task_id: str, termination_fact: str,
+                 session: str | None = None) -> dict:
+    """Explicit operator-invoked recovery of a lost host worker attempt
+    (G009 T006): close the terminated attempt, then reopen the task for
+    dispatch — fail + retry composed under ONE confirmed termination fact.
+
+    Gates, in order:
+
+    - the termination fact is required usage input: 1-512 characters after
+      stripping. ORX never decides death (contract §10) and never treats
+      heartbeat silence as one; the operator supplies the confirmed fact
+      and owns the decision.
+    - the task must be RUNNING under an open host worker attempt — exactly
+      the parked-writer state a session break leaves. waiting_host has no
+      writer yet (`orx run` re-surfaces the assignment); a failed task
+      already closed its attempt (`orx task retry` is the door).
+
+    What it records — the a130 misreport guard: the attempt's failure
+    reason carries the operator's fact AND the machine-read facts line
+    (claim time, session, last activity, edit/write counts, heartbeat
+    window, closure moment), so a recorded closure can never again claim
+    "never claimed / no workspace changes" while claim and change evidence
+    exists — including when the operator's fact contradicts the observed
+    activity: both are kept, an auditor sees both.
+
+    Single writer: the terminated attempt is closed BEFORE the task reopens
+    for routing; no second writer is ever started here (the next `orx run`
+    routes a fresh attempt with a fresh nonce), and the closed attempt's
+    late deliveries/reports are refused by the existing stale/ownership
+    gates (`attempt_closed` / stale submission)."""
+    fact = (termination_fact or "").strip()
+    if not fact or len(fact) > 512:
+        raise _recovery_input_error(
+            "termination_fact_invalid",
+            "--termination-fact must be 1-512 characters after stripping"
+            f" whitespace (got {len(fact)}); recovery requires the operator's"
+            " confirmed termination fact — ORX never decides death, so the"
+            " fact cannot be omitted or blank",
+        )
+    session_ref = resolve_session_ref(session)
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    if TaskStatus(task.status) is not TaskStatus.RUNNING:
+        raise ConflictError(
+            f"task {task_id} is {task.status}; `task recover` requires"
+            " running (the lost open-writer state). waiting_host has no"
+            " writer yet — `orx run` re-surfaces the assignment; a failed"
+            " task already closed its attempt — `orx task retry` is the"
+            " door",
+        )
+    attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+    if attempt is None:
+        raise ConflictError(
+            f"task {task_id} has no attempt to recover; `orx run` routes one"
+        )
+    if attempt.role != Role.WORKER.value:
+        raise ConflictError(
+            f"task {task_id}'s latest attempt {attempt.id} is a"
+            f" {attempt.role} attempt; recovery closes worker attempts"
+        )
+    if attempt.driver != "host":
+        raise ConflictError(
+            f"task {task_id}'s latest attempt {attempt.id} is driver"
+            f" {attempt.driver}; in-slice drivers finish inside `orx run`"
+            " and are recovered by their own failure path"
+        )
+    if attempt.ended_at is not None:
+        raise ConflictError(
+            f"task {task_id}'s attempt {attempt.id} is already closed"
+            f" (result {attempt.result!r}); `orx task retry` reopens dispatch"
+        )
+    if session_ref is not None and attempt.session_ref is None:
+        store.attempt_update(attempt.id, session_ref=session_ref)
+        attempt = store.attempt_get(attempt.id)
+    facts_line = _observed_facts_line(project, attempt)
+    reason = f"recovered: {fact}; {facts_line}"
+    store.attempt_update(
+        attempt.id, ended_at=db_now(), result="failed", failure_reason=reason,
+    )
+    machine.transition(
+        store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+        reason=reason, failure_reason=reason,
+    )
+    machine.transition(
+        store, revision.id, task.task_id, "retry", TaskStatus.RUNNABLE,
+        reason=(
+            "recovery on operator-confirmed termination; `orx run` routes a"
+            " fresh attempt"
+        ),
+    )
+    store.task_event_add(
+        revision.id, task.task_id, "running", "runnable", "task_recovered",
+        reason=reason,
+    )
+    refresh(store, goal, run)
+    return {
+        "task": task.task_id,
+        "status": store.task_get(revision.id, task.task_id).status,
+        "closed_attempt": attempt.id,
+        "termination_fact": fact,
+        "failure_reason": reason,
+        "next": (
+            "`orx run` routes a fresh attempt (new attempt id, new nonce);"
+            " the recovered attempt's late deliveries and reports are"
+            " refused as stale/closed"
+        ),
+        "contract": (
+            "single writer: the confirmed-terminated attempt was closed"
+            " before the task reopened for dispatch; its late completions"
+            " are rejected as stale and its reports as attempt_closed —"
+            " an old nonce never overwrites the new attempt"
+        ),
+    }
+
+
+def task_note(project: Project, task_id: str, kind: str, detail: str,
+              attempt_id: int | None = None) -> dict:
+    """Append one operator note to a task's history (G009 T006). The
+    append-only channel for exactly two kinds:
+
+    - ``shared_failure``: the controller and the worker share one failure
+      domain (e.g. the same quota account) and both are down. The note
+      records the fact and the documented recovery entry; the state stays
+      EXPLAINABLY PARKED — the open attempt keeps ownership, its late
+      delivery stays acceptable, nothing auto-continues, and the note
+      changes no task state.
+    - ``correction``: corrective evidence for a misreported record (the
+      a130 pattern). The correction APPENDS a task event that references
+      the original attempt and quotes its recorded result and failure
+      reason verbatim; the stored history is never edited — no SQL rewrite,
+      ever.
+
+    Both kinds write exactly one task event and nothing else: no status
+    transition, no attempt change, no verification row, no usage."""
+    kind_clean = (kind or "").strip()
+    # The recovery hint and the controller skill spell the kind with a
+    # hyphen (--kind shared-failure); the recorded event vocabulary is the
+    # identifier form. Both spellings name the same kind — the input is
+    # normalized, never rejected for the separator.
+    kind_clean = kind_clean.replace("-", "_")
+    if kind_clean not in OPERATOR_NOTE_KINDS:
+        raise _recovery_input_error(
+            "note_kind_invalid",
+            f"--kind must be one of {', '.join(OPERATOR_NOTE_KINDS)}"
+            " (hyphen or underscore spelling both accepted;"
+            f" got {(kind or '').strip()!r}); the operator-note vocabulary"
+            " is closed",
+        )
+    detail_clean = (detail or "").strip()
+    if not detail_clean or len(detail_clean) > 512:
+        raise _recovery_input_error(
+            "note_detail_invalid",
+            "--detail must be 1-512 characters after stripping whitespace"
+            f" (got {len(detail_clean)}); a note without its fact is noise",
+        )
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    status = task.status
+    if kind_clean == "correction":
+        if attempt_id is None:
+            raise _recovery_input_error(
+                "note_attempt_required",
+                "a correction must name the attempt whose record it"
+                " corrects: pass --attempt <id> (the original record is"
+                " quoted verbatim and never edited)",
+            )
+        try:
+            original = store.attempt_get(attempt_id)
+        except NotFoundError:
+            raise NotFoundError(
+                f"attempt {attempt_id} not found (task {task_id})"
+            ) from None
+        if original.task_id != task.task_id:
+            raise ConflictError(
+                f"attempt {attempt_id} belongs to task {original.task_id},"
+                f" not {task.task_id}; a correction references a record of"
+                " the task it corrects"
+            )
+        recorded = (
+            f"attempt {original.id} (recorded: result={original.result!r},"
+            f" failure_reason={original.failure_reason!r})"
+        )
+        reason = f"correction for {recorded}: {detail_clean}"
+        event = "record_correction"
+    else:
+        reason = f"shared failure domain parked: {detail_clean}; {_SHARED_FAILURE_ENTRY}"
+        event = "shared_failure_parked"
+    store.task_event_add(
+        revision.id, task.task_id, status, status, event, reason=reason,
+    )
+    refresh(store, goal, run)
+    result = {
+        "task": task.task_id,
+        "status": status,
+        "kind": kind_clean,
+        "event": event,
+        "recorded": reason,
+        "history_edited": False,
+    }
+    if kind_clean == "shared_failure":
+        result["parked"] = True
+        result["recovery_entry"] = _SHARED_FAILURE_ENTRY
+    return result
 
 
 # ---------------------------------------------------------------------------

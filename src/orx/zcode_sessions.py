@@ -181,3 +181,112 @@ def first_session_id(result: dict) -> str | None:
     if result.get("decision") == "unique":
         return result["candidates"][0]["session_id"]
     return None
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def session_facts(session_id: str, db: str | None = None) -> dict:
+    """Read-only terminal-fact observation for ONE zcode session (G009 T006).
+
+    What the a130 incident (2026-10-07) needed and lacked: an independently
+    callable read of the session's own facts — created, last activity,
+    archived, model-request count, Edit/Write tool-call counts — every fact
+    carrying its source and its ORIGINAL value (epoch milliseconds;
+    timezone-neutral as recorded, never re-zoned by this reader).
+
+    This is observation, never judgement:
+
+    - ``verdict`` is always None. No liveness claim, no death claim; "the
+      session has had no activity since X" is a fact, not "the worker is
+      dead", and silence in the ORX heartbeat channel is a DIFFERENT fact
+      that this function does not even read.
+    - The zcode database is opened read-only (mode=ro + query_only) and is
+      never written, migrated, or checkpointed.
+    - Schemas vary (real installs and test stand-ins differ): a fact whose
+      column or table the installed database lacks is named in
+      ``unreadable`` and simply absent from ``facts`` — it is never guessed
+      or filled from another source.
+
+    Raises ZcodeDbUnavailable when the database is absent/unreadable; a
+    session id that matches no row returns ``found: False`` with empty
+    facts (an honest "no such session", not an error).
+    """
+    path = zcode_db_path(db)
+    conn = _open_ro(path)
+    try:
+        session_cols = _columns(conn, "session")
+        part_cols = _columns(conn, "part")
+        row = conn.execute(
+            "SELECT * FROM session WHERE id = ?", (session_id,)
+        ).fetchone() if "id" in session_cols else None
+        base = {
+            "session_id": session_id,
+            "verdict": None,
+            "basis": (
+                "read-only lookup on the zcode session database (mode=ro,"
+                " query_only): observation facts with sources, never a"
+                " liveness or death judgment"
+            ),
+        }
+        if row is None:
+            return {**base, "found": False, "facts": {}, "unreadable": []}
+        facts: dict[str, dict] = {}
+        unreadable: list[str] = []
+        for name, column in (
+            ("created_ms", "time_created"),
+            ("last_activity_ms", "time_updated"),
+            ("archived_ms", "time_archived"),
+        ):
+            if column in session_cols:
+                # A readable NULL (e.g. never archived) stays a fact with
+                # value None; only a missing column is 'unreadable'.
+                facts[name] = {"value": row[column],
+                               "source": f"zcode.session.{column}"}
+            else:
+                unreadable.append(name)
+        if "time_created" in part_cols:
+            last_part = conn.execute(
+                "SELECT MAX(time_created) AS m FROM part WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            facts["last_part_ms"] = {
+                "value": last_part["m"] if last_part is not None else None,
+                "source": "zcode.part.time_created (max)",
+            }
+        else:
+            unreadable.append("last_part_ms")
+        if "data" in part_cols:
+            try:
+                counts: dict[str, int] = {}
+                for r in conn.execute(
+                    "SELECT json_extract(data, '$.type') AS t,"
+                    " json_extract(data, '$.tool') AS tool, count(*) AS n"
+                    " FROM part WHERE session_id = ? GROUP BY t, tool",
+                    (session_id,),
+                ):
+                    if r["t"] == "step-finish":
+                        counts["model_steps"] = counts.get("model_steps", 0) + r["n"]
+                    elif r["t"] == "tool" and r["tool"] == "Edit":
+                        counts["edit_calls"] = counts.get("edit_calls", 0) + r["n"]
+                    elif r["t"] == "tool" and r["tool"] == "Write":
+                        counts["write_calls"] = counts.get("write_calls", 0) + r["n"]
+                for name, source in (
+                    ("model_steps", "zcode.part type=step-finish count"),
+                    ("edit_calls", "zcode.part type=tool tool=Edit count"),
+                    ("write_calls", "zcode.part type=tool tool=Write count"),
+                ):
+                    if name in counts:
+                        facts[name] = {"value": counts[name], "source": source}
+                    else:
+                        facts[name] = {"value": 0, "source": source}
+            except sqlite3.OperationalError:
+                # json1 unavailable in this build: the counts are honestly
+                # unreadable, never zero-filled.
+                unreadable.extend(("model_steps", "edit_calls", "write_calls"))
+        else:
+            unreadable.extend(("model_steps", "edit_calls", "write_calls"))
+        return {**base, "found": True, "facts": facts, "unreadable": unreadable}
+    finally:
+        conn.close()

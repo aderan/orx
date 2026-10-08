@@ -316,16 +316,51 @@ more.
    `orx task complete <id> --attempt <id> --evidence <file>`. A stale or
    missing report never invalidates the late delivery: it is still
    accepted.
-2. Only if the original is confirmed dead — a decision you make and own;
-   ORX never decides it: `orx task fail <id> --reason "<why>"` then
-   `orx task retry <id>` — the next `orx run` routes a fresh attempt.
+2. Read the terminal facts before judging anything:
+   `orx task observe <id>` — the independently callable, read-only
+   diagnostic. It binds the facts to session/attempt/nonce with a source
+   on each (session created / last activity / archived, model steps, edit
+   and write counts — original epoch values, never re-zoned), preserves
+   the claim facts, and holds three clocks apart: the real failure time
+   (session-side last activity), the observation time (the last report's
+   received_at plus the read moment), and the closure time (the attempt's
+   ended_at). It is never a verdict: an overdue report window AND session
+   activity a minute ago coexist as facts; the wall-clock span of a dead
+   attempt says nothing about model runtime. It writes nothing — not to
+   ORX state, not to the zcode database.
+3. Only if the original is confirmed dead — a decision you make and own;
+   ORX never decides it: close the lost writer with
+   `orx task recover <id> --termination-fact "<the confirmed termination
+   fact>"` — one explicit operator step that closes the terminated
+   attempt and reopens the task for dispatch. The termination fact is
+   required input (ORX supplies none of its own), and it is recorded
+   next to the machine-read facts — claim time, session, edit and write
+   counts, heartbeat window, closure moment — so the recorded closure can
+   never again contradict the claim/change evidence it sits on.
+   Composing the same two moves by hand — `orx task fail <id> --reason
+   "<why>"` then `orx task retry <id>` — stays available. The next
+   `orx run` routes a fresh attempt with a fresh nonce.
    The new attempt's window starts `unknown`; the old attempt's further
    reports are rejected (`attempt_closed` / `attempt_superseded`) and its
    late deliveries are rejected as stale.
-3. Never start a second subagent for the same task while its attempt is
+4. Never start a second subagent for the same task while its attempt is
    open: shared working directory, concurrent writers corrupt the work.
    ORX enforces this (late completions of the old attempt are rejected as
    stale); do not try to work around it.
+5. When the controller and the worker share one failure domain (e.g. the
+   same provider quota account) and both are down: record the fact with
+   `orx task note <id> --kind shared-failure --detail "<fact>"` and stay
+   parked. The note explains the state; the open attempt keeps ownership
+   and its late delivery stays acceptable; nothing continues on its own —
+   when the shared domain recovers, the original worker may still
+   deliver, and only a confirmed termination fact opens
+   `orx task recover`. Without a live recovery executor, an explainably
+   parked task beats a wrong automatic continuation.
+6. A misreported record is corrected by appending, never by editing
+   history: `orx task note <id> --kind correction --attempt <attempt>
+   --detail "<corrective evidence>"` appends an event that quotes the
+   original attempt's recorded result and failure reason verbatim. Do not
+   edit `.orx/state.db` by hand — no SQL rewrites, ever.
 
 ## Evidence file (structured delivery result)
 

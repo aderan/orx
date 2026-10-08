@@ -10,6 +10,45 @@
 
 ### G009/R009 轮次记录
 
+- **T006（2026-10-08 交付，attempt 151；接续 attempt 150 的配额中断半成品）**：
+  补齐宿主故障事实、可信观察与安全恢复入口。
+  本任务第一次派发（attempt 150）自身成为活体证据：claim 22:41:40 +0800、
+  心跳 #1 22:41:55、会话最后活动（真实故障时刻）22:55:05.238（43 模型步/9 Edit/
+  1 Write，即树中半成品）、GLM 1308 5h 窗口击中 worker 与控制器同一 provider 账号
+  （重置串 "2026-10-07 23:26:04" 无时区逐字保留，恢复时刻未知=跨 slice 不自动放开），
+  控制器（launcher 直接观察进程退出）于 08:32 窗口重置后 fail+retry 改派 151——
+  关闭落后故障 9h36m55s，墙钟跨度不代表模型运行时（13m25s）。已记录 reason 近似
+  "~22:42"，机器读取精化 22:55:05，原记录保留（correction 语义）。
+  四条缝：(1) `zcode_sessions.session_facts` 单会话只读终态事实
+  （created/last_activity/archived/last_part epoch 原值从不再定时区 +
+  model_steps/edit/write 计数，列缺失=json1 缺失如实 unreadable 绝不补零；
+  每事实带来源，verdict 恒 None）；(2) `dispatch.task_observe` 任意状态可用的
+  只读诊断（session_ref 优先、nonce 只读回退不落库；claim/progress/closure 三组
+  事实+来源；activity_after_last_report 布尔事实；separation 显式三钟
+  真实故障/观察/关闭；全路径零写入，测试钉 ORX 状态快照+zcode 库字节不变）；
+  (3) `dispatch.task_recover` 显式恢复（必须操作者确认终止事实 1-512 字符，
+  空白=usage exit 2，ORX 永不判死永不由心跳静默认定死亡；仅 running+开放 host
+  worker attempt；failure_reason=操作者事实+机器读取行 claimed_at/session/
+  last_activity/edits/writes/model_steps/heartbeat/closed_at——a130 误报防护，
+  "never claimed/no changes" 再不能与证据共存；先关闭再开 dispatch=单 writer，
+  迟到交付 stale、迟到报告 closed/superseded、旧 nonce 永不覆盖新 attempt）；
+  (4) `dispatch.task_note` 封闭词表追加通道（shared_failure 同故障域可解释停留：
+  开放 attempt 保持所有权、迟到交付仍可受理、无自动继续；correction 追加引用
+  原 attempt 逐字引用其记录、绝不 SQL 改库；均只写一条 task event 零状态移动）。
+  门禁修正：`task_complete` 引用 attempt 时身份 stale 诊断先于状态门
+  （证据校验先于身份的既有排序契约不变；未引用路径不变）；心跳门禁顺序不动
+  （冻结——非 running 任务状态门先拒 task_not_running，与既有 e2e 先例一致，
+  新 attempt claim 后才 attempt_closed）。CLI 三面 observe/recover/note 与
+  run 恢复提示一致落地（输入类 exit 2：termination_fact_invalid/note_kind_invalid/
+  note_detail_invalid/note_attempt_required；--json error={reason,message} 与
+  heartbeat §5 同律共用渲染）。skills/orx-controller 恢复章节重排 1-6 步
+  （有界等待→先读事实→确认死亡才 recover 需 termination fact→绝不第二 writer→
+  同故障域停留→correction 追加），红线逐行测试钉住。docs/recovery-hardening-report.md
+  建立（本 Goal 实施报告，T006 条目含三次钟表、attempt/session/nonce、配置指纹、
+  用量来源、缺失字段）。tests/test_host_recovery_facts.py 17 例全确定性（伪 zcode
+  库+冻结时钟，零付费调用）；门禁三文件 73 passed；全量 984 passed、0 xfail
+  （基线 967+17）。
+
 - **T005（2026-10-07 交付）**：校准额度故障域、退避时间与未知状态的路由规则。
   事故校准三线（docs/cursor-system-analysis-2026-10-07.md 的事实基线）：
   (1) **时区诚实**——`quota.provider_quota_reset` 返回远端 provider 打印的重置时刻

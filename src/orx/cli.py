@@ -1288,22 +1288,9 @@ def task_check(
 
 
 def _render_heartbeat_rejected(exc: ORXError, json_out: bool) -> None:
-    """Heartbeat rejections carry a machine reason (contract §5): the --json
-    envelope's error is {reason, message}; the human output states the same
-    two facts. reason is None only for failures outside the heartbeat table
-    (e.g. a broken project), which still exit 1."""
-    reason = getattr(exc, "reason", None)
-    if json_out:
-        typer.echo(
-            json.dumps(
-                {"ok": False, "error": {"reason": reason, "message": str(exc)}},
-                indent=2,
-            )
-        )
-    else:
-        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
-        if reason:
-            typer.echo(f"  reason: {reason}", err=True)
+    """Heartbeat rejections share the reason discipline of the recovery
+    surfaces (contract §5); see _render_reason_rejected."""
+    _render_reason_rejected(exc, json_out)
 
 
 @task_app.command("heartbeat")
@@ -1553,6 +1540,230 @@ def task_retry(
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"task {result['task']}: runnable again; `orx run` will route a new attempt")
+
+
+# G009 T006: host failure facts, trusted observation, safe recovery entry.
+# The three surfaces share the heartbeat rejection discipline: a machine
+# reason rides on the exception, the --json envelope's error is
+# {reason, message}, the human output states the same two facts, and a
+# reason in dispatch.RECOVERY_INPUT_REASONS is a usage error (exit 2).
+
+
+def _render_reason_rejected(exc: ORXError, json_out: bool) -> None:
+    """Rejections with a machine reason (heartbeat §5, recovery surfaces):
+    the --json envelope's error is {reason, message}; the human output
+    states the same two facts. reason is None only for failures outside
+    the surface's table (e.g. a broken project), which still exit 1."""
+    reason = getattr(exc, "reason", None)
+    if json_out:
+        typer.echo(
+            json.dumps(
+                {"ok": False, "error": {"reason": reason, "message": str(exc)}},
+                indent=2,
+            )
+        )
+    else:
+        typer.secho(f"error: {exc}", fg=typer.colors.RED, err=True)
+        if reason:
+            typer.echo(f"  reason: {reason}", err=True)
+
+
+def _recovery_exit(exc: ORXError) -> None:
+    """Usage-class input rejections exit 2; every other refusal exits 1."""
+    code = 1
+    if getattr(exc, "reason", None) in dispatch.RECOVERY_INPUT_REASONS:
+        code = 2
+    raise typer.Exit(code) from None
+
+
+@task_app.command("observe")
+@handle_errors
+def task_observe(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Read-only terminal-fact observation for the task's current attempt.
+
+    Independently callable in any task status (the post-mortem entry): ORX
+    state (claim facts, heartbeat window, closure) plus the zcode session's
+    own facts (created / last activity / archived, model steps, edit and
+    write counts) — every fact with its source and its original value,
+    never re-zoned. Renders NO verdict: heartbeat silence is not death,
+    session activity is not life, and the real failure, observation, and
+    closure times stay three distinct clocks. Writes nothing — not to ORX
+    state and not to the zcode database (a nonce lookup reports the
+    session id, it never stores it).
+
+    Exit codes: 0 observation rendered; 1 task not found.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_observe(project, task_id)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        attempt = result["attempt"]
+        typer.echo(
+            f"task {result['task']} [{result['status']}] read_at"
+            f" {result['read_at']}"
+        )
+        if attempt is None:
+            typer.echo("  attempt: none")
+        else:
+            typer.echo(
+                f"  attempt {attempt['id']} ({attempt['role']}/{attempt['driver']},"
+                f" {'open' if attempt['open'] else 'closed'})"
+                f"  nonce: {attempt['nonce']}"
+            )
+        claim = result["claim"]
+        typer.echo(
+            f"  claim: {claim['claimed_at'] or 'never claimed'}"
+            f"  session_ref: {claim['session_ref'] or 'none'}"
+        )
+        session = result["session"]
+        if not session["available"]:
+            typer.echo(f"  session: unavailable ({session.get('error')})")
+        elif not session.get("found"):
+            typer.echo(f"  session: none found (lookup: {session['lookup']})")
+        else:
+            typer.echo(f"  session: {session['session_id']} (lookup: {session['lookup']})")
+            for name, fact in session["facts"].items():
+                typer.echo(f"    {name}: {fact['value']}  [{fact['source']}]")
+            for name in session["unreadable"]:
+                typer.echo(f"    {name}: unreadable")
+        progress = result["progress"]
+        typer.echo(
+            f"  heartbeat window: {progress['state']}"
+            f" (last report {progress['received_at'] or 'none'})"
+        )
+        if result["activity_after_last_report"] is not None:
+            typer.echo(
+                "  session activity after last report:"
+                f" {result['activity_after_last_report']}"
+            )
+        closure = result["closure"]
+        typer.echo(
+            f"  closure: {closure['ended_at'] or 'still open'}"
+            f"  result: {closure['result'] or 'none'}"
+        )
+        for note in result["notes"]:
+            typer.echo(f"  note: [{note['event']}] {note['reason']}")
+        typer.echo(f"  {result['separation']}")
+        typer.echo("  verdict: none (observation only)")
+
+
+@task_app.command("recover")
+@handle_errors
+def task_recover(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    termination_fact: str = typer.Option(
+        ...,
+        "--termination-fact",
+        help=(
+            "The confirmed termination fact (1-512 characters). ORX never "
+            "decides death and never treats heartbeat silence as one — the "
+            "operator supplies the fact and owns the decision; it is "
+            "recorded next to the machine-read facts."
+        ),
+    ),
+    session: Optional[str] = SessionOpt,
+    json_out: bool = JsonOpt,
+) -> None:
+    """Explicitly recover a lost host worker attempt (close + reopen).
+
+    One operator step for the parked-writer state a session break leaves:
+    close the terminated attempt — recording the termination fact AND the
+    machine-read facts (claim time, session, edits/writes, heartbeat
+    window, closure moment), so a closure can never again claim 'never
+    claimed / no changes' while claim and change evidence exists — then
+    reopen the task for dispatch. Single writer: the attempt is closed
+    before the task reopens; its late deliveries are rejected as stale and
+    its reports as closed. Requires the task to be running under an open
+    host worker attempt.
+
+    Exit codes: 0 recovered; 1 state refusal (not running, no open host
+    worker attempt, already closed); 2 input validation
+    (termination_fact_invalid) or a click usage error.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_recover(
+            project, task_id, termination_fact, session=session,
+        )
+    except ORXError as exc:
+        _render_reason_rejected(exc, json_out)
+        _recovery_exit(exc)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(
+            f"task {result['task']}: {result['status']} — attempt"
+            f" {result['closed_attempt']} closed on the confirmed"
+            " termination fact"
+        )
+        typer.echo(f"  recorded: {result['failure_reason']}")
+        typer.echo(f"  next: {result['next']}")
+
+
+@task_app.command("note")
+@handle_errors
+def task_note(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    kind: str = typer.Option(
+        ...,
+        "--kind",
+        help=(
+            "shared-failure (controller and worker share one failure domain, "
+            "e.g. the same quota account: record the fact and stay parked; "
+            "underscore spelling shared_failure also accepted) or correction "
+            "(append corrective evidence for a misreported record; requires "
+            "--attempt, quotes the original verbatim, never edits it)."
+        ),
+    ),
+    detail: str = typer.Option(
+        ...,
+        "--detail",
+        help="The fact being recorded, 1-512 characters after stripping.",
+    ),
+    attempt: Optional[int] = typer.Option(
+        None,
+        "--attempt",
+        help="The attempt whose record a correction corrects (required for --kind correction).",
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Append one operator note to the task's history (never an edit).
+
+    The append-only channel for two facts: a shared failure domain parking
+    (the state stays explainably parked — the open attempt keeps ownership,
+    its late delivery stays acceptable, nothing auto-continues) and a
+    correction of misreported history (the correction APPENDS an event that
+    references the original attempt and quotes its recorded result and
+    failure reason verbatim; the stored history is never edited — no SQL
+    rewrite, ever). Neither kind changes task status, attempts,
+    verification, or usage.
+
+    Exit codes: 0 note appended; 1 task/attempt not found or foreign
+    attempt; 2 input validation (note_kind_invalid, note_detail_invalid,
+    note_attempt_required) or a click usage error.
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_note(
+            project, task_id, kind, detail, attempt_id=attempt,
+        )
+    except ORXError as exc:
+        _render_reason_rejected(exc, json_out)
+        _recovery_exit(exc)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        typer.echo(f"task {result['task']}: note appended ({result['kind']})")
+        typer.echo(f"  recorded: {result['recorded']}")
+        typer.echo("  history_edited: False")
 
 
 # ---------------------------------------------------------------------------
