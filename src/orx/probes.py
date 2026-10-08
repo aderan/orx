@@ -45,9 +45,12 @@ Snapshots persist at <user data dir>/probes/<harness>.json.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -330,4 +333,489 @@ def doctor_harness_checks() -> list[tuple[str, str, str]]:
             out.append((spec.binary, OK,
                         f"found at {path}; flags present; auth {auth}; "
                         "operational probe not_run"))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# G009 T007: execution-capability preflight and permission fingerprint
+#
+# The 2026-10-07 incident: controller-side PATH/denylist checks and help
+# probes could not see the CLI agents' INTERNAL execution permissions. The
+# real config had approvalMode=allowlist with shell allowlist Shell(ls)
+# only, sandbox disabled, argv --trust but no --force — `ls` ran while
+# uv/orx/pytest were denied inside the agent. --trust (workspace trust),
+# --force/--yolo, approval mode, sandbox, and project hooks are SEPARATE
+# axes; none implies any other.
+#
+# This preflight reads the harness's REAL current config (read-only; the
+# same files the CLI itself reads) and fingerprints the effective axes.
+# It states exactly what it can prove — the CLI identity and the axis
+# values with their sources — and explicitly what it can never prove:
+# internal shell execution. It never writes the harness config, never
+# launches a completion, and never clears quota cooldowns, quota
+# exhaustions, or manual overrides (probe success is not quota
+# sufficiency; T005 semantics).
+
+PERMISSION_AXES: tuple[str, ...] = (
+    "trust",          # workspace trust (--trust for cursor; per-project config for codex)
+    "force_yolo",     # --force/--yolo (cursor) / the never-passed bypass flag (codex)
+    "approval_mode",  # the harness's own approval policy
+    "sandbox",        # sandbox mode (argv for codex; config for cursor)
+    "project_hooks",  # harness-level hooks that intercept agent actions
+)
+
+PREFLIGHT_PROVES = (
+    "the harness CLI identity and version, and the effective permission "
+    "axes above, each with the source it was read from"
+)
+PREFLIGHT_CANNOT_PROVE = (
+    "internal shell execution inside the agent session: controller-side "
+    "PATH lookups, denylist checks, and help output are not in-agent "
+    "approval. This preflight also never clears quota cooldowns, quota "
+    "exhaustions, or manual overrides (probe success is not quota "
+    "sufficiency)"
+)
+PREFLIGHT_INVALIDATED_BY = (
+    "any bound axis value or source change, a config file mtime change, "
+    "a CLI binary/version change, a profile/model/effort change, a "
+    "workspace change, or a toolchain change"
+)
+
+
+def cursor_config_path() -> Path:
+    """The config file the `agent` CLI itself reads (located read-only;
+    never written by ORX)."""
+    return Path.home() / ".cursor" / "cli-config.json"
+
+
+def codex_home_dir() -> Path:
+    """CODEX_HOME > ~/.codex — the same discovery orx.quota uses."""
+    env = os.environ.get("CODEX_HOME")
+    return Path(env).expanduser() if env else Path.home() / ".codex"
+
+
+def _unknown_axis(source: str) -> dict:
+    return {"value": "unknown", "source": source}
+
+
+def _cursor_config_axes(config_path: Path) -> tuple[dict, dict, list[dict]]:
+    """(axes, axes_payload_for_digest, source_meta) from the real cursor
+    CLI config. Only the permission-relevant keys are ever read:
+    authInfo and the account caches are not opened at all, so no account
+    identifier can reach a record. A missing file or key is ``unknown`` —
+    never a default-allow and never a default-deny."""
+    axes: dict[str, dict] = {}
+    meta: dict = {"path": str(config_path)}
+    try:
+        raw = json.loads(config_path.read_text())
+    except FileNotFoundError:
+        meta["state"] = "absent"
+        raw = None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        meta["state"] = "unparseable"
+        raw = None
+    else:
+        meta["state"] = "read"
+        meta["mtime"] = config_path.stat().st_mtime
+
+    def finish() -> tuple[dict, dict, list[dict]]:
+        payload = {
+            "approval_mode": {
+                key: axes["approval_mode"].get(key)
+                for key in ("value", "shell_allow", "shell_deny")
+            },
+            "sandbox": axes["sandbox"].get("value"),
+        }
+        return axes, payload, [meta]
+
+    if not isinstance(raw, dict):
+        where = f"{meta['state']} config {config_path}"
+        for name in ("approval_mode", "sandbox"):
+            axes[name] = _unknown_axis(
+                f"{where}: no readable value (unknown, not defaulted)")
+        return finish()
+
+    approval = raw.get("approvalMode")
+    if isinstance(approval, str) and approval:
+        entry: dict = {"value": approval,
+                       "source": f"config {config_path} approvalMode"}
+        permissions = raw.get("permissions")
+        if isinstance(permissions, dict):
+            allow = permissions.get("allow")
+            deny = permissions.get("deny")
+            entry["shell_allow"] = allow if isinstance(allow, list) else []
+            entry["shell_deny"] = deny if isinstance(deny, list) else []
+        else:
+            entry["shell_allow"] = []
+            entry["shell_deny"] = []
+        axes["approval_mode"] = entry
+    else:
+        axes["approval_mode"] = _unknown_axis(
+            f"config {config_path} present, approvalMode key absent "
+            "(unknown, not defaulted)")
+
+    sandbox = raw.get("sandbox")
+    mode = sandbox.get("mode") if isinstance(sandbox, dict) else None
+    if isinstance(mode, str) and mode:
+        axes["sandbox"] = {
+            "value": mode,
+            "source": f"config {config_path} sandbox.mode "
+                      "(no --sandbox argv override)",
+        }
+    else:
+        axes["sandbox"] = _unknown_axis(
+            f"config {config_path} present, sandbox.mode key absent "
+            "(unknown, not defaulted)")
+    return finish()
+
+
+def _codex_config_axes(codex_home: Path,
+                       workspace: Path | None) -> tuple[dict, dict, list[dict]]:
+    """(axes, axes_payload_for_digest, source_meta) from the real codex
+    config.toml plus hooks.json. The hooks file contributes event NAMES
+    only — hook commands are never stored."""
+    config_path = codex_home / "config.toml"
+    hooks_path = codex_home / "hooks.json"
+    axes: dict[str, dict] = {}
+    meta: dict = {"path": str(config_path)}
+    data = None
+    try:
+        with open(config_path, "rb") as fh:
+            data = tomllib.load(fh)
+        meta["state"] = "read"
+        meta["mtime"] = config_path.stat().st_mtime
+    except FileNotFoundError:
+        meta["state"] = "absent"
+    except (tomllib.TOMLDecodeError, OSError):
+        meta["state"] = "unparseable"
+
+    if not isinstance(data, dict):
+        where = f"{meta['state']} codex config {config_path}"
+        axes["approval_mode"] = _unknown_axis(
+            f"{where}: no readable value (unknown, not defaulted)")
+        axes["trust"] = _unknown_axis(
+            f"{where}: workspace trust unreadable (unknown, not defaulted)")
+    else:
+        policy = data.get("approval_policy")
+        if isinstance(policy, str) and policy:
+            axes["approval_mode"] = {
+                "value": policy,
+                "source": f"config {config_path} approval_policy",
+            }
+        else:
+            axes["approval_mode"] = _unknown_axis(
+                f"config {config_path} present, approval_policy key absent "
+                "(unknown, not defaulted)")
+        trust = None
+        if workspace is not None:
+            projects = data.get("projects")
+            entry = (projects.get(str(workspace))
+                     if isinstance(projects, dict) else None)
+            if isinstance(entry, dict):
+                trust = entry.get("trust_level")
+        if isinstance(trust, str) and trust:
+            axes["trust"] = {
+                "value": trust,
+                "source": f"config {config_path} projects.{workspace} trust_level",
+            }
+        else:
+            axes["trust"] = _unknown_axis(
+                f"codex config {config_path} has no projects trust_level for "
+                f"{workspace or '(no workspace)'} (unknown, not defaulted)")
+
+    hooks_meta: dict = {"path": str(hooks_path)}
+    hooks_value: object = {"configured": False, "events": []}
+    hooks_source = f"{hooks_path} absent (no hooks configured)"
+    try:
+        raw_hooks = json.loads(hooks_path.read_text())
+    except FileNotFoundError:
+        hooks_meta["state"] = "absent"
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        hooks_meta["state"] = "unparseable"
+        hooks_value = "unknown"
+        hooks_source = f"{hooks_path} present but unparseable (unknown)"
+    else:
+        hooks_meta["state"] = "read"
+        hooks_meta["mtime"] = hooks_path.stat().st_mtime
+        events = raw_hooks.get("hooks") if isinstance(raw_hooks, dict) else None
+        if isinstance(events, dict) and events:
+            hooks_value = {"configured": True, "events": sorted(events)}
+            hooks_source = (f"{hooks_path} hooks event names "
+                            "(hook commands never stored)")
+    axes["project_hooks"] = {"value": hooks_value, "source": hooks_source}
+
+    payload = {
+        "approval_mode": axes["approval_mode"].get("value"),
+        "trust": axes["trust"].get("value"),
+        "project_hooks": hooks_value,
+    }
+    return axes, payload, [meta, hooks_meta]
+
+
+def _argv_axis_entries(harness: str, profile, role: str) -> dict:
+    """The argv-owned axes via the adapter mirrors (the adapters are the
+    source of truth; test_adapters pins the mirrors to real launch argv)."""
+    from orx.adapters import codex as codex_module
+    from orx.adapters import cursor as cursor_module
+
+    entries: dict[str, dict] = {}
+    if harness == "cursor":
+        mirror = cursor_module.permission_argv_axes(profile)
+        entries["trust"] = {
+            "value": True,
+            "source": "argv: the cursor adapter always passes --trust "
+                      "(workspace trust axis, not an approval mode)",
+        }
+        if profile is None:
+            entries["force_yolo"] = _unknown_axis(
+                "argv: no profile selected — --force/--yolo is "
+                "profile-driven (unknown, not defaulted)")
+        else:
+            entries["force_yolo"] = {
+                "value": mirror["force_yolo"],
+                "source": f"argv: --force/--yolo only when profile "
+                          f"{profile.name} sets force = {mirror['force_yolo']}",
+            }
+    else:
+        mirror = codex_module.permission_argv_axes(profile, role)
+        entries["force_yolo"] = {
+            "value": mirror["force_yolo"],
+            "source": "argv: the codex adapter never passes "
+                      "--dangerously-bypass-approvals-and-sandbox",
+        }
+        entries["sandbox"] = {
+            "value": mirror["sandbox"],
+            "source": f"argv: the codex adapter always passes "
+                      f"-s {mirror['sandbox']} for role {role}",
+        }
+    return entries
+
+
+def _toolchain_entries(check_commands) -> list[dict]:
+    """First tokens of the task's prescribed check commands, looked up on
+    the CONTROLLER's PATH. Explicitly framed as proof of nothing inside
+    the agent — the incident's exact confusion."""
+    entries = []
+    for command in check_commands:
+        token = command.strip().split()[0] if command.strip() else ""
+        entries.append({
+            "command": command,
+            "first_token": token,
+            "controller_path": shutil.which(token) if token else None,
+            "note": "controller-side PATH lookup only; this is not "
+                    "in-agent shell approval",
+        })
+    return entries
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _digest(value) -> str:
+    return "sha256:" + hashlib.sha256(
+        _canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _preflight_fingerprint(record: dict) -> str:
+    """Identity hash over everything the result binds: CLI identity,
+    profile/model/effort/role, the permission axes with their sources,
+    the workspace, the toolchain tokens, and the per-source axes digests.
+    The timestamp is deliberately outside the hash so an unchanged
+    environment reproduces the fingerprint; `probed_at` rides alongside."""
+    payload = {
+        "harness": record["harness"],
+        "cli": record["cli"],
+        "profile": record["profile"],
+        "model": record["model"],
+        "effort": record["effort"],
+        "role": record["role"],
+        "workspace": record["workspace"],
+        "axes": {
+            name: {"value": entry.get("value"), "source": entry.get("source")}
+            for name, entry in record["axes"].items()
+        },
+        "toolchain": [entry["first_token"] for entry in record["toolchain"]],
+        "sources": [[source["path"], source.get("axes_sha256")]
+                    for source in record["sources"]],
+    }
+    return "sha256:" + hashlib.sha256(
+        _canonical_json(payload).encode("utf-8")).hexdigest()[:32]
+
+
+def build_permission_preflight(
+    harness: str,
+    *,
+    profile=None,
+    role: str = "worker",
+    workspace: Path | None = None,
+    check_commands=(),
+) -> dict:
+    """Read the harness's REAL current permission config (read-only) and
+    fingerprint the effective axes. Raises KeyError for unknown harness
+    names; host-only/generic harnesses raise ValueError (nothing to
+    preflight). The record states its provable scope explicitly and never
+    claims internal shell execution, never stores secrets or account
+    identifiers (only axis values, sources, and digests), and never
+    touches quota/health state."""
+    spec = HARNESSES[harness]
+    if spec.host_only or spec.harness == "shell":
+        raise ValueError(
+            f"harness '{harness}' has no permission preflight ({spec.note}); "
+            "preflights apply to codex and cursor"
+        )
+    binary_path = shutil.which(spec.binary)
+    version = None
+    if binary_path is not None:
+        code, version_text = probe_argv(list(spec.version_argv), timeout=15)
+        if code == 0 and version_text:
+            version = version_text.splitlines()[0].strip()
+
+    argv_axes = _argv_axis_entries(harness, profile, role)
+    if harness == "cursor":
+        config_axes, payload, metas = _cursor_config_axes(cursor_config_path())
+        config_axes["project_hooks"] = _unknown_axis(
+            "no cursor project-hooks config location known to this ORX "
+            "version (unknown, not defaulted)")
+        payload["project_hooks"] = "unknown"
+        argv_owned = ("trust", "force_yolo")
+    else:
+        config_axes, payload, metas = _codex_config_axes(
+            codex_home_dir(), workspace)
+        argv_owned = ("force_yolo", "sandbox")
+
+    axes: dict[str, dict] = {}
+    for name in PERMISSION_AXES:
+        axes[name] = argv_axes[name] if name in argv_owned else config_axes[name]
+
+    for meta in metas:
+        meta["axes_sha256"] = _digest(payload)
+    record = {
+        "kind": "execution_preflight",
+        "harness": harness,
+        "profile": profile.name if profile is not None else None,
+        "model": profile.model if profile is not None else None,
+        "effort": profile.effort.value if profile is not None else None,
+        "role": role,
+        "workspace": str(workspace.resolve()) if workspace is not None else None,
+        "cli": {"binary": binary_path, "version": version},
+        "axes": axes,
+        "toolchain": _toolchain_entries(check_commands),
+        "proves": PREFLIGHT_PROVES,
+        "cannot_prove": PREFLIGHT_CANNOT_PROVE,
+        "invalidated_by": PREFLIGHT_INVALIDATED_BY,
+        "probed_at": _now(),
+        "sources": metas,
+    }
+    record["fingerprint"] = _preflight_fingerprint(record)
+    return record
+
+
+def preflight_path(harness: str, profile_name: str | None) -> Path:
+    """Where a (harness, profile) preflight persists, under the user data
+    dir next to the capability snapshots."""
+    slug = profile_name or "no-profile"
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in slug)
+    return user_data_dir() / "probes" / "preflight" / f"{harness}-{safe}.json"
+
+
+def load_preflight(harness: str, profile_name: str | None) -> dict | None:
+    try:
+        return json.loads(preflight_path(harness, profile_name).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def persist_preflight(record: dict) -> Path:
+    path = preflight_path(record["harness"], record.get("profile"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    return path
+
+
+def preflight_invalid_reasons(stored: dict | None, current: dict) -> list[str]:
+    """Why a stored preflight no longer binds. Empty list means the prior
+    result is still valid; a missing prior result yields an empty list
+    (there is nothing to invalidate — the caller reports absence itself).
+    Invalidation fires on a fingerprint change (a bound axis value or
+    source, the CLI identity, profile/model/effort, workspace, or
+    toolchain changed) and on a config file mtime change even when the
+    axes-relevant content hash is equal. Invalidation NEVER auto-clears
+    anything: it only retires the prior preflight's claim."""
+    if stored is None:
+        return []
+    reasons: list[str] = []
+    if stored.get("fingerprint") != current.get("fingerprint"):
+        reasons.append(
+            "fingerprint differs: a bound axis/source, the CLI identity, "
+            "the profile/model/effort, the workspace, or the toolchain "
+            "changed")
+    current_by_path = {s.get("path"): s for s in current.get("sources", [])}
+    for source in stored.get("sources", []):
+        match = current_by_path.get(source.get("path"))
+        if match is not None and source.get("mtime") != match.get("mtime"):
+            reasons.append(
+                f"config mtime changed for {source.get('path')} "
+                "(content hash equal; the touch still retires the prior "
+                "result)")
+    return reasons
+
+
+def doctor_permission_checks() -> list[tuple[str, str, str]]:
+    """(name, state, detail) triples for doctor: the harness permission
+    axes as read from the real CLI config files. Visibility only — an
+    absent or unparseable config is a warning (unknown, never defaulted,
+    never a failure), and nothing here claims internal shell execution
+    will succeed. Per-profile argv axes (trust/force) and fingerprints
+    belong to `orx agent preflight`, not doctor."""
+    from orx.doctor import OK, WARN
+
+    out: list[tuple[str, str, str]] = []
+    cursor_axes, _, cursor_metas = _cursor_config_axes(cursor_config_path())
+    meta = cursor_metas[0]
+    if meta["state"] == "read":
+        approval = cursor_axes["approval_mode"]
+        sandbox = cursor_axes["sandbox"]
+        allow = ", ".join(str(item) for item in approval.get("shell_allow", [])) or "none"
+        deny = ", ".join(str(item) for item in approval.get("shell_deny", [])) or "none"
+        out.append((
+            "permissions:cursor", OK,
+            f"approval {approval['value']} (shell allow: {allow}; deny: {deny}); "
+            f"sandbox {sandbox['value']}; trust/force are per-profile argv "
+            "axes (`orx agent preflight cursor --profile NAME`); this "
+            "proves nothing about in-agent shell execution",
+        ))
+    else:
+        out.append((
+            "permissions:cursor", WARN,
+            f"{meta['state']} {cursor_config_path()}: approval/sandbox "
+            "unknown (not defaulted); per-profile argv axes via "
+            "`orx agent preflight cursor --profile NAME`",
+        ))
+
+    codex_axes, _, codex_metas = _codex_config_axes(codex_home_dir(), None)
+    meta = codex_metas[0]
+    config_path = codex_home_dir() / "config.toml"
+    if meta["state"] == "read":
+        approval = codex_axes["approval_mode"]["value"]
+        hooks = codex_axes["project_hooks"]["value"]
+        if isinstance(hooks, dict) and hooks.get("configured"):
+            events = ", ".join(hooks.get("events", []))
+            hooks_text = f"hooks configured ({events})"
+        else:
+            hooks_text = "no hooks configured"
+        out.append((
+            "permissions:codex", OK,
+            f"approval {approval}; {hooks_text}; workspace trust and the "
+            "-s sandbox axis are per-launch facts (`orx agent preflight "
+            "codex --profile NAME`); this proves nothing about in-agent "
+            "shell execution",
+        ))
+    else:
+        out.append((
+            "permissions:codex", WARN,
+            f"{meta['state']} {config_path}: approval unknown (not "
+            "defaulted); per-launch axes via `orx agent preflight codex "
+            "--profile NAME`",
+        ))
     return out

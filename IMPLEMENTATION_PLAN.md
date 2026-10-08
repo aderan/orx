@@ -10,6 +10,45 @@
 
 ### G009/R009 轮次记录
 
+- **T007（2026-10-08 交付，attempt 153）**：增加执行能力预检与验证结果的配置指纹。
+  事故缝隙（a131/a132/a133）：控制器侧 PATH/denylist 检查与配置文件读取被当成
+  "worker 能执行 checks"——真实 Cursor 配置 approvalMode=allowlist、shell allowlist
+  仅 Shell(ls)、sandbox disabled，argv 有 --trust 无 --force，`ls` 能跑而
+  uv/orx/pytest 在 agent 内被拒。落地四件：(1) `probes.build_permission_preflight`
+  只读读取 harness 自己读的真实配置（cursor `~/.cursor/cli-config.json`；
+  codex `CODEX_HOME`/`~/.codex` 的 config.toml+hooks.json），五轴分别取值各带来源：
+  trust / force|yolo / approval_mode / sandbox / project_hooks——argv 轴经
+  adapters 的 `permission_argv_axes` 镜像（cursor --trust 恒真、--force 仅
+  profile.force、--sandbox 从不传；codex -s 按角色 workspace-write/read-only、
+  bypass 旗标从不传、trust 在 projects 表），config 轴带文件路径与键名；
+  缺文件/缺键=unknown 绝不默认允许或拒绝；cursor authInfo 与账号缓存根本
+  不打开，codex hooks 只存事件名不存命令，存储仅指纹+轴值+来源。(2) 明示
+  可证范围：proves=CLI 身份+版本+各轴值与来源；cannot_prove=agent 会话内部
+  shell 执行（控制器侧 PATH、denylist、help 输出都不是 in-agent 审批），
+  且绝不自动清除额度 cooldown/exhaustion 或人工 override（T005 缝合，
+  build 全程零健康写入，测试钉 exhausted+naive reset+override=1 不变）。
+  (3) 指纹 sha256 绑定 CLI 二进制+版本/profile/model/effort/role/五轴值与
+  来源/workspace/--check 首 token（控制器侧 PATH 命中显式标注证明力为零）/
+  各源 axes 内容摘要；probed_at 随记录但不在哈希内（同环境可复现）；
+  失效=指纹变化或任一源 mtime 变化（touch 同内容也退役先前结果），
+  `preflight_invalid_reasons` 给出原因，持久化于
+  `<data>/probes/preflight/<harness>-<profile>.json`。(4) CLI `orx agent
+  preflight HARNESS [--profile --role --check]`（prior 有效性对照渲染，
+  --json 带 prior/prior_valid/invalid_reasons/persisted_path）与 doctor
+  `permissions:cursor|codex` 检查（可读=ok、缺失=warn，逐轴展示并声明
+  "proves nothing about in-agent shell execution"；byte-compat 的
+  doctor_harness_checks 未动）。测试 16 例新增先红后绿：test_probes 11
+  （事故形状指纹+无执行声明、秘密/账号标识不入库、四轴独立翻转、缺配置
+  unknown 不默认、控制器 PATH 命中≠内部 shell、help/探针成功≠权限、
+  指纹全绑定失效矩阵+持久化、额度/override 免疫、shell/zcode 拒绝、
+  codex 真实轴+角色、doctor 检查）、test_adapters 2（两 adapter 镜像与
+  真实 launch argv 逐旗标对账）、test_cli 3（命令端到端含失效对照、
+  profile 错误路径、未知 harness）。真机只读冒烟：cursor 实配置读出
+  allowlist/Shell(ls)/disabled/--trust-adapter/--force-profile 四轴分离；
+  codex 读出 projects trust=trusted、approval_policy 缺失=unknown、
+  hooks 八事件名。门禁两文件 90 passed；全量 1000 passed、0 xfail
+  （基线 984+16），docs/m1.2-report.md 全量重跑后按约定还原。
+
 - **T006（2026-10-08 交付，attempt 151；接续 attempt 150 的配额中断半成品）**：
   补齐宿主故障事实、可信观察与安全恢复入口。
   本任务第一次派发（attempt 150）自身成为活体证据：claim 22:41:40 +0800、
@@ -166,13 +205,13 @@
 **Goal**: 完成 T004–T006。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: In Progress（R009：T004–T005 已交付，见上方轮次记录；T006 待做）
+**Status**: In Progress（R009：T004–T006 已全部交付，见上方轮次记录；阶段终验待独立 verifier）
 
 ## Stage 3: 建立提前验证能力
 **Goal**: 完成 T007–T009。
 **Success Criteria**: 详见权威IR各任务验收；阶段独立检查与本地提交完成。
 **Tests**: 详见IR verification，实施时先red再green。
-**Status**: Not Started
+**Status**: In Progress（R009：T007 已交付，见上方轮次记录；T008–T009 待做）
 
 ## Stage 4: 观测、上下文与预算治理
 **Goal**: 完成 T010–T011。

@@ -397,6 +397,22 @@ def planned_effort(resolved: ResolvedModel, requested: str) -> EffortOutcome:
     return EffortOutcome(requested=requested)
 
 
+def permission_argv_axes(profile) -> dict:
+    """The permission-relevant argv axes :meth:`CursorAdapter._launch`
+    will pass for this profile (G009 T007 fingerprint mirror).
+
+    The adapter is the source of truth; tests pin this mirror to the real
+    launch argv. Three separate facts, never merged: --trust is ALWAYS
+    passed (workspace trust — not an approval mode), --force/--yolo only
+    when the profile sets force = true, and --sandbox is never passed (the
+    effective sandbox comes from the CLI's own config file)."""
+    return {
+        "trust": True,
+        "force_yolo": bool(profile.force) if profile is not None else None,
+        "sandbox": None,
+    }
+
+
 class CursorAdapter:
     harness = "cursor"
     # The --print exit code is transport: the agent CLI decides it, not the

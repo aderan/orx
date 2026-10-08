@@ -7,6 +7,78 @@ attempt/session/nonce、配置指纹、用量来源、缺失字段、耗时区�
 
 ---
 
+## T007 · 增加执行能力预检与验证结果的配置指纹
+
+**输入commit**：`222872f`（T006 交付，2026-10-08）。
+**attempt/session/nonce**：attempt 153（本条目写作时任务仍在 running；
+session `sess_subagent_agent_7a8d97f2-bbc7-4094-9ab7-60fdaf7189bf`，
+nonce 即 ORX_ASSIGNMENT `7cbc0637-9ecc-4436-8335-3f931f183845`）。
+
+### 红信号（先写行为回归，新增用例全部失败后转绿）
+
+新增 16 例测试先红：`probes.build_permission_preflight` /
+adapter `permission_argv_axes` 镜像 / `orx agent preflight` CLI 均不存在。
+
+### 实现选择
+
+- **读真实配置，五轴分立**：cursor `~/.cursor/cli-config.json`
+  （approvalMode、sandbox.mode、permissions.allow/deny）；codex
+  `CODEX_HOME`/`~/.codex`（config.toml 的 approval_policy 与
+  projects.<ws>.trust_level，hooks.json 事件名）。trust / force|yolo /
+  approval_mode / sandbox / project_hooks 各自取值、各自来源；
+  缺文件或缺键 = unknown，绝不默认允许/拒绝。
+- **argv 轴来自 adapter 镜像**：`permission_argv_axes` 放在
+  cursor/codex adapter 内（真相之源），test_adapters 把镜像与真实
+  launch argv 逐旗标对账。
+- **明示证明范围**：`proves` = CLI 身份+版本+轴值+来源；
+  `cannot_prove` = agent 内部 shell 执行（控制器侧 PATH/denylist/help
+  都不是 in-agent 审批）+ 绝不清除额度 cooldown/exhaustion/人工
+  override（T005 语义；实现零健康写入，测试钉 exhausted+naive reset+
+  override=1 在预检后不变）。
+- **指纹绑定与失效**：sha256 绑 CLI 二进制+版本 / profile / model /
+  effort / role / 五轴值+来源 / workspace / --check 首 token（控制器
+  PATH 命中显式标注证明力为零）/ 各源 axes 内容摘要；probed_at 随
+  记录不入哈希（同环境可复现）。失效 = 指纹变化或任一源 mtime 变化
+  （touch 同内容也退役先前结果）；持久化
+  `<data>/probes/preflight/<harness>-<profile>.json`。
+- **秘密边界**：cursor authInfo/账号缓存根本不打开；codex hooks 只存
+  事件名；测试逐串断言 email/userId/authId/authCacheKey/modelParameters
+  不出现在落盘内容。
+
+### 绿验证
+
+- 门禁：`.venv/bin/python -m pytest -q tests/test_probes.py
+  tests/test_adapters.py` → 90 passed（attempt 153；check log
+  `.orx/runs/R009/check/T007/`）。
+- 全量：`.venv/bin/python -m pytest -q` → 1000 passed、0 xfail
+  （基线 984 + 新增 16）；docs/m1.2-report.md 重跑后按约定还原。
+- 真机只读冒烟（零付费调用、零写入 harness 配置）：
+  `orx agent preflight cursor --profile cursor-strong` 读出真实
+  allowlist/Shell(ls)/sandbox disabled/--trust(adapter)/--force(profile)
+  五轴分立；`orx agent preflight codex --profile codex-frontier` 读出
+  projects trust=trusted、approval_policy 缺失=unknown、-s
+  workspace-write(argv)、hooks 八事件名。
+
+### 配置指纹示例（本任务真机读取）
+
+cursor（cursor-strong/worker）：`approval_mode=allowlist (shell allow:
+Shell(ls); deny: none)`、`sandbox=disabled`、`trust=true(argv)`、
+`force_yolo=false(profile)`，fingerprint
+`sha256:8128ae86332242c8ac06922eaf0b5087`。
+codex（codex-frontier/worker）：`trust=trusted`、`approval_mode=unknown`、
+`sandbox=workspace-write(argv)`、hooks 8 事件，fingerprint
+`sha256:1d7636750c39a365bbcd5e324d199b95`。
+
+### 真实/模拟来源、用量、缺失字段
+
+全部行为测试为确定性替身（fake 二进制、tmp HOME/CODEX_HOME、零网络、
+零付费调用）；真机仅只读配置读取。本任务不产生模型 usage observation
+（preflight 无 completion）。缺失字段：cursor 的 project_hooks 轴为
+unknown（无已知的 cursor 项目级 hooks 配置位置）；codex approval_policy
+在本机缺失如实 unknown。耗时区间：约 2026-10-08 08:55–09:15 (+08:00)。
+
+---
+
 ## T006 · 补齐宿主故障事实、可信观察与安全恢复入口
 
 **输入commit**：`a4d96b4`（T005 交付，2026-10-07 22:37:14 +0800）。

@@ -65,8 +65,12 @@ agent_app = typer.Typer(
         "capability snapshot (including the refreshed model catalog, its "
         "source, and discovery status) and the launch contract; it never "
         "probes. probe runs the shared local probes, refreshes the model "
-        "catalog from local CLI output, and writes the snapshot. status "
-        "shows PROFILE, STATE, SINCE, and REASON from resource_status. "
+        "catalog from local CLI output, and writes the snapshot. preflight "
+        "reads the harness's REAL permission axes (trust / force|yolo / "
+        "approval mode / sandbox / project hooks, each with its source) "
+        "and fingerprints what a verification result binds; it never "
+        "claims internal shell execution. status shows PROFILE, STATE, "
+        "SINCE, and REASON from resource_status. "
         "Exit 0 on success, 1 on a domain error, 2 on usage errors."
     ),
     no_args_is_help=True,
@@ -549,6 +553,135 @@ def agent_probe(
         else:
             typer.echo("  models: not discovered")
         typer.echo(f"  wrote {data['path']}")
+
+
+def _render_preflight_axis(name: str, entry: dict) -> str:
+    value = entry.get("value")
+    if name == "approval_mode" and isinstance(value, str) and value != "unknown":
+        allow = ", ".join(str(item) for item in entry.get("shell_allow", [])) or "none"
+        deny = ", ".join(str(item) for item in entry.get("shell_deny", [])) or "none"
+        value = f"{value} (shell allow: {allow}; deny: {deny})"
+    elif name == "project_hooks" and isinstance(value, dict):
+        events = ", ".join(value.get("events", [])) or "none"
+        configured = "configured" if value.get("configured") else "none"
+        value = f"{configured} (events: {events})"
+    elif isinstance(value, bool):
+        value = "true" if value else "false"
+    return f"    {name}: {value} — {entry.get('source', '')}"
+
+
+@agent_app.command("preflight")
+@handle_errors
+def agent_preflight(
+    harness: str = typer.Argument(..., metavar="HARNESS", help="codex or cursor."),
+    profile_name: Optional[str] = typer.Option(
+        None, "--profile",
+        help="Bind the fingerprint to this profile (from the project's profiles.toml)."),
+    role: str = typer.Option(
+        "worker", "--role", help="worker | planner | verifier (the codex -s axis)."),
+    check: list[str] = typer.Option(
+        [], "--check",
+        help="A prescribed check command; its first token binds the toolchain "
+             "(repeatable)."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Execution-capability preflight: the harness's REAL permission axes
+    and a fingerprint of what a verification result binds.
+
+    Reads the same config files the harness CLI itself reads (cursor:
+    ~/.cursor/cli-config.json; codex: CODEX_HOME or ~/.codex), read-only,
+    and derives the permission axes SEPARATELY: trust / force|yolo /
+    approval mode / sandbox / project hooks, each with its own value and
+    source. Binds CLI binary+version, profile, model, effort, workspace,
+    toolchain (first tokens of --check commands), and the probe time into
+    a fingerprint persisted under the user data dir. Any bound axis,
+    config mtime, CLI version, profile, workspace, or toolchain change
+    invalidates the prior result. An unknown axis value is reported as
+    unknown — never defaulted.
+
+    States its provable scope explicitly: this proves the CLI identity
+    and the axis values with sources; it CANNOT prove internal shell
+    execution inside the agent (controller-side PATH hits, denylist
+    checks, and help output are not in-agent approval), and it never
+    clears quota cooldowns, exhaustions, or manual overrides. Never
+    launches a completion and never writes the harness config.
+
+    --json fields: harness, preflight, prior, prior_valid,
+    invalid_reasons, persisted_path. An unknown harness exits 1; --profile
+    outside a project, a profile that is not defined, or a profile whose
+    harness differs exits 1; a missing HARNESS exits 2.
+    """
+    from orx import probes
+
+    if role not in ("worker", "planner", "verifier"):
+        raise ConfigError([f"--role must be worker, planner, or verifier, got {role!r}"])
+    try:
+        probes.HARNESSES[harness]
+    except KeyError:
+        known = ", ".join(probes.HARNESSES)
+        raise NotFoundError(
+            f"unknown harness {harness!r}; known harnesses: {known}") from None
+    root = dispatch.find_project_root()
+    profile = None
+    if profile_name is not None:
+        if root is None:
+            raise ConfigError(
+                ["--profile requires a project root (.orx/ not found from cwd)"])
+        effective = config_mod.load_effective(
+            root / ".orx" / "config.toml", root / ".orx" / "profiles.toml",
+            check_references=False,
+        )
+        if profile_name not in effective.profiles:
+            raise ConfigError([
+                f"profile {profile_name!r} is not defined in the effective profiles"])
+        profile = effective.profiles[profile_name]
+        if profile.harness.value != harness:
+            raise ConfigError([
+                f"profile {profile_name!r} has harness {profile.harness.value!r},"
+                f" not {harness!r}"])
+
+    prior = probes.load_preflight(harness, profile_name)
+    current = probes.build_permission_preflight(
+        harness, profile=profile, role=role, workspace=root,
+        check_commands=check,
+    )
+    reasons = probes.preflight_invalid_reasons(prior, current)
+    path = probes.persist_preflight(current)
+    _ok(
+        json_out,
+        harness=harness,
+        preflight=current,
+        prior=prior,
+        prior_valid=bool(prior is not None and not reasons),
+        invalid_reasons=reasons,
+        persisted_path=str(path),
+    )
+    if not json_out:
+        typer.echo(
+            f"{harness} preflight"
+            f" (profile {current['profile'] or '(none)'}, role {current['role']})")
+        typer.echo(f"  fingerprint: {current['fingerprint']}")
+        typer.echo(f"  probed_at: {current['probed_at']}")
+        typer.echo(f"  cli: {current['cli']['binary']} ({current['cli']['version']})")
+        typer.echo("  axes:")
+        for name in probes.PERMISSION_AXES:
+            typer.echo(_render_preflight_axis(name, current["axes"][name]))
+        if current["toolchain"]:
+            typer.echo("  toolchain (controller-side only, not in-agent approval):")
+            for entry in current["toolchain"]:
+                found = entry["controller_path"] or "not found on controller PATH"
+                typer.echo(f"    {entry['first_token']}: {found}")
+        typer.echo(f"  proves: {current['proves']}")
+        typer.echo(f"  cannot prove: {current['cannot_prove']}")
+        if prior is None:
+            typer.echo("  prior result: (none recorded)")
+        elif not reasons:
+            typer.echo("  prior result: still valid (same fingerprint and mtimes)")
+        else:
+            typer.echo("  prior result: INVALIDATED")
+            for reason in reasons:
+                typer.echo(f"    - {reason}")
+        typer.echo(f"  wrote {path}")
 
 
 def _render_health_row(row: dict) -> str:

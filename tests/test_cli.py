@@ -2137,3 +2137,83 @@ def test_usage_record_allows_cached_above_input(cli_project, monkeypatch):
     coverage = next(row for row in shown["coverage"] if row["profile"] == "host-worker")
     assert coverage["measurement_accuracy"] == "estimated"
     assert coverage["observed"] >= 1
+
+
+# -- G009 T007: `orx agent preflight` (permission axes + fingerprint) -------
+
+
+def test_agent_preflight_binds_axes_and_reports_prior_invalidity(
+        cli_project, tmp_path, monkeypatch):
+    import os
+
+    home = tmp_path / "pf-home"
+    (home / ".cursor").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".cursor" / "cli-config.json").write_text(json.dumps({
+        "approvalMode": "allowlist",
+        "sandbox": {"mode": "disabled"},
+        "permissions": {"allow": ["Shell(ls)"], "deny": []},
+        "authInfo": {"email": "alice@example.com", "userId": "user-42"},
+    }))
+    # a cursor CLI profile in the project layer
+    (cli_project / ".orx" / "profiles.toml").write_text(
+        HOST_PROFILES_TOML + """
+[profiles.cursor-worker]
+driver = "cli"
+harness = "cursor"
+model = "gpt-5.3-codex"
+class = "strong"
+effort = "high"
+capabilities = ["coding"]
+""")
+    result = invoke("agent", "preflight", "cursor", "--json",
+                    "--profile", "cursor-worker",
+                    "--check", ".venv/bin/python -m pytest -q tests/")
+    assert result.exit_code == 0, result.stdout
+    body = payload(result)
+    assert body["ok"] is True
+    record = body["preflight"]
+    axes = record["axes"]
+    assert axes["trust"]["value"] is True
+    assert axes["force_yolo"]["value"] is False
+    assert axes["approval_mode"]["value"] == "allowlist"
+    assert axes["approval_mode"]["shell_allow"] == ["Shell(ls)"]
+    assert axes["sandbox"]["value"] == "disabled"
+    assert "internal shell" in record["cannot_prove"]
+    assert record["fingerprint"].startswith("sha256:")
+    assert body["prior"] is None and body["invalid_reasons"] == []
+    assert (Path(record["workspace"]) == cli_project.resolve()
+            if record["workspace"] else False)
+    stored = Path(body["persisted_path"])
+    assert "alice@example.com" not in stored.read_text()
+
+    # config change invalidates the prior fingerprint
+    (home / ".cursor" / "cli-config.json").write_text(json.dumps({
+        "approvalMode": "allowlist",
+        "sandbox": {"mode": "enabled"},
+        "permissions": {"allow": ["Shell(ls)"], "deny": []},
+    }))
+    result = invoke("agent", "preflight", "cursor", "--json",
+                    "--profile", "cursor-worker")
+    assert result.exit_code == 0
+    body = payload(result)
+    assert body["prior_valid"] is False
+    assert body["invalid_reasons"]
+    assert body["prior"]["fingerprint"] != body["preflight"]["fingerprint"]
+
+
+def test_agent_preflight_profile_requires_matching_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORX_PROJECT", raising=False)
+    result = invoke("agent", "preflight", "cursor", "--json",
+                    "--profile", "ghost")
+    assert result.exit_code == 1
+    body = payload(result)
+    assert body["ok"] is False and "profile" in body["error"].lower()
+
+
+def test_agent_preflight_rejects_unknown_harness(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = invoke("agent", "preflight", "nope", "--json")
+    assert result.exit_code == 1
+    assert payload(result)["ok"] is False

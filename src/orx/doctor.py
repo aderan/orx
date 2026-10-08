@@ -52,6 +52,13 @@ def run_doctor(root: Path | None) -> dict:
     # `orx agent probe`); outputs here are byte-compatible with M0.
     from orx.probes import doctor_harness_checks
     checks.extend(Check(*triplet) for triplet in doctor_harness_checks())
+    # G009 T007: the harnesses' REAL permission axes from their own config
+    # files (read-only). An absent config is unknown — warn, never a
+    # default, never a failure — and nothing here claims in-agent shell
+    # execution. Per-profile argv axes and fingerprints live in
+    # `orx agent preflight`.
+    from orx.probes import doctor_permission_checks
+    checks.extend(Check(*triplet) for triplet in doctor_permission_checks())
 
     if root is None:
         checks.append(Check("project", FAIL, "no .orx/ found; run `orx init` here"))

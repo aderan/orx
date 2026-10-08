@@ -415,3 +415,365 @@ def test_agent_list_marks_host_only_and_probeable(bindir):
     probeable = [h for h, spec in probes.HARNESSES.items()
                  if not spec.host_only and spec.harness != "shell"]
     assert probeable == ["codex", "cursor"]
+
+
+# -- G009 T007: execution-capability preflight and permission fingerprint ---
+#
+# The 2026-10-07 incident: the controller's preflight could not see Cursor's
+# INTERNAL execution permissions. The real config was approvalMode=allowlist
+# with shell allowlist Shell(ls) only, sandbox disabled, argv had --trust but
+# no --force — `ls` ran, uv/orx/pytest were denied inside the agent. These
+# tests pin the preflight that reads the real config and fingerprints the
+# axes WITHOUT ever claiming internal shell execution.
+
+
+INCIDENT_CURSOR_CONFIG = {
+    "approvalMode": "allowlist",
+    "sandbox": {"mode": "disabled", "networkAccess": "user_config_with_defaults"},
+    "permissions": {"allow": ["Shell(ls)"], "deny": []},
+    # noise that must NEVER reach a stored preflight: account identifiers
+    # and everything else the config file happens to carry
+    "authInfo": {"authId": "auth-secret-1", "displayName": "Alice Example",
+                 "email": "alice@example.com", "userId": "user-42"},
+    "autoReviewAvailabilityCache": {"authCacheKey": "cache-secret-9",
+                                    "available": True},
+    "modelParameters": {"gpt-5.3-codex": {"effort": "high"}},
+    "version": 3,
+}
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def write_cursor_cli_config(home: Path, payload: dict) -> Path:
+    directory = home / ".cursor"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "cli-config.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def cursor_cli_profile(force: bool = False, model: str = "gpt-5.3-codex",
+                       effort: str = "high"):
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+
+    return Profile(
+        name="cli-worker", driver=Driver.CLI, harness=Harness.CURSOR,
+        model=model, model_class=ModelClass.STRONG,
+        effort=Effort(effort), capabilities=("coding",), force=force,
+    )
+
+
+def codex_cli_profile(model: str = "gpt-5.1", effort: str = "high"):
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+
+    return Profile(
+        name="codex-worker", driver=Driver.CLI, harness=Harness.CODEX,
+        model=model, model_class=ModelClass.STRONG,
+        effort=Effort(effort), capabilities=("coding",),
+    )
+
+
+def test_preflight_fingerprints_incident_axes_and_no_execution_claim(
+        bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    record = probes.build_permission_preflight(
+        "cursor",
+        profile=cursor_cli_profile(),
+        workspace=tmp_path,
+        check_commands=[".venv/bin/python -m pytest -q tests/test_probes.py"],
+    )
+    axes = record["axes"]
+    # trust and approval are DIFFERENT axes: --trust is on, approval is a
+    # restrictive allowlist — exactly the incident's combination
+    assert axes["trust"]["value"] is True
+    assert "argv" in axes["trust"]["source"]
+    assert axes["force_yolo"]["value"] is False
+    assert "profile" in axes["force_yolo"]["source"]
+    assert axes["approval_mode"]["value"] == "allowlist"
+    assert axes["approval_mode"]["shell_allow"] == ["Shell(ls)"]
+    assert axes["approval_mode"]["shell_deny"] == []
+    assert "cli-config.json" in axes["approval_mode"]["source"]
+    assert axes["sandbox"]["value"] == "disabled"
+    assert "cli-config.json" in axes["sandbox"]["source"]
+    assert axes["project_hooks"]["value"] == "unknown"
+    # the preflight states its provable scope explicitly
+    assert "internal shell" in record["cannot_prove"]
+    assert "axes" in record["proves"]
+    serialized = json.dumps(record)
+    assert "executable" not in serialized
+    assert "checks_runnable" not in serialized
+    # identity binding: CLI / profile / model / effort / workspace /
+    # toolchain / time all ride on the record
+    assert record["cli"]["version"] == "agent 2026.10.01"
+    assert record["cli"]["binary"].endswith("agent")
+    assert record["profile"] == "cli-worker"
+    assert record["model"] == "gpt-5.3-codex"
+    assert record["effort"] == "high"
+    assert record["workspace"] == str(tmp_path.resolve())
+    assert record["toolchain"][0]["first_token"] == ".venv/bin/python"
+    assert record["probed_at"]
+    assert record["fingerprint"].startswith("sha256:")
+
+
+def test_preflight_stores_no_secrets_or_account_ids(bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    record = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path)
+    path = probes.persist_preflight(record)
+    stored = path.read_text()
+    for leak in ("alice@example.com", "user-42", "auth-secret-1",
+                 "cache-secret-9", "authInfo", "modelParameters",
+                 "networkAccess", "displayName"):
+        assert leak not in stored, leak
+    # only the fingerprint, axis values, and sources persist
+    assert json.loads(stored) == record
+
+
+def test_preflight_axes_move_independently(bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    base = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(force=False), workspace=tmp_path)
+    forced = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(force=True), workspace=tmp_path)
+    assert forced["axes"]["force_yolo"]["value"] is True
+    # flipping force touches NOTHING else: trust, approval, sandbox, and
+    # hooks are separate axes with separate sources
+    for axis in ("trust", "approval_mode", "sandbox", "project_hooks"):
+        assert forced["axes"][axis] == base["axes"][axis]
+    assert forced["fingerprint"] != base["fingerprint"]
+
+
+def test_missing_config_is_unknown_not_defaulted(bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    record = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path)
+    for axis in ("approval_mode", "sandbox"):
+        assert record["axes"][axis]["value"] == "unknown"
+        assert "absent" in record["axes"][axis]["source"]
+    # a present file with the keys absent is unknown too — never a default
+    # allow and never a default deny
+    write_cursor_cli_config(fake_home, {"version": 1})
+    present = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path)
+    assert present["axes"]["approval_mode"]["value"] == "unknown"
+    assert present["axes"]["sandbox"]["value"] == "unknown"
+    assert "key absent" in present["axes"]["approval_mode"]["source"]
+
+
+def test_controller_path_hit_is_not_internal_shell_success(
+        bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    record = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path,
+        check_commands=["ls -la"],
+    )
+    entry = record["toolchain"][0]
+    assert entry["first_token"] == "ls"
+    assert entry["controller_path"]  # the controller can find it...
+    # ...and the record says that proves nothing inside the agent
+    assert "controller" in entry["note"].lower()
+    assert "not" in entry["note"].lower()
+    assert "controller" in record["cannot_prove"]
+    # the permissive-looking PATH hit softened no permission axis
+    assert record["axes"]["approval_mode"]["value"] == "allowlist"
+
+
+def test_help_output_and_probe_success_are_not_permission(
+        bindir, fake_home, tmp_path, monkeypatch):
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    with_agent = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))  # hide the agent binary
+    without_agent = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(), workspace=tmp_path)
+    # probe success changes only the CLI identity facts...
+    assert with_agent["cli"]["binary"] and without_agent["cli"]["binary"] is None
+    # ...never a permission axis: config still speaks, help never did
+    assert without_agent["axes"]["approval_mode"] == with_agent["axes"]["approval_mode"]
+    assert without_agent["axes"]["sandbox"] == with_agent["axes"]["sandbox"]
+    assert without_agent["axes"]["trust"] == with_agent["axes"]["trust"]
+    assert "argv" in with_agent["axes"]["trust"]["source"]
+    assert "--help" not in json.dumps(with_agent)
+
+
+def test_fingerprint_invalidates_on_every_bound_change(bindir, fake_home, tmp_path):
+    install_fake_agent(bindir)
+    config = write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    profile = cursor_cli_profile()
+    kwargs = {"profile": profile, "workspace": tmp_path,
+              "check_commands": [".venv/bin/python -m pytest -q"]}
+    base = probes.build_permission_preflight("cursor", **kwargs)
+    same = probes.build_permission_preflight("cursor", **kwargs)
+    assert same["fingerprint"] == base["fingerprint"]
+    assert probes.preflight_invalid_reasons(base, same) == []
+
+    # config axis value change: new fingerprint, prior result invalid
+    config.write_text(json.dumps(
+        dict(INCIDENT_CURSOR_CONFIG, approvalMode="unrestricted")))
+    changed = probes.build_permission_preflight("cursor", **kwargs)
+    assert changed["axes"]["approval_mode"]["value"] == "unrestricted"
+    assert changed["fingerprint"] != base["fingerprint"]
+    assert probes.preflight_invalid_reasons(base, changed)
+
+    # same content, bumped mtime: fingerprint holds, the mtime tripwire fires
+    config.write_text(json.dumps(INCIDENT_CURSOR_CONFIG))
+    stat = os.stat(config)
+    os.utime(config, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    touched = probes.build_permission_preflight("cursor", **kwargs)
+    assert touched["fingerprint"] == base["fingerprint"]
+    reasons = probes.preflight_invalid_reasons(base, touched)
+    assert reasons and "mtime" in reasons[0]
+
+    # profile identity change (model carries effort with it here)
+    other_profile = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(model="composer-2.5"),
+        workspace=tmp_path)
+    assert other_profile["fingerprint"] != base["fingerprint"]
+    other_effort = probes.build_permission_preflight(
+        "cursor", profile=cursor_cli_profile(effort="low"), workspace=tmp_path)
+    assert other_effort["fingerprint"] != base["fingerprint"]
+
+    # workspace change
+    other_ws = probes.build_permission_preflight(
+        "cursor", profile=profile, workspace=tmp_path / "ws2")
+    assert other_ws["fingerprint"] != base["fingerprint"]
+
+    # toolchain change
+    other_tool = probes.build_permission_preflight(
+        "cursor", profile=profile, workspace=tmp_path,
+        check_commands=["uv run pytest -q"])
+    assert other_tool["fingerprint"] != base["fingerprint"]
+
+    # CLI version change
+    make_bin(bindir, "agent", """
+if [ "$1" = "--version" ]; then echo "agent 2026.11.01"; exit 0; fi
+if [ "$1" = "--help" ]; then echo "--print --output-format --workspace --trust --model"; exit 0; fi
+if [ "$1" = "status" ]; then echo "Logged in as user@example.com"; exit 0; fi
+exit 1
+""")
+    bumped_cli = probes.build_permission_preflight("cursor", **kwargs)
+    assert bumped_cli["fingerprint"] != base["fingerprint"]
+
+    # persistence roundtrip under the user data dir
+    path = probes.persist_preflight(base)
+    assert probes.load_preflight("cursor", "cli-worker") == base
+    data_root = Path(os.environ["ORX_DATA_DIR"])
+    assert data_root in path.parents
+    assert probes.load_preflight("cursor", "nope") is None
+
+
+def test_preflight_never_clears_quota_cooldown_or_override(
+        bindir, fake_home, tmp_path, monkeypatch):
+    from conftest import make_project
+    from orx.records import ResourceStatus
+
+    install_fake_agent(bindir)
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        store = project.store
+        store.resource_learn("cli-worker", status="exhausted",
+                             quota_reset_at="2026-10-07 04:24:23")
+        store.resource_set("cli-worker", ResourceStatus.EXHAUSTED,
+                           note="operator hold")
+        before = store.resource_row("cli-worker")
+        probes.build_permission_preflight(
+            "cursor", profile=cursor_cli_profile(), workspace=project.root)
+        after = store.resource_row("cli-worker")
+        assert after.status == before.status == "exhausted"
+        assert after.quota_reset_at == "2026-10-07 04:24:23"
+        assert after.override == 1
+    finally:
+        project.close()
+
+
+def test_preflight_rejects_non_probeable_harnesses(bindir, fake_home):
+    with pytest.raises(ValueError, match="host-only|no permission preflight"):
+        probes.build_permission_preflight("zcode")
+    with pytest.raises(ValueError, match="no permission preflight"):
+        probes.build_permission_preflight("shell")
+    with pytest.raises(KeyError):
+        probes.build_permission_preflight("nope")
+
+
+def test_codex_preflight_reads_real_axes(bindir, fake_home, tmp_path, monkeypatch):
+    install_fake_codex(bindir)
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    (codex_home / "config.toml").write_text(
+        'approval_policy = "on-request"\n\n'
+        f'[projects."{tmp_path}"]\ntrust_level = "trusted"\n'
+    )
+    (codex_home / "hooks.json").write_text(json.dumps(
+        {"hooks": {"SessionStart": [{"hooks": [{"type": "command",
+                                                 "command": "secret-cmd"}]}]}}))
+    record = probes.build_permission_preflight(
+        "codex", profile=codex_cli_profile(), role="worker",
+        workspace=tmp_path, check_commands=[".venv/bin/python -m pytest -q"])
+    axes = record["axes"]
+    # sandbox is an argv fact for codex (-s), approval/trust are config facts
+    assert axes["sandbox"]["value"] == "workspace-write"
+    assert "argv" in axes["sandbox"]["source"]
+    assert axes["approval_mode"]["value"] == "on-request"
+    assert axes["trust"]["value"] == "trusted"
+    assert "projects" in axes["trust"]["source"]
+    assert axes["force_yolo"]["value"] is False
+    # hooks count by event name; the hook commands never reach the record
+    assert axes["project_hooks"]["value"] == {"configured": True,
+                                              "events": ["SessionStart"]}
+    assert "secret-cmd" not in json.dumps(record)
+    # verifier role flips only the argv sandbox axis
+    verifier = probes.build_permission_preflight(
+        "codex", profile=codex_cli_profile(), role="verifier", workspace=tmp_path)
+    assert verifier["axes"]["sandbox"]["value"] == "read-only"
+    assert verifier["fingerprint"] != record["fingerprint"]
+    # a CODEX_HOME without config.toml: config axes unknown, argv facts hold
+    (codex_home / "config.toml").unlink()
+    empty = probes.build_permission_preflight(
+        "codex", profile=codex_cli_profile(), workspace=tmp_path)
+    assert empty["axes"]["approval_mode"]["value"] == "unknown"
+    assert empty["axes"]["trust"]["value"] == "unknown"
+    assert empty["axes"]["sandbox"]["value"] == "workspace-write"
+
+
+def test_doctor_permission_checks_show_axes_without_defaults(fake_home):
+    from orx.doctor import run_doctor
+
+    triplets = probes.doctor_permission_checks()
+    by_name = {name: (state, detail) for name, state, detail in triplets}
+    assert set(by_name) == {"permissions:cursor", "permissions:codex"}
+    # no config anywhere: unknown is a warning, never a default, never ok
+    for name, (state, detail) in by_name.items():
+        assert state == "warn"
+        assert "unknown" in detail
+    write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
+    (fake_home / ".codex").mkdir()
+    (fake_home / ".codex" / "config.toml").write_text(
+        'approval_policy = "on-request"\n')
+    triplets = probes.doctor_permission_checks()
+    by_name = {name: (state, detail) for name, state, detail in triplets}
+    cursor_state, cursor_detail = by_name["permissions:cursor"]
+    assert cursor_state == "ok"
+    assert "allowlist" in cursor_detail and "disabled" in cursor_detail
+    assert "argv" in cursor_detail  # trust/force flagged as separate axes
+    codex_state, codex_detail = by_name["permissions:codex"]
+    assert codex_state == "ok" and "on-request" in codex_detail
+    # run_doctor carries the checks (read-only doctor invocation)
+    summary = run_doctor(None)
+    names = {c["name"] for c in summary["checks"]}
+    assert {"permissions:cursor", "permissions:codex"} <= names

@@ -1782,3 +1782,78 @@ def test_extract_cli_delivery_fenced_beats_loose_and_empty_text_is_missing():
     delivery, problems = extract_cli_delivery("")
     assert delivery is None
     assert len(problems) == 1
+
+
+# -- G009 T007: permission-axes mirrors pinned to the real launch argv -----
+#
+# `orx agent preflight` fingerprints the EFFECTIVE argv axes per profile via
+# permission_argv_axes mirrors on the adapters. The adapter's real launch
+# argv is the source of truth; these tests fail if either side drifts.
+
+
+def test_cursor_permission_axes_mirror_the_real_launch_argv(tmp_path, bindir):
+    make_bin(bindir, "agent",
+             'echo "--print --output-format --workspace --trust --model effort="; exit 0\n')
+    cursor_adapter.reset_caches()
+    from orx.adapters.cursor import permission_argv_axes
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+
+    adapter = adapters.get_adapter("cursor")
+    builders = (adapter.build_worker_launch, adapter.build_planner_launch,
+                adapter.build_verifier_launch)
+    for force in (False, True):
+        profile = Profile(
+            name="cursor-x", driver=Driver.CLI, harness=Harness.CURSOR,
+            model="fake-cursor", model_class=ModelClass.FRONTIER,
+            effort=Effort.MEDIUM, force=force,
+        )
+        mirror = permission_argv_axes(profile)
+        assert mirror["trust"] is True
+        assert mirror["force_yolo"] is force
+        assert mirror["sandbox"] is None  # the adapter never passes --sandbox
+        for index, build in enumerate(builders):
+            launch = build(root=tmp_path, scratch=tmp_path / f"s{force}{index}",
+                           profile=profile, prompt="x", timeout=5)
+            assert "--trust" in launch.argv       # trust is always on...
+            assert ("--force" in launch.argv) is force  # ...force only per profile
+            assert "--yolo" not in launch.argv
+            assert "--sandbox" not in launch.argv
+            # the mirror must equal what the adapter actually passed
+            assert (mirror["trust"] is True) == ("--trust" in launch.argv)
+            assert mirror["force_yolo"] == ("--force" in launch.argv)
+
+
+def test_codex_permission_axes_mirror_the_real_launch_argv(tmp_path, bindir):
+    install_fake_codex(bindir)
+    from orx.adapters.codex import permission_argv_axes
+    from orx.config import Profile
+    from orx.records import Driver, Effort, Harness, ModelClass
+
+    adapter = adapters.get_adapter("codex")
+    assert adapter.probe().ok
+    profile = Profile(
+        name="codex-x", driver=Driver.CLI, harness=Harness.CODEX,
+        model="fake-codex-model", model_class=ModelClass.FRONTIER,
+        effort=Effort.HIGH, capabilities=("coding",),
+    )
+    roles = {
+        "worker": adapter.build_worker_launch,
+        "planner": lambda **kw: adapter.build_planner_launch(
+            schema_path=None, **kw),
+        "verifier": adapter.build_verifier_launch,
+    }
+    for role, build in roles.items():
+        mirror = permission_argv_axes(profile, role)
+        launch = build(root=tmp_path, scratch=tmp_path / f"s-{role}",
+                       profile=profile, prompt="x", timeout=5)
+        argv = launch.argv
+        # sandbox is an explicit argv fact for codex, per role
+        assert mirror["sandbox"] == argv[argv.index("-s") + 1]
+        assert mirror["force_yolo"] is False
+        assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+        # trust is not an argv axis for codex (it is per-project config)
+        assert mirror["trust"] is None
+    assert permission_argv_axes(profile, "worker")["sandbox"] == "workspace-write"
+    assert permission_argv_axes(profile, "planner")["sandbox"] == "read-only"
+    assert permission_argv_axes(profile, "verifier")["sandbox"] == "read-only"

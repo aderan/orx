@@ -177,6 +177,23 @@ def _effort_flag(resolved: ResolvedModel, requested: str) -> tuple[list[str], Ef
     return [], EffortOutcome(requested=requested)
 
 
+def permission_argv_axes(profile, role: str = "worker") -> dict:
+    """The permission-relevant argv axes :class:`CodexAdapter` will pass
+    for this profile and role (G009 T007 fingerprint mirror).
+
+    The adapter is the source of truth; tests pin this mirror to the real
+    launch argv. Sandbox is an explicit argv fact for codex (-s per role);
+    the bypass flag is NEVER passed (force/yolo stays its own axis, value
+    false as an argv fact); workspace trust is not an argv axis at all —
+    it lives in the CLI's per-project config."""
+    sandbox = "workspace-write" if role == "worker" else "read-only"
+    return {
+        "trust": None,
+        "force_yolo": False,
+        "sandbox": sandbox,
+    }
+
+
 class CodexAdapter:
     harness = "codex"
     # codex exec's exit code is transport; the worker's delivery is the
