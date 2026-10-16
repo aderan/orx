@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from orx import adapters, machine, plan as plan_mod, probes, quota, routing, runtime, verify
+from orx import adapters, machine, plan as plan_mod, probes, project_index, quota, routing, runtime, verify
 from orx.adapters.base import (
     DELIVERY_CHANNEL_EXIT,
     DELIVERY_CHANNEL_MESSAGE,
@@ -1763,6 +1763,10 @@ def run_slice(project: Project) -> dict:
     per invocation — `orx run` returns so the Controller stays in the loop."""
     store = project.store
     goal, run = _active_context(project)
+    # G002/T004: best-effort registration in the user-level project index
+    # (orx-analytics discovery contract). The note lands in the slice
+    # output; a registration failure never gates routing.
+    index_note = project_index.register_project(project.root, run_id=run.id)
     revision = _active_revision(project, run)
     out = {
         "started": [],
@@ -1772,6 +1776,7 @@ def run_slice(project: Project) -> dict:
         "failed": [],
         "deferred": [],
         "routing_errors": [],
+        "project_index": index_note,
     }
     if revision is None:
         out["note"] = "no active plan revision"
