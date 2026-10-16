@@ -201,7 +201,7 @@ def test_goal_cancel_from_planning_converges_and_persists(project, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert reopened.store.goal_get(goal.id).status == "cancelled"
-        assert reopened.store.schema_version() == 14
+        assert reopened.store.schema_version() == 15
         # reads keep working on the cancelled Goal
         shown = dispatch.goal_show(reopened)
         assert shown["goal"]["id"] == goal.id

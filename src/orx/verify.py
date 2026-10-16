@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -434,6 +435,41 @@ def load_delivery_evidence(path: Path) -> tuple[dict | None, list[str]]:
 def gate_failures(report: dict) -> list[dict]:
     """The red rows of a delivery-gate run (failed or denied entries)."""
     return [row for row in report.get("results", []) if not row["passed"]]
+
+
+def delivery_digest(delivery: dict) -> str:
+    """Content identity of a delivery document (G010 T005): sha256 over the
+    document's CANONICAL form.
+
+    Canonicalization keeps exactly what the delivery contract means —
+    status, summary, each check's (command, exit_code) in order, and the
+    artifacts list — serialized as sorted-key compact JSON. Deliberately
+    excluded: the evidence file's path and modification time (the same
+    content re-delivered from another file, or re-serialized with different
+    key order or whitespace, is the SAME delivery), the checks' ``log``
+    pointers (a re-run writes new log files; the claim itself did not
+    change), and legacy ignored keys (``commands``). Any change to the
+    claim — a different status, summary, command, exit code, or artifact
+    list — is a different digest, and a retransmission under an identity
+    whose receipt holds a different digest is a conflict, not a replay.
+    """
+    checks = delivery.get("checks", [])
+    canonical = {
+        "status": delivery.get("status"),
+        "summary": delivery.get("summary"),
+        "checks": [
+            {
+                "command": item.get("command") if isinstance(item, dict) else None,
+                "exit_code": item.get("exit_code") if isinstance(item, dict) else None,
+            }
+            for item in checks
+        ],
+        "artifacts": delivery.get("artifacts", []),
+    }
+    blob = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def gate_failure_reason(report: dict, limit: int = 3) -> str:

@@ -131,7 +131,7 @@ def test_restart_recovery_mid_run(project, goal, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert {t["id"]: t["status"] for t in dispatch.task_list(reopened)} == before
-        assert reopened.store.schema_version() == 14
+        assert reopened.store.schema_version() == 15
         result = dispatch.task_complete(reopened, "T001", str(write_evidence(tmp_path)))
         assert result["status"] == "passed"
         dispatch.run_slice(reopened)
@@ -1925,3 +1925,518 @@ def test_cancelled_goal_history_stays_queryable_and_survives_a_new_goal(
     assert project.store.goal_get(goal.id).status == "cancelled"
     assert [t.status for t in project.store.tasks_all(revision.id)] \
         == ["passed", "failed", "cancelled"]
+
+
+# ---------------------------------------------------------------------------
+# G010 T005: identity-constrained idempotent `task complete` with persisted
+# original receipts.
+#
+# An ACCEPTED delivery persists its receipt atomically with the attempt
+# closure (schema v15). A retransmission of the same delivery — response
+# lost, a new process, the Goal already done — replays that receipt and
+# writes NOTHING: no re-run delivery gate, no new executor, evidence,
+# verification, lifecycle event, or usage row, and no session rewrite.
+# Ownership is still judged first: a replaced attempt, a superseded
+# revision, or a cancel closure rejects the late delivery as stale even
+# when a historical receipt exists and the delivery body is identical.
+
+
+def _receipt_facts(project, revision_id, task_id, attempt_id):
+    """The state a retransmission must not move: (attempt rows, evidence
+    rows, verification rows, task events, usage rows, receipt row)."""
+    store = project.store
+    attempt = store.attempt_get(attempt_id)
+    return (
+        (attempt.ended_at, attempt.result, attempt.session_ref,
+         attempt.actual_model),
+        [(e.kind, e.path) for e in store.evidence_rows_for_task(
+            revision_id, task_id)],
+        [(v.id, v.passed) for v in store.verifications_for(
+            revision_id, task_id)],
+        [(e.event, e.reason) for e in store.task_events(revision_id, task_id)],
+        [tuple(r) for r in [
+            (row["id"], row["source"], row["input_tokens"])
+            for row in store.usage_rows()
+        ]],
+        store.completion_receipt_for_attempt(attempt_id),
+    )
+
+
+def test_accepted_complete_retransmits_the_persisted_original_receipt(
+        project, goal, tmp_path):
+    """The core idempotence story: after a green-gate acceptance the worker
+    loses the response, re-delivers from a DIFFERENT file (same normalized
+    content — new path, new mtime, re-serialized), reopens in a genuinely
+    new process, and retransmits again after the Goal finished — every time
+    the exact persisted receipt comes back and not one row moves."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    claimed = dispatch.task_claim(project, "T001", session="sess-worker")
+    attempt_id = claimed["attempt"]
+    revision_id = active_task(project, "T001").revision_id
+    (project.root / "t1.marker").write_text("done")
+
+    evidence = write_evidence(tmp_path, "first.json", summary="marker written")
+    first = dispatch.task_complete(
+        project, "T001", str(evidence), attempt_id=attempt_id)
+    assert first["status"] == "passed" and first["verdict"] == "passed"
+    assert project.store.goal_get(goal.id).status == "done"  # Goal 已完成
+    facts_after_acceptance = _receipt_facts(
+        project, revision_id, "T001", attempt_id)
+    assert facts_after_acceptance[5] is not None  # the receipt exists
+
+    # (1) response loss: the caller never saw `first`; it re-delivers the
+    # same content from a different file — different path, different mtime,
+    # re-serialized with different key order and whitespace. The digest is
+    # over normalized content, so this is the SAME delivery.
+    same_content = tmp_path / "retransmit.json"
+    same_content.write_text(json.dumps({
+        "artifacts": [],
+        "checks": [],
+        "summary": "marker written",
+        "status": "passed",
+    }, indent=4))
+    assert same_content.read_bytes() != evidence.read_bytes()
+    replay = dispatch.task_complete(
+        project, "T001", str(same_content), attempt_id=attempt_id)
+    assert replay == first  # the persisted ORIGINAL receipt, verbatim
+
+    # (2) a new process reopens and retransmits: same receipt again.
+    replay2 = dispatch.task_complete(
+        project, "T001", str(evidence), attempt_id=attempt_id)
+    assert replay2 == first
+
+    # Nothing moved across both replays: no new executor, evidence,
+    # verification, lifecycle event, or usage row; session ownership and
+    # the receipt row itself are untouched.
+    assert _receipt_facts(project, revision_id, "T001", attempt_id) == \
+        facts_after_acceptance
+    assert len(project.store.attempts_all()) == 1  # no second executor
+
+    # (3) a REAL subprocess retransmits after the Goal is done — the
+    # cross-process persistence boundary, not an in-process alias.
+    env = os.environ.copy()
+    env["ORX_PROJECT"] = str(project.root)
+    env["ORX_QUOTA_PREFLIGHT"] = "0"
+    env["ORX_CONFIG_DIR"] = os.environ["ORX_CONFIG_DIR"]
+    env["ORX_DATA_DIR"] = os.environ["ORX_DATA_DIR"]
+    proc = subprocess.run(
+        [sys.executable, "-m", "orx", "task", "complete", "T001",
+         "--evidence", str(evidence), "--attempt", str(attempt_id), "--json"],
+        capture_output=True, text=True, cwd=str(project.root), env=env,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    envelope = json.loads(proc.stdout)
+    assert envelope["ok"] is True
+    assert {k: v for k, v in envelope.items() if k != "ok"} == first
+    assert _receipt_facts(project, revision_id, "T001", attempt_id) == \
+        facts_after_acceptance
+
+
+def test_retransmission_conflicts_are_rejected_by_name(
+        project, goal, tmp_path):
+    """Same identity, different rules: conflicting delivery CONTENT,
+    conflicting identity METADATA (session, actual model), and another
+    task's delivery are each an explicit rejection — never a replay, never
+    a rewrite of what the acceptance recorded."""
+    from orx.records import ConflictError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    claimed = dispatch.task_claim(project, "T001", session="sess-a")
+    attempt_id = claimed["attempt"]
+    revision_id = active_task(project, "T001").revision_id
+    (project.root / "t1.marker").write_text("done")
+
+    first = dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "a.json")),
+        attempt_id=attempt_id, actual_model="GLM-4.6",
+    )
+    assert "model_mismatch" in first  # the reported model is part of the record
+    receipt = project.store.completion_receipt_for_attempt(attempt_id)
+    assert (receipt.session_ref, receipt.actual_model) == ("sess-a", "GLM-4.6")
+
+    # Conflicting content under the same identity: a different summary is a
+    # different delivery — rejected, receipt untouched.
+    with pytest.raises(ConflictError, match="content conflicts"):
+        dispatch.task_complete(
+            project, "T001",
+            str(write_evidence(tmp_path, "changed.json",
+                               summary="a different claim")),
+            attempt_id=attempt_id)
+    # Conflicting identity metadata: a different session cannot rewrite the
+    # session ownership the acceptance closed with.
+    with pytest.raises(ConflictError, match="session ownership"):
+        dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "a2.json")),
+            attempt_id=attempt_id, session="sess-b")
+    # ... and a contradicting actual model is refused the same way.
+    with pytest.raises(ConflictError, match="actual model"):
+        dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "a3.json")),
+            attempt_id=attempt_id, actual_model="Other-Model")
+    # Matching metadata replays fine (the identity is the same caller).
+    replay = dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "a4.json")),
+        attempt_id=attempt_id, session="sess-a", actual_model="GLM-4.6")
+    assert replay == first
+
+    # Another task's delivery is a foreign identity, not a replay: quoting
+    # T001's attempt while completing T002 is the stale rejection.
+    dispatch.task_claim(project, "T002")
+    t2_attempt = project.store.attempt_latest_for_task(revision_id, "T002").id
+    with pytest.raises(ConflictError, match="stale submission.*different"):
+        dispatch.task_complete(
+            project, "T002", str(write_evidence(tmp_path, "b.json")),
+            attempt_id=attempt_id)
+    # the rejected calls wrote nothing anywhere
+    assert project.store.attempt_get(t2_attempt).ended_at is None
+    assert project.store.completion_receipt_for_attempt(t2_attempt) is None
+
+
+def test_receipt_never_bypasses_current_ownership_checks(
+        project, goal, tmp_path):
+    """迟到结果不会覆盖新尝试： a historical receipt is a replay surface
+    ONLY while the identity is still current. A retry/recover replacement,
+    a superseded revision, or a cancel closure rejects the same delivery
+    body as stale — the receipt cannot smuggle a late result past the
+    ownership checks."""
+    from orx.records import ConflictError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+    ]))
+    dispatch.run_slice(project)
+    revision_id = active_task(project, "T001").revision_id
+
+    # --- retry replacement: an ACCEPTED failed delivery has a receipt; the
+    # retry routes a newer attempt, and the old attempt's retransmission is
+    # stale even though its receipt exists and the body is identical.
+    dispatch.task_claim(project, "T001")
+    a1 = project.store.attempt_latest_for_task(revision_id, "T001").id
+    failed = write_evidence(tmp_path, "f.json", status="failed",
+                            summary="cannot finish in this attempt")
+    failed_result = dispatch.task_complete(
+        project, "T001", str(failed), attempt_id=a1)
+    assert failed_result["status"] == "failed"
+    assert project.store.completion_receipt_for_attempt(a1) is not None
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)  # parks the replacement attempt
+    a2 = project.store.attempt_latest_for_task(revision_id, "T001").id
+    assert a2 != a1
+    with pytest.raises(ConflictError, match="stale"):
+        dispatch.task_complete(
+            project, "T001", str(failed), attempt_id=a1)
+    # the late result did not touch the new attempt or the task
+    assert project.store.attempt_get(a2).ended_at is None
+    assert active_task(project, "T001").status == "waiting_host"
+
+    # --- recover replacement: a running attempt recovered by an operator
+    # fact is closed; its same-body late delivery stays the stale refusal.
+    dispatch.task_claim(project, "T001", session="sess-r")
+    a3 = project.store.attempt_latest_for_task(revision_id, "T001").id
+    dispatch.task_recover(project, "T001", "operator confirmed termination")
+    assert project.store.attempt_get(a3).ended_at is not None
+    assert project.store.completion_receipt_for_attempt(a3) is None
+    with pytest.raises(ConflictError, match="stale"):
+        dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "r.json")),
+            attempt_id=a3)
+
+    # --- superseded revision: revision 1's accepted+passed task T002 has a
+    # receipt; after a replan reuses the same task number in revision 2,
+    # quoting revision 1's attempt is stale — the receipt belongs to work
+    # the active revision replaced.
+    dispatch.task_claim(project, "T002")
+    t2a = project.store.attempt_latest_for_task(revision_id, "T002").id
+    t2evidence = write_evidence(tmp_path, "t2.json")
+    t2_first = dispatch.task_complete(
+        project, "T002", str(t2evidence), attempt_id=t2a)
+    assert t2_first["status"] == "verifying"  # the agent verdict is pending
+    assert project.store.completion_receipt_for_attempt(t2a) is not None
+    dispatch.verify_submit(project, "T002", "pass", None, None)
+    assert active_task(project, "T002").status == "passed"
+
+    ir2 = ir_for(goal, [
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["true"]),
+    ])
+    ir2["replan"] = {
+        "prior_revision": 1,
+        "tasks": [{
+            "task": "T002", "classification": "confirm",
+            "sources": [{"revision": 1, "task_id": "T002"}],
+            "confirm_verification": ["true"],
+            "artifacts": [str(t2evidence)],
+        }],
+        "superseded": [
+            # T001 (failed, recovered, not carried forward) must still be
+            # declared — every task of the superseded revision is.
+            {"revision": 1, "task_id": "T001", "disposition": "dropped",
+             "successors": [],
+             "note": "failed round superseded; the work is not carried"
+                     " forward in this replan"},
+            {"revision": 1, "task_id": "T002", "disposition": "confirmed",
+             "successors": ["T002"]},
+        ],
+    }
+    dispatch.submit_plan(project, ir2)
+    revision2 = active_task(project, "T002").revision_id
+    assert revision2 != revision_id
+    with pytest.raises(ConflictError, match="stale.*different"):
+        dispatch.task_complete(
+            project, "T002", str(t2evidence), attempt_id=t2a)
+    # the fresh revision's task starts from scratch — nothing inherited
+    assert active_task(project, "T002").status == "runnable"
+    # and the SAME task number's new round completes on its own identity
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T002")
+    t2b = project.store.attempt_latest_for_task(revision2, "T002").id
+    (project.root / "t1.marker").write_text("done")
+    t2_second = dispatch.task_complete(
+        project, "T002", str(write_evidence(tmp_path, "t2b.json")),
+        attempt_id=t2b)
+    assert t2_second["status"] == "passed" and t2_second["attempt"] == t2b
+
+
+def test_cancelled_task_rejects_retransmission_of_its_own_receipt(
+        project, goal, tmp_path):
+    """取消关闭后： a task the goal cancel closed refuses the retransmission
+    of its OWN accepted delivery even though the receipt exists and the
+    body is identical — the historical acceptance cannot reopen what the
+    wrap-up cancelled. The refusal is the stale diagnosis, naming the
+    cancel."""
+    from orx.records import ConflictError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        # An agent entry keeps the verdict pending after acceptance, so the
+        # task sits verifying — exactly the state the cancel sweep closes.
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001", session="sess-c")
+    revision_id = active_task(project, "T001").revision_id
+    attempt_id = project.store.attempt_latest_for_task(revision_id, "T001").id
+    evidence = write_evidence(tmp_path, "c.json")
+    accepted = dispatch.task_complete(
+        project, "T001", str(evidence), attempt_id=attempt_id)
+    assert accepted["status"] == "verifying"
+    assert project.store.completion_receipt_for_attempt(attempt_id) is not None
+
+    cancel = dispatch.goal_cancel(project)
+    # verifying with no dispatched verifier: the sweep closes it now
+    assert "T001" in cancel["cancelled"]["tasks"]
+    assert project.store.goal_get(goal.id).status == "cancelled"
+    assert project.store.task_get(revision_id, "T001").status == "cancelled"
+
+    with pytest.raises(ConflictError, match="stale") as excinfo:
+        dispatch.task_complete(
+            project, "T001", str(evidence), attempt_id=attempt_id)
+    assert "goal cancel closed this task" in str(excinfo.value)
+
+
+def test_unquoted_complete_never_guesss_and_red_gate_allows_resubmission(
+        project, goal, tmp_path):
+    """The compatibility path without an explicit attempt identity never
+    guesses an old delivery's ownership (no receipt replay there), and an
+    UNACCEPTED red-gate delivery leaves the attempt open — the same
+    attempt fixes and resubmits, and only the accepted round has a
+    receipt."""
+    from orx.records import ConflictError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f u.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    revision_id = active_task(project, "T001").revision_id
+    attempt = project.store.attempt_latest_for_task(revision_id, "T001")
+
+    # Red gate: rejected, attempt open, and NO receipt — a rejected
+    # delivery was never accepted.
+    with pytest.raises(DeliveryRejected) as excinfo:
+        dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "red.json")))
+    assert excinfo.value.kind == "gate"
+    attempt_now = project.store.attempt_get(attempt.id)
+    assert attempt_now.ended_at is None and attempt_now.result is None
+    assert project.store.completion_receipt_for_attempt(attempt.id) is None
+
+    # Same attempt fixes and resubmits: accepted, one receipt.
+    (project.root / "u.marker").write_text("done")
+    accepted = dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "green.json")),
+        attempt_id=attempt.id)
+    assert accepted["status"] == "passed"
+    assert project.store.completion_receipt_for_attempt(attempt.id) is not None
+
+    # The un-quoted compatibility entry does not guess that this caller owns
+    # the accepted delivery: it is refused on the task's status, and no
+    # receipt is returned or written.
+    facts = _receipt_facts(project, revision_id, "T001", attempt.id)
+    with pytest.raises(ConflictError, match="requires running"):
+        dispatch.task_complete(
+            project, "T001", str(write_evidence(tmp_path, "again.json")))
+    assert _receipt_facts(project, revision_id, "T001", attempt.id) == facts
+
+
+def test_concurrent_duplicate_completes_are_accepted_exactly_once(
+        project, goal, tmp_path, monkeypatch):
+    """Two writers race the SAME completion (same attempt, same content),
+    each through its own project connection, released by one barrier:
+    exactly one acceptance lands — one receipt, one completion evidence
+    row, one lifecycle 'complete' — and both callers receive the SAME
+    receipt. The usage book is written once (no double accounting)."""
+    import threading
+
+    from test_host_progress_e2e import make_zcode_usage_db
+
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None)],
+        usages=[("r1", "lr1", 0, "sess-worker", "completed", 1000, 50, 980, 1050)],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f c.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    claimed = dispatch.task_claim(project, "T001", session="sess-worker")
+    attempt_id = claimed["attempt"]
+    revision_id = active_task(project, "T001").revision_id
+    (project.root / "c.marker").write_text("done")
+    evidence = write_evidence(tmp_path, "race.json")
+
+    results: dict[str, dict] = {}
+    errors: dict[str, BaseException] = {}
+    barrier = threading.Barrier(2, timeout=30)
+
+    def completer(key):
+        proj = dispatch.open_project()  # this thread's own connection
+        try:
+            barrier.wait()
+            results[key] = dispatch.task_complete(
+                proj, "T001", str(evidence), attempt_id=attempt_id)
+        except BaseException as exc:  # noqa: BLE001 — recorded, asserted below
+            errors[key] = exc
+        finally:
+            proj.close()
+
+    t1 = threading.Thread(target=completer, args=("a",))
+    t2 = threading.Thread(target=completer, args=("b",))
+    t1.start(); t2.start(); t1.join(timeout=60); t2.join(timeout=60)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert errors == {}, errors
+
+    # Both callers hold the SAME receipt (the loser replayed the winner's
+    # acceptance inside its transaction) — accepted exactly once.
+    assert results["a"] == results["b"]
+    assert results["a"]["status"] == "passed"
+    receipt = project.store.completion_receipt_for_attempt(attempt_id)
+    assert receipt is not None
+    assert receipt.receipt == results["a"]
+
+    # Exactly one acceptance's facts exist: one completion evidence row, one
+    # 'complete' lifecycle event, one verdict transition to passed — and one
+    # usage row (the loser never re-ran the backfill).
+    completion_rows = [
+        e for e in project.store.evidence_rows_for_task(revision_id, "T001")
+        if e.kind == "completion"
+    ]
+    assert len(completion_rows) == 1
+    events = [e.event for e in project.store.task_events(revision_id, "T001")]
+    assert events.count("complete") == 1
+    assert project.store.task_get(revision_id, "T001").status == "passed"
+    usage_rows = [
+        row for row in project.store.usage_rows()
+        if row["attempt_id"] == attempt_id
+    ]
+    assert len(usage_rows) == 1 and usage_rows[0]["source"] == "zcode_db"
+    assert (usage_rows[0]["input_tokens"], usage_rows[0]["output_tokens"]) \
+        == (1000, 50)
+
+
+def test_fault_injection_around_the_acceptance_commit(
+        project, goal, tmp_path, monkeypatch):
+    """A fault BEFORE the acceptance transaction commits rolls the whole
+    acceptance back — no half-closed attempt, no ghost receipt, no orphan
+    evidence — and the same attempt completes normally afterwards. A fault
+    AFTER the commit is indistinguishable from response loss at the
+    persistence boundary (the receipt is written IN the commit), so the
+    retransmission test above is its recovery; here the state consistency
+    it must find is pinned directly."""
+    from orx import machine as machine_mod
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f k.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001", session="sess-k")
+    revision_id = active_task(project, "T001").revision_id
+    attempt_id = project.store.attempt_latest_for_task(
+        revision_id, "T001").id
+    (project.root / "k.marker").write_text("done")
+    evidence = write_evidence(tmp_path, "k.json")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected fault before the acceptance commit")
+
+    original_transition = machine_mod.transition
+    monkeypatch.setattr(machine_mod, "transition", boom)
+    with pytest.raises(RuntimeError, match="injected fault"):
+        dispatch.task_complete(
+            project, "T001", str(evidence), attempt_id=attempt_id)
+
+    # Total rollback: the attempt is open with no result, no receipt, no
+    # completion evidence, no lifecycle event, and the task still running —
+    # no half-closed state anywhere.
+    attempt = project.store.attempt_get(attempt_id)
+    assert attempt.ended_at is None and attempt.result is None
+    assert project.store.completion_receipt_for_attempt(attempt_id) is None
+    assert [
+        e for e in project.store.evidence_rows_for_task(revision_id, "T001")
+        if e.kind == "completion"
+    ] == []
+    assert "complete" not in [
+        e.event for e in project.store.task_events(revision_id, "T001")]
+    assert active_task(project, "T001").status == "running"
+
+    # The same attempt recovers: un-faulted (this one attribute only — the
+    # fixture's own isolation must survive), the completion lands.
+    monkeypatch.setattr(machine_mod, "transition", original_transition)
+    accepted = dispatch.task_complete(
+        project, "T001", str(evidence), attempt_id=attempt_id)
+    assert accepted["status"] == "passed"
+
+    # After-commit fault == response loss: the caller's view may be gone,
+    # but the persisted state is one consistent acceptance whose receipt
+    # matches the database row for row (re-read through a fresh project,
+    # as a restarted process would).
+    project.close()
+    reopened = dispatch.open_project()
+    try:
+        receipt = reopened.store.completion_receipt_for_attempt(attempt_id)
+        assert receipt is not None
+        assert receipt.receipt == accepted
+        closed = reopened.store.attempt_get(attempt_id)
+        assert closed.ended_at is not None and closed.result == "completed"
+        assert reopened.store.completion_receipt_for_attempt(attempt_id).id \
+            == receipt.id  # exactly one receipt row, no ghost
+    finally:
+        reopened.close()

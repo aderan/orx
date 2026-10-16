@@ -43,6 +43,8 @@ SCHEMA_TABLES = {
     "replan_artifact_sources",
     # v10 (G006): host worker progress reports (docs/host-progress-contract §6)
     "attempt_progress",
+    # v15 (G010 T005): persisted original receipts of accepted completions
+    "completion_receipts",
 }
 
 

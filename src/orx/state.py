@@ -22,7 +22,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 14
+CODE_SCHEMA_VERSION = 15
 
 
 def mint_nonce() -> str:
@@ -720,6 +720,44 @@ def _migrate_v14(conn: sqlite3.Connection) -> None:
     )
 
 
+# v15 (G010 T005): completion receipts — the persisted ORIGINAL response of
+# an accepted `task complete`, so a retransmission (the worker lost the
+# response, a new process reopens, the Goal already finished) replays the
+# same receipt instead of re-accepting. Additive only: one new table, no
+# column changes, nothing backfilled (a database upgraded from v14 has no
+# receipts — pre-v15 accepted completions read as they always did, and no
+# code path derives a receipt from the evidence or attempt rows). Identity
+# is the attempt row the delivery closed (UNIQUE), carrying its revision,
+# task, delivery status, the NORMALIZED CONTENT digest of the accepted
+# delivery document, the identity metadata the acceptance closed with
+# (session_ref / actual_model — a retransmission may not contradict them),
+# and the verbatim receipt payload. Rows are write-once: the receipt is a
+# fact of the acceptance, never rewritten by a later submission.
+SCHEMA_V15_RECEIPTS = """
+CREATE TABLE IF NOT EXISTS completion_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL UNIQUE REFERENCES attempts(id),
+  revision_id INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  delivery_status TEXT NOT NULL,
+  delivery_digest TEXT NOT NULL,
+  session_ref TEXT,
+  actual_model TEXT,
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+"""
+
+
+def _migrate_v15(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_V15_RECEIPTS)
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -736,6 +774,7 @@ MIGRATIONS: dict[int, callable] = {
     12: _migrate_v12,
     13: _migrate_v13,
     14: _migrate_v14,
+    15: _migrate_v15,
 }
 
 
@@ -881,6 +920,36 @@ class Verification:
     exit_code: int | None
     passed: bool
     output_path: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class CompletionReceipt:
+    """The persisted ORIGINAL response of one accepted `task complete`
+    (G010 T005, schema v15).
+
+    Identity is the attempt row the delivery closed — one receipt per
+    attempt, ever. The receipt freezes what the acceptance decided: the
+    delivery's status, the NORMALIZED CONTENT digest of the delivery
+    document (path/mtime never enter it), the identity metadata the
+    acceptance closed with (session_ref / actual_model), and the response
+    payload verbatim. A retransmission with the same digest and
+    non-contradicting metadata replays this receipt and writes nothing;
+    anything else is a conflict, and a receipt NEVER substitutes for the
+    current-ownership (stale) checks — replay happens only after the
+    attempt is still the task's latest attempt in the active revision and
+    the task was not cancelled.
+    """
+
+    id: int
+    attempt_id: int
+    revision_id: int
+    task_id: str
+    delivery_status: str
+    delivery_digest: str
+    session_ref: str | None
+    actual_model: str | None
+    receipt: dict
     created_at: str
 
 
@@ -1198,6 +1267,21 @@ def _verification(r: sqlite3.Row) -> Verification:
         exit_code=r["exit_code"],
         passed=bool(r["passed"]),
         output_path=r["output_path"],
+        created_at=r["created_at"],
+    )
+
+
+def _completion_receipt(r: sqlite3.Row) -> CompletionReceipt:
+    return CompletionReceipt(
+        id=r["id"],
+        attempt_id=r["attempt_id"],
+        revision_id=r["revision_id"],
+        task_id=r["task_id"],
+        delivery_status=r["delivery_status"],
+        delivery_digest=r["delivery_digest"],
+        session_ref=r["session_ref"],
+        actual_model=r["actual_model"],
+        receipt=_j(r["receipt_json"], {}),
         created_at=r["created_at"],
     )
 
@@ -2986,6 +3070,63 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM usage_observations WHERE profile = ? ORDER BY id",
             (profile,)).fetchall()
+
+    # -- completion receipts (G010 T005, schema v15) ------------------------
+
+    def completion_receipt_store(
+        self,
+        attempt_id: int,
+        revision_id: int,
+        task_id: str,
+        delivery_status: str,
+        delivery_digest: str,
+        session_ref: str | None,
+        actual_model: str | None,
+        receipt: dict,
+    ) -> CompletionReceipt:
+        """Persist the ORIGINAL receipt of one accepted `task complete`,
+        write-once per attempt (the UNIQUE(attempt_id) row IS the
+        acceptance). Called inside the caller's acceptance transaction, the
+        row commits atomically with the attempt closure and the task's
+        lifecycle transitions. A second store for the same attempt is a
+        ConflictError — the receipt is a fact of the first acceptance and
+        is never rewritten, so no later submission can silently replace
+        what a lost response already recorded."""
+        with self.tx():
+            existing = self.conn.execute(
+                "SELECT id FROM completion_receipts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if existing is not None:
+                raise records.ConflictError(
+                    f"attempt {attempt_id} already has completion receipt"
+                    f" {existing['id']}; receipts are write-once facts of"
+                    " the first acceptance"
+                )
+            cur = self.conn.execute(
+                "INSERT INTO completion_receipts(attempt_id, revision_id, task_id,"
+                " delivery_status, delivery_digest, session_ref, actual_model,"
+                " receipt_json, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (attempt_id, revision_id, task_id, delivery_status,
+                 delivery_digest, session_ref, actual_model,
+                 json.dumps(receipt), now()),
+            )
+            rid = cur.lastrowid
+        row = self.conn.execute(
+            "SELECT * FROM completion_receipts WHERE id = ?", (rid,)
+        ).fetchone()
+        return _completion_receipt(row)
+
+    def completion_receipt_for_attempt(self, attempt_id: int) -> CompletionReceipt | None:
+        """The attempt's receipt, or None when its delivery was never
+        accepted (a pre-v15 completion, a rejected gate, a recover/retry
+        closure). None is unknown; it is never derived from evidence rows,
+        attempt results, or any other table."""
+        row = self.conn.execute(
+            "SELECT * FROM completion_receipts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return _completion_receipt(row) if row else None
 
     def seed_resources(self, profile_names: list[str]) -> None:
         """orx init: every profile starts `unknown` so it stays routable."""

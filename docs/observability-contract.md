@@ -1,8 +1,8 @@
-# ORX observability read contract (schema v8/v9/v10/v11/v12/v13/v14)
+# ORX observability read contract (schema v8/v9/v10/v11/v12/v13/v14/v15)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
 v9, 2026-10-06 for v10, 2026-10-06 for v11, 2026-10-08 for v12, 2026-10-16
-for v13, 2026-10-16 for v14). This document is the supported
+for v13, 2026-10-16 for v14, 2026-10-16 for v15). This document is the supported
 way to analyze `.orx/state.db` from outside this repository. The analysis
 implementation (`orx-analytics`) lives in a separate repository and is not
 shipped here; this contract names no fixed checkout location for it — where
@@ -33,6 +33,7 @@ least X".
 | `12` | read everything; the usage `source` CHECK admits `zcode_db` (see the sixth amendment) |
 | `13` | read everything; `goals.status` admits `paused` (see the eighth amendment) |
 | `14` | read everything; `goals.status` admits `cancelling` (see the ninth amendment) |
+| `15` | read everything; adds the `completion_receipts` table (see the tenth amendment) |
 | integer greater than 14 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
@@ -170,6 +171,26 @@ original file in place. Analytics stays read-only over both values: it
 displays `cancelling`/`cancelled` and the recorded dispositions, and never
 gains scheduling authority (the v13 amendment's rule, unchanged).
 
+The tenth amendment, dated 2026-10-16 (G010 T005 idempotent `task
+complete`), adds **v15**: one new table `completion_receipts`, additive
+only, no column changes, nothing backfilled.
+
+| Change | Meaning |
+|---|---|
+| `completion_receipts` (new table) | The persisted ORIGINAL response of one accepted `task complete`. Identity is `attempt_id` (UNIQUE — one receipt per attempt, write-once). Columns: `revision_id`, `task_id`, `delivery_status` (the accepted delivery's `passed`/`failed`/`blocked`), `delivery_digest` (sha256 over the delivery document's normalized content — status, summary, each check's command/exit_code, artifacts; never the evidence file's path or mtime), `session_ref` / `actual_model` (the identity metadata the acceptance closed with), `receipt_json` (the response payload verbatim — the same object the completing caller received), `created_at`. The receipt commits in ONE transaction with the attempt closure, the task's lifecycle transitions, the usage backfill, and the run/Goal refresh: there is no state where the attempt is closed without its receipt or vice versa. A database upgraded from v14 has no receipts — pre-v15 accepted completions read exactly as they always did, and no code path derives one. |
+
+Read-side meaning: a receipt row says "this attempt's delivery was
+accepted, and THIS was the response". A retransmission of the same
+delivery replays the stored payload and writes nothing; conflicting
+content or metadata under the same identity is refused. The receipt is a
+replay surface only — it is never evidence that a verification passed
+(the `verifications` rows remain the authority) and it never overrides
+current ownership: a replaced attempt (retry/recover), a superseded
+revision, or a task the goal cancel closed is still judged stale. Readers
+counting completions should count acceptances via receipts only when they
+want the submission fact; task outcomes remain `tasks.status` plus
+`verifications`.
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -201,7 +222,7 @@ runs a completion) separate.
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9', '10', '11', '12', '13', '14') THEN 'ok'
+  ) IN ('8', '9', '10', '11', '12', '13', '14', '15') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```

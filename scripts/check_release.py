@@ -118,7 +118,9 @@ REPLAN_V9_TABLES = (
     "replan_mappings", "replan_task_mappings", "replan_sources",
     "replan_superseded", "replan_reports", "replan_artifact_sources",
 )
-V11_ADDITIVE_TABLES = frozenset(REPLAN_V9_TABLES) | {"attempt_progress"}
+# v15 (G010 T005) adds completion_receipts to the additive set.
+V11_ADDITIVE_TABLES = (frozenset(REPLAN_V9_TABLES) | {"attempt_progress"}
+                       | {"completion_receipts"})
 # v8 tables that must carry non-trivial data for the upgrade identity check
 # to mean anything (a nearly-empty fixture would pass vacuously).
 V8_CORE_TABLES = (

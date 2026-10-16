@@ -1,0 +1,32 @@
+{
+  "status": "passed",
+  "summary": "G010/T005 有身份约束的幂等 complete 与持久化原回执：schema v15 追加式 completion_receipts 表（按 attempt 唯一、write-once，零回填）；交付摘要 verify.delivery_digest 基于规范化内容（status/summary/checks 的 command+exit_code/artifacts 的排序紧凑 JSON sha256，排除证据文件路径与 mtime、check log 指针、legacy 键）；task_complete 幂等语义保持 G009 证据校验与 stale 顺序——latest 归属检查前移至 closed 之前，历史回执不可绕过当前归属（迟到结果不覆盖新尝试），任务取消关闭后即使有回执仍按 stale 拒绝；已受理重传（响应丢失/新进程/Goal 完成）纯读重放原回执，不重跑门禁、不新增执行者/证据/验证/生命周期事件/用量、不重写会话归属；同身份冲突内容/冲突 session/冲突 actual_model 按名拒绝；受理（证据+replan 链+attempt 关闭+用量回填+转换+刷新+回执）为单一 BEGIN IMMEDIATE 事务，并发重复在事务内复查回执恰受理一次，故障注入覆盖提交前全量回滚与提交后=响应丢失；无显式 attempt 兼容入口不查回执不猜测归属，红门禁不留回执且原 attempt 可修复重交；CLI blocked/failed 交付路径同经原子受理。新增 9 例回归（test_state 2 + test_lifecycle 7，含真实子进程重传、双线程屏障并发、取消/supersede/retry/recover 归属优先），prescribed 四+四文件 189 passed，全量 1134 passed 零新增 skip，git diff --check（排除 m1.2-report.md）干净。",
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_state.py tests/test_lifecycle.py tests/test_delivery_gate_e2e.py tests/test_usage_autobill.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T005/01-0003-command.log"
+    },
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_host_recovery_facts.py tests/test_host_progress_e2e.py tests/test_revisions.py tests/test_replan_e2e.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T005/02-0004-command.log"
+    },
+    {
+      "command": "git diff --check -- . ':!docs/m1.2-report.md'",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T005/03-0005-command.log"
+    }
+  ],
+  "artifacts": [
+    "src/orx/state.py",
+    "src/orx/dispatch.py",
+    "src/orx/verify.py",
+    "tests/test_state.py",
+    "tests/test_lifecycle.py",
+    "docs/goal-lifecycle.md",
+    "docs/observability-contract.md",
+    "docs/diagnostics/g010/t005-idempotent-complete.md",
+    "IMPLEMENTATION_PLAN.md"
+  ]
+}

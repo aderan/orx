@@ -3235,12 +3235,16 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     if delivery is not None and delivery["status"] in ("blocked", "failed"):
         # The worker's own non-delivery claim: recorded exactly like the
         # host `task complete` path records it — same reason prefixes, same
-        # evidence contract. There is no success claim, so no gate runs.
+        # evidence contract, and (G010 T005) the same ONE-transaction
+        # acceptance with its persisted receipt. There is no success claim,
+        # so no gate runs.
         delivery_path = _write_cli_delivery_record(
             project, run.id, task.task_id, attempt.id, delivery)
-        outcome = _record_failed_delivery(
-            project, store, goal, run, revision, store.task_get(revision.id, task.task_id),
-            attempt, delivery, Path(delivery_path), None,
+        outcome = _accept_delivery(
+            project, goal, run, revision,
+            store.task_get(revision.id, task.task_id),
+            attempt, delivery, verify.delivery_digest(delivery),
+            Path(delivery_path), None,
         )
         outcome.update({"profile": profile.name, "log": log,
                         "prompt_file": prompt_file})
@@ -4507,7 +4511,27 @@ def task_complete(
     Phase B: a completion may quote the attempt id it answers (`task claim`
     returned it). A quoted attempt that is closed, foreign, or no longer the
     task's latest attempt is a stale submission and is rejected — a late
-    worker must not close the attempt a retry already replaced."""
+    worker must not close the attempt a retry already replaced.
+
+    G010 T005 — identity-constrained idempotence: an ACCEPTED delivery
+    persists its original receipt atomically with the attempt closure
+    (schema v15). A retransmission of that delivery — the response was
+    lost, a new process reopens, even the Goal already finished — replays
+    the persisted receipt verbatim when ALL of these hold: same current
+    revision/task, the same explicit attempt identity, that attempt still
+    the task's latest, the task not cancelled, the same normalized content
+    digest, and identity metadata (session, actual model) that does not
+    contradict what the acceptance recorded. A replay re-runs nothing (no
+    delivery gate, no executor, evidence, verification, lifecycle event,
+    or usage) and never rewrites session ownership. Conflicting content or
+    metadata under the same identity is rejected by name, and a historical
+    receipt NEVER bypasses the stale checks: ownership (latest attempt,
+    active revision, cancelled task) is judged FIRST, so a retry/recover
+    replacement, a superseded revision, or a cancel closure still rejects
+    a late delivery as stale whatever it carries. The un-quoted
+    compatibility path never consults receipts — it does not guess which
+    old delivery a caller might mean; an unaccepted (red-gate) delivery
+    leaves the attempt open for the same-attempt fix-and-resubmit loop."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -4549,6 +4573,12 @@ def task_complete(
             fields=evidence_errors,
         )
 
+    # The delivery's identity for idempotence is its NORMALIZED CONTENT
+    # (verify.delivery_digest): not the evidence file's path, not its
+    # modification time — the same claim re-delivered from another file is
+    # the same delivery.
+    digest = verify.delivery_digest(delivery)
+
     if attempt_id is not None:
         attempt = store.attempt_get(attempt_id)
         if attempt.role != Role.WORKER.value:
@@ -4560,17 +4590,40 @@ def task_complete(
                 f"stale submission: attempt {attempt_id} belongs to a different"
                 " revision/task than the active one"
             )
-        if attempt.ended_at is not None:
-            raise ConflictError(
-                f"stale submission: attempt {attempt_id} is already closed"
-                f" (result {attempt.result!r})"
-            )
+        # Ownership BEFORE receipts (G010 T005): the latest-attempt check
+        # runs ahead of the closed check so a historical receipt can never
+        # bypass current ownership. A retry/recover that routed a newer
+        # attempt, or a replan that superseded this revision, rejects the
+        # late delivery as stale whatever the attempt carries — a late
+        # result never overwrites the new attempt.
         latest = store.attempt_latest_for_task(revision.id, task.task_id)
         if latest is not None and latest.id != attempt_id:
             raise ConflictError(
                 f"stale submission: attempt {attempt_id} is not the latest attempt"
                 f" for task {task_id} (a newer attempt exists); a late completion"
                 " must not close it"
+            )
+        if attempt.ended_at is not None:
+            # A closed attempt with a receipt was ACCEPTED: its original
+            # response replays for a same-content retransmission (a closed
+            # attempt without a receipt stays the plain stale rejection of
+            # the G009 late-worker path). A task the goal cancel closed is
+            # stale even with a receipt — the historical acceptance cannot
+            # reopen what the wrap-up cancelled.
+            receipt = store.completion_receipt_for_attempt(attempt.id)
+            if receipt is not None and TaskStatus(task.status) is not TaskStatus.CANCELLED:
+                return _replay_completion_receipt(
+                    receipt, digest=digest,
+                    session_ref=session_ref, actual_model=actual_model,
+                )
+            raise ConflictError(
+                f"stale submission: attempt {attempt_id} is already closed"
+                f" (result {attempt.result!r})"
+                + (
+                    "; the goal cancel closed this task after that acceptance"
+                    " — a historical receipt cannot reopen it"
+                    if receipt is not None else ""
+                )
             )
         # The quoted identity is current; only now may the task's status
         # refuse the completion (see the gate-order note above).
@@ -4603,16 +4656,20 @@ def task_complete(
     mismatch = _record_reported_model(store, attempt.id, attempt.model, actual_model)
 
     if delivery["status"] in ("failed", "blocked"):
-        return _record_failed_delivery(
-            project, store, goal, run, revision, task, attempt,
-            delivery, evidence_path, mismatch,
+        # A non-delivery is still an ACCEPTED submission: it closes the
+        # attempt and fails the task atomically with its own receipt.
+        return _accept_delivery(
+            project, goal, run, revision, task, attempt, delivery, digest,
+            evidence_path, mismatch,
         )
 
     # status == "passed": the delivery gate. Force every command entry to
     # run fresh through the same runner `orx task check` uses, bound to the
     # completing attempt — a green self-check earlier in the session is not
     # an exemption. Agent entries are not executed and never gate the
-    # completion (the independent verifier still judges them).
+    # completion (the independent verifier still judges them). An accepted
+    # retransmission never reaches this point: the receipt replay above
+    # returned before any check could run.
     gate = verify.run_task_check(
         store, project.root, run.id, revision.id, task,
         timeout=project.config.check_timeout_sec,
@@ -4623,7 +4680,9 @@ def task_complete(
         # Rejected: nothing below this line runs. No completion evidence is
         # attached, the attempt stays open, and the task keeps the status it
         # had (running / waiting_external), so the worker can fix the red
-        # checks and complete again on the same attempt.
+        # checks and complete again on the same attempt. No receipt exists
+        # for a rejected delivery — the resubmission is a fresh attempt at
+        # acceptance, not a replay.
         raise verify.DeliveryRejected(
             f"delivery gate rejected completion for task {task_id}: "
             f"{len(failures)} of {gate['summary']['total']} command check(s)"
@@ -4647,105 +4706,195 @@ def task_complete(
             },
         )
 
-    store.evidence_add(attempt.id, "completion", str(evidence_path))
-    # The accepted delivery persists the replan reference chain bound to the
-    # completing attempt: provenance rows for every resolved (task <->
-    # source) edge plus the delivery snapshot (existence + digest of each
-    # declared reference at delivery time). Supporting material only — it
-    # writes no verification rows and inherits no prior pass.
-    replan_delivery = _record_replan_delivery(
-        project, run, revision, task, attempt, delivered_evidence=str(evidence_path),
-    )
-    store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
-    usage_backfill = _usage_autobill(project, attempt.id)
-    machine.transition(
-        store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
-        reason="completion claimed; verification starting",
+    return _accept_delivery(
+        project, goal, run, revision, task, attempt, delivery, digest,
+        evidence_path, mismatch, gate=gate,
     )
 
-    # The gate above already recorded a fresh row for every command entry,
-    # so this only covers entries with no row at all (there are none today);
-    # apply_verdict then judges each entry by its latest row — the gate's.
-    verify.run_command_verifications(
-        store,
-        project.root,
-        run.id,
-        revision.id,
-        store.task_get(revision.id, task.task_id),
-        timeout=project.config.check_timeout_sec,
-        attempt_id=attempt.id,
-    )
-    verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
+
+def _replay_completion_receipt(
+    receipt, *, digest: str, session_ref: str | None, actual_model: str | None,
+) -> dict:
+    """Replay the PERSISTED original receipt of an accepted delivery (G010
+    T005) — the idempotent retransmission path — or refuse it by name.
+
+    Replay requires the same normalized delivery content and identity
+    metadata that does not contradict what the acceptance recorded:
+    anything else is an explicit ConflictError (the same identity cannot
+    re-deliver different content; a retransmission cannot rewrite the
+    session or model the acceptance closed with). The replay itself is a
+    pure read: no executor, evidence, verification, lifecycle event, or
+    usage is added, and the attempt's session ownership is untouched."""
+    if receipt.delivery_digest != digest:
+        raise ConflictError(
+            f"delivery content conflicts with the accepted receipt for"
+            f" attempt {receipt.attempt_id}: this submission's normalized"
+            f" content digest {digest} differs from the accepted"
+            f" {receipt.delivery_digest} — the same identity cannot"
+            " re-deliver different content"
+        )
+    if session_ref is not None and session_ref != receipt.session_ref:
+        raise ConflictError(
+            f"conflicting identity metadata: the accepted receipt for"
+            f" attempt {receipt.attempt_id} recorded session"
+            f" {receipt.session_ref!r}; session {session_ref!r} cannot"
+            " rewrite the session ownership of an accepted delivery"
+        )
+    if actual_model is not None and actual_model != receipt.actual_model:
+        raise ConflictError(
+            f"conflicting identity metadata: the accepted receipt for"
+            f" attempt {receipt.attempt_id} recorded actual model"
+            f" {receipt.actual_model!r}; {actual_model!r} contradicts it"
+        )
+    return dict(receipt.receipt)
+
+
+def _accept_delivery(
+    project: Project, goal: Goal, run: Run, revision: Revision, task: TaskRow,
+    attempt, delivery: dict, digest: str, evidence_path: Path,
+    mismatch: dict | None, gate: dict | None = None,
+) -> dict:
+    """Accept one delivery in a SINGLE transaction (G010 T005): the
+    completion evidence, the replan reference chain (a passed delivery),
+    the attempt closure, the usage backfill, the task's lifecycle
+    transitions, the derived run/Goal refresh, the cancel wrap-up
+    convergence, and the persisted RECEIPT commit together or not at all.
+
+    A fault before the commit rolls everything back — the attempt stays
+    open with no receipt and no half-closed state, and the worker may
+    complete again. After the commit the receipt IS the acceptance record
+    (the response and the persisted fact are one unit), so a lost response
+    or a crashed process is recovered by retransmission, which replays the
+    receipt without re-running anything.
+
+    The concurrent-duplicate seam: a second writer that ran the delivery
+    gate while this one was between its pre-checks and this transaction
+    lands here serialized after the first acceptance (BEGIN IMMEDIATE).
+    The first acceptance's receipt is already visible inside this
+    transaction: same normalized content replays it — exactly one
+    acceptance, one receipt, one set of lifecycle facts ever lands, and no
+    book is written twice."""
+    store = project.store
+    with store.tx():
+        receipt = store.completion_receipt_for_attempt(attempt.id)
+        if receipt is not None:
+            return _replay_completion_receipt(
+                receipt, digest=digest, session_ref=None, actual_model=None,
+            )
+        result = _record_accepted_delivery(
+            project, store, goal, run, revision, task, attempt,
+            delivery, evidence_path, mismatch, gate,
+        )
+        # The identity metadata the acceptance closed with: read fresh
+        # inside the transaction so a late session binding or reported
+        # model this same call wrote is what the receipt freezes.
+        closed = store.attempt_get(attempt.id)
+        store.completion_receipt_store(
+            attempt_id=attempt.id,
+            revision_id=revision.id,
+            task_id=task.task_id,
+            delivery_status=delivery["status"],
+            delivery_digest=digest,
+            session_ref=closed.session_ref,
+            actual_model=closed.actual_model,
+            receipt=result,
+        )
+    return result
+
+
+def _record_accepted_delivery(
+    project: Project, store: Store, goal: Goal, run: Run, revision: Revision,
+    task: TaskRow, attempt, delivery: dict, evidence_path: Path,
+    mismatch: dict | None, gate: dict | None,
+) -> dict:
+    """The acceptance writes and the acceptance response payload, INSIDE the
+    caller's one transaction (G010 T005). Split from _accept_delivery for
+    readability; never call it outside that transaction. A failed/blocked
+    delivery has no success claim to gate (the caller did not run the gate)
+    — its reported red/not-run checks are quoted in the failure reason
+    instead, blocked distinguished as an environment/tool block so retries
+    and analytics can tell it apart from a code failure."""
+    passed = delivery["status"] == "passed"
+    replan_delivery = None
+    if passed:
+        store.evidence_add(attempt.id, "completion", str(evidence_path))
+        # The accepted delivery persists the replan reference chain bound to
+        # the completing attempt: provenance rows for every resolved (task
+        # <-> source) edge plus the delivery snapshot (existence + digest of
+        # each declared reference at delivery time). Supporting material
+        # only — it writes no verification rows and inherits no prior pass.
+        replan_delivery = _record_replan_delivery(
+            project, run, revision, task, attempt, delivered_evidence=str(evidence_path),
+        )
+        store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
+        usage_backfill = _usage_autobill(project, attempt.id)
+        machine.transition(
+            store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
+            reason="completion claimed; verification starting",
+        )
+        # The caller's gate already recorded a fresh row for every command
+        # entry, so this only covers entries with no row at all (there are
+        # none today); apply_verdict then judges each entry by its latest
+        # row — the gate's.
+        verify.run_command_verifications(
+            store,
+            project.root,
+            run.id,
+            revision.id,
+            store.task_get(revision.id, task.task_id),
+            timeout=project.config.check_timeout_sec,
+            attempt_id=attempt.id,
+        )
+        verdict = verify.apply_verdict(
+            store, revision.id, store.task_get(revision.id, task.task_id))
+        result = {
+            "task": task.task_id,
+            "status": store.task_get(revision.id, task.task_id).status,
+            "verdict": verdict,
+            "verification": _verification_counts(store, revision),
+            "attempt": attempt.id,
+            "delivery": {"status": "passed", "checks_run": gate["summary"]["total"]},
+            # What the closure's usage auto-backfill did (G010): recorded, or
+            # the stated reason it could not be — the caller sees the book's
+            # state without a second query.
+            "usage_backfill": usage_backfill,
+        }
+        if replan_delivery is not None:
+            result["replan_delivery"] = replan_delivery
+    else:
+        status = delivery["status"]
+        kind = "environment/tool blocked" if status == "blocked" else "worker-reported failure"
+        reason = f"delivery {status} ({kind}): {delivery['summary'].strip()}"
+        detail = verify.reported_check_detail(delivery)
+        if detail:
+            reason += f"; {detail}"
+        store.evidence_add(attempt.id, "completion", str(evidence_path))
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result=status, failure_reason=reason,
+        )
+        usage_backfill = _usage_autobill(project, attempt.id)
+        machine.transition(
+            store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
+            reason=reason, failure_reason=reason,
+        )
+        result = {
+            "task": task.task_id,
+            "status": store.task_get(revision.id, task.task_id).status,
+            "delivery": {"status": status, "reason": reason},
+            "attempt": attempt.id,
+            "verification": _verification_counts(store, revision),
+            "usage_backfill": usage_backfill,
+        }
+    if mismatch is not None:
+        result["model_mismatch"] = mismatch
     refresh(store, goal, run)
     # G010 T003: a real completion is a closing fact for the cancel wrap-up —
     # the delivery and its results are preserved exactly as recorded, and if
     # it was the last unconfirmed execution the Goal converges to cancelled
     # right here (never to done: the cancelling row blocks the completion
     # CAS, and no follow-up verification is dispatched).
-    goal_converged = _converge_cancelled(project, goal, run)
-    counts = _verification_counts(store, revision)
-    result = {
-        "task": task.task_id,
-        "status": store.task_get(revision.id, task.task_id).status,
-        "verdict": verdict,
-        "verification": counts,
-        "attempt": attempt.id,
-        "delivery": {"status": "passed", "checks_run": gate["summary"]["total"]},
-        # What the closure's usage auto-backfill did (G010): recorded, or
-        # the stated reason it could not be — the caller sees the book's
-        # state without a second query.
-        "usage_backfill": usage_backfill,
-    }
-    if goal_converged:
+    if _converge_cancelled(project, goal, run):
         result["goal_converged_cancelled"] = True
-    if replan_delivery is not None:
-        result["replan_delivery"] = replan_delivery
-    if mismatch is not None:
-        result["model_mismatch"] = mismatch
-    return result
-
-
-def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run,
-                            revision: Revision, task: TaskRow, attempt,
-                            delivery: dict, evidence_path: Path,
-                            mismatch: dict | None) -> dict:
-    """Record a worker-reported failed or blocked delivery and fail the task.
-
-    There is no success claim to gate, so the command checks are not re-run:
-    the worker's reported red/not-run checks are quoted in the failure
-    reason instead. blocked is an independent delivery result — the attempt
-    closes with result 'blocked' — and the recorded failure reason carries
-    the kind, so retries and analytics can tell an environment/tool block
-    apart from a code failure."""
-    status = delivery["status"]
-    kind = "environment/tool blocked" if status == "blocked" else "worker-reported failure"
-    reason = f"delivery {status} ({kind}): {delivery['summary'].strip()}"
-    detail = verify.reported_check_detail(delivery)
-    if detail:
-        reason += f"; {detail}"
-    store.evidence_add(attempt.id, "completion", str(evidence_path))
-    store.attempt_update(
-        attempt.id, ended_at=db_now(), result=status, failure_reason=reason,
-    )
-    usage_backfill = _usage_autobill(project, attempt.id)
-    machine.transition(
-        store, revision.id, task.task_id, "fail", TaskStatus.FAILED,
-        reason=reason, failure_reason=reason,
-    )
-    refresh(store, goal, run)
-    # G010 T003: a worker-reported failed/blocked delivery is a real closing
-    # fact; the cancel wrap-up converges on it like any other.
-    _converge_cancelled(project, goal, run)
-    result = {
-        "task": task.task_id,
-        "status": store.task_get(revision.id, task.task_id).status,
-        "delivery": {"status": status, "reason": reason},
-        "attempt": attempt.id,
-        "verification": _verification_counts(store, revision),
-        "usage_backfill": usage_backfill,
-    }
-    if mismatch is not None:
-        result["model_mismatch"] = mismatch
     return result
 
 

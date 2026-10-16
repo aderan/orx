@@ -86,7 +86,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 14
+        assert store.schema_version() == 15
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -337,7 +337,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -372,7 +372,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -412,7 +412,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -516,7 +516,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -602,7 +602,7 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 14
+            assert reopened.schema_version() == 15
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()
@@ -721,7 +721,7 @@ def test_replan_mapping_persists_renumbered_correspondence(project, goal):
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         again = reopened.replan_mapping_for(rev2)
         assert again is not None
         assert {t.task_id: t.classification for t in again.tasks} == {
@@ -979,7 +979,7 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1064,7 +1064,7 @@ def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch)
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1092,7 +1092,7 @@ def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 14
+            assert reopened.schema_version() == 15
             assert reopened.goal_get("G888").objective == "wal kept 9"
         finally:
             reopened.close()
@@ -1152,7 +1152,7 @@ def test_attempt_progress_append_latest_all_consistent_across_reopen(project, go
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         again_all = reopened.attempt_progress_all(attempt.id)
         assert [(r.id, r.sequence, r.phase, r.message, r.received_at) for r in again_all] == [
             (r.id, r.sequence, r.phase, r.message, r.received_at) for r in all_rows
@@ -1281,7 +1281,7 @@ def test_v9_to_v10_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1342,7 +1342,7 @@ def test_v10_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1369,7 +1369,7 @@ def test_v10_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 14
+            assert reopened.schema_version() == 15
             assert reopened.goal_get("G999").objective == "wal kept 10"
         finally:
             reopened.close()
@@ -1403,7 +1403,7 @@ def test_v10_to_v11_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         cols = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert "nonce" in cols
         # The legacy row is not rewritten: its nonce stays NULL and marker
@@ -1466,7 +1466,7 @@ def test_v11_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1571,7 +1571,7 @@ def test_v11_to_v12_migration_widens_usage_source_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         rows = reopened.conn.execute(
             "SELECT source, input_tokens, output_tokens, cached_input_tokens,"
             " accuracy FROM usage_observations").fetchall()
@@ -1687,7 +1687,7 @@ def test_v12_backup_copy_of_v11_database_still_migrates(tmp_path):
     shutil.copy2(db, backup)
     opened = Store.open(backup)
     try:
-        assert opened.schema_version() == 14
+        assert opened.schema_version() == 15
         rows = opened.conn.execute(
             "SELECT source, input_tokens FROM usage_observations").fetchall()
         assert [(r["source"], r["input_tokens"]) for r in rows] == \
@@ -1697,7 +1697,7 @@ def test_v12_backup_copy_of_v11_database_still_migrates(tmp_path):
     # the original v11 file is still a v11 file and still migrates itself
     original = Store.open(db)
     try:
-        assert original.schema_version() == 14
+        assert original.schema_version() == 15
     finally:
         original.close()
 
@@ -1760,7 +1760,7 @@ def test_v12_to_v13_migration_admits_paused_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 14
+        assert reopened.schema_version() == 15
         statuses = {
             row["id"]: row["status"]
             for row in reopened.conn.execute("SELECT id, status FROM goals")
@@ -1832,13 +1832,136 @@ def test_v12_backup_copy_of_database_still_migrates_to_v13(tmp_path):
     shutil.copy2(db, backup)
     opened = Store.open(backup)
     try:
-        assert opened.schema_version() == 14
+        assert opened.schema_version() == 15
         assert opened.goal_get(goal.id).status == "active"
     finally:
         opened.close()
     # the original v12 file is still a v12 file and still migrates itself
     original = Store.open(db)
     try:
-        assert original.schema_version() == 14
+        assert original.schema_version() == 15
     finally:
         original.close()
+
+
+# ---------------------------------------------------------------------------
+# G010 T005: completion receipts (schema v15) — the persisted original
+# response of an accepted `task complete`.
+
+
+def _drop_v15_receipts(conn) -> None:
+    conn.execute("DROP TABLE IF EXISTS completion_receipts")
+
+
+def _receipt_roundtrip(store: Store, attempt_id: int) -> None:
+    """Store and read back one receipt for an attempt (helper)."""
+    row = store.completion_receipt_store(
+        attempt_id=attempt_id,
+        revision_id=1,
+        task_id="T001",
+        delivery_status="passed",
+        delivery_digest="deadbeef",
+        session_ref="sess-1",
+        actual_model="GLM-5.3",
+        receipt={"task": "T001", "status": "passed", "attempt": attempt_id},
+    )
+    again = store.completion_receipt_for_attempt(attempt_id)
+    assert again is not None
+    assert again.id == row.id
+    assert (again.attempt_id, again.revision_id, again.task_id) == (
+        attempt_id, 1, "T001")
+    assert again.delivery_status == "passed"
+    assert again.delivery_digest == "deadbeef"
+    assert (again.session_ref, again.actual_model) == ("sess-1", "GLM-5.3")
+    assert again.receipt == {
+        "task": "T001", "status": "passed", "attempt": attempt_id,
+    }
+
+
+def test_v15_receipts_migration_is_additive_and_receipts_are_write_once(tmp_path):
+    """v14 -> v15 is one additive table: every row survives verbatim, the
+    receipts table arrives EMPTY (no receipt is derived from an old
+    acceptance — pre-v15 completions read exactly as they always did), and
+    the table is writable afterwards. The receipt itself is write-once per
+    attempt: a second store refuses instead of rewriting the fact."""
+    db = tmp_path / "v14.db"
+    store = Store.open(db)  # code is v15; build a v14 db by hand
+    goal, run = store.goal_create("legacy objective", ["keep this"], [], "")
+    rev1 = store.revision_create(run.id, "standard", "legacy-planner", {}).id
+    store.task_insert(rev1, "T001", "legacy task", {}, ["keep this"], ["true"], {}, "passed")
+    attempt = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="legacy", driver="host",
+        harness="zcode", model_id="m", requested_effort="high", task_id="T001",
+    )
+    store.evidence_add(attempt.id, "completion", ".orx/runs/R001/evidence/legacy.json")
+    _drop_v15_receipts(store.conn)
+    store.conn.execute("UPDATE meta SET value = '14' WHERE key = 'schema_version'")
+    store.close()
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 15
+        # Legacy rows are intact, byte for byte in meaning.
+        assert reopened.goal_get(goal.id).objective == "legacy objective"
+        stored = reopened.attempts_all()[0]
+        assert (stored.id, stored.task_id, stored.result) == (attempt.id, "T001", None)
+        assert reopened.evidence_for_task(rev1, "T001") == [
+            ("completion", ".orx/runs/R001/evidence/legacy.json")
+        ]
+        # The new table is EMPTY: an upgraded database has no receipts and
+        # none are guessed from the completion evidence that exists.
+        assert reopened.completion_receipt_for_attempt(attempt.id) is None
+        # Writable after the upgrade: the store roundtrips for real attempts.
+        _receipt_roundtrip(reopened, attempt.id)
+        # Write-once: a second acceptance receipt for the same attempt is a
+        # conflict, never a rewrite of the recorded fact.
+        with pytest.raises(ConflictError, match="write-once"):
+            reopened.completion_receipt_store(
+                attempt_id=attempt.id, revision_id=rev1, task_id="T001",
+                delivery_status="passed", delivery_digest="other",
+                session_ref=None, actual_model=None, receipt={"forged": True},
+            )
+        still = reopened.completion_receipt_for_attempt(attempt.id)
+        assert still.delivery_digest == "deadbeef"  # untouched
+        assert still.receipt.get("forged") is None
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v14.db.migrate-*")), "stale migration backups"
+
+
+def test_v15_migration_failure_preserves_original_database(tmp_path, monkeypatch):
+    """A failing v15 migration leaves the v14 file untouched and usable."""
+    db = tmp_path / "keep15.db"
+    store = Store.open(db)
+    goal, _run = store.goal_create("do not lose", ["a"], [], "")
+    _drop_v15_receipts(store.conn)
+    store.conn.execute("UPDATE meta SET value = '14' WHERE key = 'schema_version'")
+    store.close()
+
+    def boom(_conn):
+        raise RuntimeError("v15 failed")
+
+    monkeypatch.setitem(state_mod.MIGRATIONS, 15, boom)
+    with pytest.raises(RuntimeError, match="v15 failed"):
+        Store.open(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert version == "14"
+        assert conn.execute(
+            "SELECT objective FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()[0] == "do not lose"
+    finally:
+        conn.close()
+    assert not list(tmp_path.glob("keep15.db.migrate-*"))
+
+    monkeypatch.undo()
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 15
+        assert reopened.goal_get(goal.id).objective == "do not lose"
+    finally:
+        reopened.close()

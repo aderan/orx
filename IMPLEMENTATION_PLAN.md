@@ -1146,3 +1146,71 @@ docs/diagnostics/g010/t002-pause-resume.md。
 - 用户未提交的 docs/m1.2-report.md：本轮全量验证后 sha256 与 T001
   postscript 记录一致（未进一步改变）；保持未暂存未提交，prescribed
   检查排除该文件，本轮提交不含它。
+
+# G010/T005：有身份约束的幂等 complete 和持久化原回执（2026-10-16）
+
+主功能：让已受理的 `orx task complete` 在响应丢失、新进程重开、Goal
+已完成后重传时返回持久化原回执；交付摘要基于规范化内容；受理原子
+提交；保留 G009 证据校验与 stale 拒绝顺序。
+
+## 交付内容
+
+- Schema v15（追加式新表 completion_receipts，零回填零列变更）：已
+  受理交付的原回执随受理事务原子落库——attempt 关闭、生命周期转
+  换、用量回填、run/Goal 刷新、回执是同 ONE 事务；不存在半关闭
+  attempt 或幽灵回执状态。回执按 attempt 唯一且 write-once，冻结
+  受理时的交付状态、规范化内容摘要、身份元数据（session_ref /
+  actual_model）与响应原文。升级自 v14 的库无回执，pre-v15 受理
+  照旧读取，绝不从 evidence/attempt 行推导。
+- 交付摘要（verify.delivery_digest）：sha256 over 规范化内容
+  （status、summary、各 check 的 command/exit_code、artifacts），
+  排除证据文件路径与修改时间、check 的 log 指针、legacy 忽略键；
+  同内容换文件/换序列化为同一交付，任何主张变化即不同摘要。
+- task_complete 幂等语义（顺序）：证据校验最先（G009 顺序不变）→
+  内容摘要 → 显式 attempt 身份：role/revision/task 匹配、latest
+  检查前移到 closed 检查之前（历史回执不可绕过当前归属：迟到结果
+  不覆盖新尝试）→ closed 且有回执且任务未取消时重放原回执（纯读：
+  不重跑门禁、不新增执行者/证据/验证/生命周期事件/用量、不重写会
+  话归属）→ 同身份冲突内容/冲突 session/冲突 actual_model 按名拒
+  绝 → 无回执的 closed 维持 G009 stale 拒绝；任务被取消关闭时即使
+  有回执也按 stale 拒绝并注明 cancel。
+- 无显式 attempt 的兼容入口不查回执、不猜测旧交付归属（维持状态
+  门禁先行）；红门禁拒绝不留回执、attempt 保持开放，原 attempt
+  修复后再次提交（先红后绿既有语义回归钉住）。
+- 并发重复提交：门禁在写事务外运行（真实命令执行），受理事务
+  BEGIN IMMEDIATE 内复查回执——第一写者受理提交，第二写者串行后
+  重放同一回执；恰一次受理：一条回执、一条 completion 证据、一个
+  complete 事件、一条用量行（并发测试以假 zcode 库实证无双重记账）。
+- 故障注入：受理事务提交前注入（machine.transition 抛错）全量回滚
+  （attempt 开放、无回执、无证据、无事件、任务 running），同
+  attempt 随后正常完成；提交后故障==响应丢失（回执写进提交本身），
+  由重传恢复，状态一致性单独钉住。
+- CLI 交付路径（_execute_cli_task 的 blocked/failed 分支）同样经
+  原子受理+回执；verify_submit/门禁/独立验证者语义零变化。
+- 文档：observability-contract 第十修正（v15 表与读侧含义：回执是
+  重放面不是验证通过凭据、不覆盖归属判断）；goal-lifecycle 增
+  「Idempotent completion」节与并发契约条目。
+- 验证：tests/test_state.py v15 迁移/写一次冲突（42 passed）；
+  tests/test_lifecycle.py 新增 7 例（重传三态含真实子进程、冲突
+  矩阵、归属优先含 retry/recover/supersede/取消、无猜测+红门禁、
+  并发恰一次、故障注入前后、取消后重传拒绝），共 50 passed；
+  prescribed 四+四文件 189 passed；全量 1134 passed 零新增 skip；
+  git diff --check（排除 m1.2-report.md）干净；全部确定性替身，
+  零付费调用。
+
+## 范围外披露
+
+- 13→14 先例沿袭：schema 14→15 字面量机械更新涉及范围外消费者——
+  tests/test_goal.py、tests/test_inbox.py、tests/test_m12_acceptance
+  .py（×2）、tests/test_package_acceptance.py、tests/test_subagent
+  _contract.py（×2：方法调用与字符串两种形态）、tests/test_timeline
+  .py（SCHEMA_TABLES 增一行）、tests/test_observability_contract.py
+  （allowlist 14→15、拒绝边界 15→16）、scripts/check_release.py
+  （V11_ADDITIVE_TABLES 增 completion_receipts）。
+- 本仓 dogfood 库 .orx/state.db（git 忽略）在某次测试隔离失效时被
+  新代码首开并完成 v14→v15 追加式迁移（正是任意新代码首次打开的
+  必然行为；任务/attempt/用量行完整无损，completion_receipts 为
+  空）；该测试已修复为不撤销 fixture 隔离。
+- 用户未提交的 docs/m1.2-report.md：保持未暂存未提交，本轮提交
+  不含它；全量验证前后 sha256 复核一致
+  （5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5）。

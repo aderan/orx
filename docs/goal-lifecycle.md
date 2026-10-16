@@ -245,6 +245,15 @@ carries the same list under `cancellation`.
 - **Repeated resume:** two simultaneous resumes serialize on the write
   lock; the Goal flips `paused -> active` exactly once and the second
   call reports the idempotent no-op.
+- **Concurrent duplicate completes:** the delivery gate runs outside any
+  write transaction (it executes real commands), so two writers may both
+  pass it for the same attempt. The acceptance itself is one `BEGIN
+  IMMEDIATE` transaction that re-checks the receipt inside: the first
+  writer's acceptance (attempt closure, lifecycle transitions, usage
+  backfill, receipt) commits; the second writer serializes after it and
+  replays the stored receipt. Exactly one acceptance ever lands — one
+  receipt, one completion evidence row, one `complete` event, one usage
+  row.
 - **No write transaction waits across a process or a barrier.** File
   writes (prompt files) happen after their transaction; every gated
   transaction is short. The manageable-CLI stop polls the goal status
@@ -253,6 +262,50 @@ carries the same list under `cancellation`.
   independent sqlite connections, real subprocesses, and deterministic
   barriers (`tests/test_lifecycle.py`).
 
+## Idempotent completion (G010 T005)
+
+A long task's `orx task complete` can lose its response (the worker's
+process dies after the write, the controller restarts, the transport
+drops). An ACCEPTED delivery therefore persists its original receipt
+atomically with everything the acceptance did (schema v15): the attempt
+closure, the task's lifecycle transitions, the usage backfill, the
+run/Goal refresh, and the receipt are ONE transaction — there is no
+half-closed attempt, no ghost receipt, and no double bookkeeping.
+
+Rules, in the order they are judged:
+
+1. **Evidence first (unchanged, G009):** a malformed delivery document is
+   rejected by name before any identity question.
+2. **Content digest:** the delivery's identity is a sha256 over its
+   NORMALIZED content (status, summary, each check's command/exit_code,
+   artifacts) — never the evidence file's path or modification time.
+   The same claim re-delivered from another file is the same delivery.
+3. **Ownership before receipts:** the quoted attempt must still belong
+   to the active revision/task and still be the task's latest attempt.
+   A retry/recover replacement or a superseded revision rejects the late
+   delivery as stale EVEN WHEN a historical receipt exists and the body
+   is identical — a late result never overwrites the new attempt.
+4. **Receipt replay:** an accepted delivery's retransmission — response
+   lost, a new process, even the Goal already `done` — returns the
+   persisted original receipt verbatim, re-runs NOTHING (no delivery
+   gate, no executor, evidence, verification, lifecycle event, or usage
+   row), and never rewrites session ownership. A task the goal cancel
+   closed is stale even with its receipt: the historical acceptance
+   cannot reopen what the wrap-up cancelled.
+5. **Explicit conflicts:** the same identity re-delivering DIFFERENT
+   content, contradicting the recorded session, or contradicting the
+   recorded actual model is rejected by name. Another task's delivery is
+   a foreign identity (the stale rejection).
+6. **No guessing:** the un-quoted compatibility path never consults
+   receipts — it does not guess which old delivery a caller might mean;
+   it keeps the plain status gate. A red-gate delivery is never
+   accepted, leaves no receipt, and the attempt stays open for the
+   same-attempt fix-and-resubmit loop.
+
+The delivery gate itself is unchanged: every command entry still re-runs
+fresh on a first acceptance, and a green gate never replaces the
+independent verifier. The receipt is a replay surface, not a verdict.
+
 ## Known follow-ups (out of this round)
 
 - `orx sources fetch --auto-accept` while a Goal is paused leaves the
@@ -260,4 +313,4 @@ carries the same list under `cancellation`.
   `create_goal`, which refuses); accepting them after `orx goal resume`
   is the supported path.
 - Analytics stays read-only over these states (observability contract,
-  v13/v14 amendments); it never gains scheduling authority.
+  v13/v14/v15 amendments); it never gains scheduling authority.

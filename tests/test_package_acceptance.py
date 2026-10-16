@@ -309,7 +309,7 @@ def test_upgrade_preserves_every_v8_row_and_adds_only_defaults(chain):
     # fixture to the current CODE_SCHEMA_VERSION (14: goals status CHECK
     # admits 'paused' and 'cancelling'); the value itself is read from the
     # migrated file by scripts/check_release.py, never hardcoded there.
-    assert upgrade["upgraded_schema_version"] == 14
+    assert upgrade["upgraded_schema_version"] == 15
     checked = upgrade["identity"]["tables_checked"]
     for table in check_release.V8_CORE_TABLES:
         assert table in checked, table
