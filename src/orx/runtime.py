@@ -8,9 +8,11 @@ subprocess themselves.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -186,6 +188,13 @@ class CommandResult:
     # not discarded. Empty means the caller did not keep a separate copy.
     stdout_full: str = ""
     stderr_full: str = ""
+    # G010 T003, manageable launches only: a stop the CALLER requested through
+    # `stop_check` was honored — the process group this launch created got
+    # the signal, and the result reports the actual exit after it. Never set
+    # by plain (unmanaged) launches or by the timeout path.
+    stop_requested: bool = False
+    stop_signal: str | None = None
+    stop_escalated: bool = False
 
     @property
     def ok(self) -> bool:
@@ -290,6 +299,127 @@ def run_argv(argv: list[str], cwd: Path, timeout: int, stdin_text: str | None = 
         )
 
 
+# ---------------------------------------------------------------------------
+# G010 T003: the MANAGEABLE launch. `orx run` / `orx plan` / `orx verify
+# dispatch` launch CLI executors as child processes and then block waiting
+# for them; a `goal cancel` from another process must be able to stop that
+# wait. The caller passes a `stop_check` callback (polled, cheap, read-only
+# — dispatch closes over the goal status). When it fires, this runner:
+#
+#   1. puts the child in its OWN session at spawn (start_new_session=True),
+#      so the stop can address exactly the process group THIS launch
+#      created — the launched process and its controlled children — and
+#      never any other process on the machine;
+#   2. sends SIGTERM to that group, records the request and the signal;
+#   3. escalates to SIGKILL after the grace window if the group ignores it;
+#   4. ALWAYS waits for the actual exit (communicate() to reap and drain),
+#      so the reported exit code is a fact, not a hope.
+#
+# Timeout semantics on the manageable path: the deadline still bounds the
+# wait (group SIGKILL, timed_out=True) exactly like the plain path.
+STOP_POLL_SEC = 0.25
+STOP_GRACE_SEC = 10.0
+
+
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """Signal the launch's own process group; fall back to the child only."""
+    if hasattr(os, "killpg"):
+        try:
+            # start_new_session=True made proc.pid the group leader, so the
+            # group is exactly this launch's process and its children.
+            os.killpg(proc.pid, sig)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.send_signal(sig)
+    except ProcessLookupError:
+        pass
+
+
+def _run_manageable(argv: list[str], cwd: Path, timeout: int,
+                    stdin_text: str | None, limit: int, stop_check,
+                    poll: float, grace: float) -> CommandResult:
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+
+    stop_requested = False
+    stop_signal: str | None = None
+    stop_escalated = False
+    stop_at: float | None = None
+    timed_out = False
+    deadline = start + timeout
+    first_poll = True
+    stdout: str | None = None
+    stderr: str | None = None
+    while True:
+        try:
+            # The first call feeds stdin through communicate's own
+            # selector loop (no pipe deadlock); repeated calls after a
+            # TimeoutExpired are the documented pattern and lose no output.
+            if first_poll:
+                first_poll = False
+                stdout, stderr = proc.communicate(input=stdin_text, timeout=poll)
+            else:
+                stdout, stderr = proc.communicate(timeout=poll)
+            break
+        except subprocess.TimeoutExpired:
+            now = time.monotonic()
+            if not stop_requested and stop_check():
+                stop_requested = True
+                stop_at = now
+                stop_signal = "SIGTERM"
+                _signal_group(proc, signal.SIGTERM)
+            elif stop_requested and not stop_escalated and stop_at is not None \
+                    and now - stop_at >= grace:
+                stop_escalated = True
+                stop_signal = "SIGKILL"
+                _signal_group(proc, signal.SIGKILL)
+            elif not stop_requested and now >= deadline:
+                timed_out = True
+                _signal_group(proc, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+                break
+
+    out, err, out_full, err_full = _bounded(stdout or "", stderr or "", limit)
+    exit_code = proc.returncode
+    if stop_requested:
+        # The stop is the caller's recorded fact; the exit code (negative on
+        # POSIX signal death) rides next to it.
+        return CommandResult(
+            command=" ".join(argv),
+            exit_code=exit_code,
+            stdout=out,
+            stderr=err,
+            duration_sec=time.monotonic() - start,
+            timed_out=False,
+            stdout_full=out_full,
+            stderr_full=err_full,
+            stop_requested=True,
+            stop_signal=stop_signal,
+            stop_escalated=stop_escalated,
+        )
+    return CommandResult(
+        command=" ".join(argv),
+        exit_code=exit_code,
+        stdout=out,
+        stderr=err,
+        duration_sec=time.monotonic() - start,
+        timed_out=timed_out,
+        stdout_full=out_full,
+        stderr_full=err_full,
+    )
+
+
 # CLI agent streams exceed the 256 KiB default on real planner runs and a
 # head truncation cut the FINAL events (codex turn.completed, cursor usage)
 # first. The execution log stays inside this bound. Adapters parse
@@ -299,11 +429,30 @@ LAUNCH_STREAM_LIMIT = 2 * 1024 * 1024
 
 
 def run_launch(launch) -> CommandResult:
-    """Execute an adapters.Launch record. The only path real agents take."""
-    return run_argv(
+    """Execute an adapters.Launch record. The only path real agents take.
+
+    A launch carrying `stop_check` (G010 T003) is MANAGEABLE: a cheap,
+    read-only predicate polled while the launch waits; when it fires, the
+    launch's own process group receives SIGTERM (escalating to SIGKILL
+    after a grace window) and the result reports the requested stop plus
+    the actual exit. Only the group this launch created is ever signalled.
+    Launches without a stop_check run exactly as before."""
+    stop_check = getattr(launch, "stop_check", None)
+    if stop_check is None:
+        return run_argv(
+            launch.argv,
+            cwd=launch.cwd,
+            timeout=launch.timeout,
+            stdin_text=launch.stdin_text,
+            stream_limit=LAUNCH_STREAM_LIMIT,
+        )
+    return _run_manageable(
         launch.argv,
         cwd=launch.cwd,
         timeout=launch.timeout,
         stdin_text=launch.stdin_text,
-        stream_limit=LAUNCH_STREAM_LIMIT,
+        limit=LAUNCH_STREAM_LIMIT,
+        stop_check=stop_check,
+        poll=STOP_POLL_SEC,
+        grace=STOP_GRACE_SEC,
     )

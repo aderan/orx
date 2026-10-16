@@ -585,7 +585,7 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 13
+        assert reopened.schema_version() == 14
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert {"verify_entry", "actual_model", "model_source"} <= columns
         legacy = reopened.attempts_all()[0]
@@ -612,7 +612,7 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
     try:
         assert check.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()[0] == "13"
+        ).fetchone()[0] == "14"
     finally:
         check.close()
     assert not list(tmp_path.glob("v7.db.migrate-*")), "stale migration backups"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from orx.records import (
     AssignmentStatus,
     ConfigError,
     ConflictError,
+    GoalCancellingError,
     GoalPausedError,
     GoalStatus,
     NotFoundError,
@@ -43,6 +45,7 @@ from orx.records import (
     RoutingError,
     RunStatus,
     TaskStatus,
+    TransitionError,
     UNFINISHED_TASK_STATUSES,
 )
 from orx.state import (
@@ -363,6 +366,14 @@ def create_goal(
                 " per project — resume it (`orx goal resume`) before creating"
                 " a new one"
             )
+        if unfinished.status == GoalStatus.CANCELLING.value:
+            raise ORXError(
+                f"goal {unfinished.id} is cancelling; ORX keeps one unfinished"
+                " Goal per project and the slot stays taken until the"
+                " wrap-up converges (unconfirmed executions still hold it) —"
+                " finish the cancel (`orx goal cancel` re-checks; submit or"
+                " recover the listed executions) before creating a new one"
+            )
         raise ORXError(
             f"goal {unfinished.id} is already active; ORX M0 keeps one active Goal per project"
         )
@@ -370,13 +381,15 @@ def create_goal(
 
 
 def _current_goal(store: Store) -> Goal:
-    """The active Goal, or the most recent non-cancelled Goal when the active
-    one finished or is paused (`orx status`/`goal show`/fact submissions must
-    keep working while paused — a paused Goal is still THE Goal)."""
+    """The active Goal, or the most recent Goal (any status, including
+    cancelling/cancelled) when the active one finished (`orx status`,
+    `goal show`, fact submissions, and every read surface keep working
+    before, during, and after a cancel — a cancelled Goal is still THE Goal
+    until a new one exists, and its history stays queryable)."""
     goal = store.goal_active()
     if goal is None:
         row = store.conn.execute(
-            "SELECT id FROM goals WHERE status != 'cancelled' ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM goals ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row is not None:
             goal = store.goal_get(row["id"])
@@ -385,16 +398,26 @@ def _current_goal(store: Store) -> Goal:
     return goal
 
 
-def _assert_goal_not_paused(store: Store, goal: Goal) -> None:
-    """The unified startup gate (G010 T002), read form: refuse to create or
-    start a new executor while the Goal is paused. This is the early, clean
-    error; every write path additionally re-reads the gate INSIDE the
-    transaction that creates the executor placeholder, so a pause committing
-    between this check and the write is still refused (race safety)."""
-    if store.goal_status(goal.id) == GoalStatus.PAUSED.value:
+def _assert_goal_dispatchable(store: Store, goal: Goal) -> None:
+    """The unified startup gate (G010 T002/T003), read form: refuse to create
+    or start a new executor while the Goal is paused OR cancelling/cancelled.
+    Pause means "no new work until resume"; cancel means "no new work, ever
+    again, for this Goal" — neither may spawn a planner, worker, verifier,
+    park, claim, plan activation, or downgrade fallback. This is the early,
+    clean error; every write path additionally re-reads the gate INSIDE the
+    transaction that creates the executor placeholder, so a pause or cancel
+    committing between this check and the write is still refused (race
+    safety)."""
+    status = store.goal_status(goal.id)
+    if status == GoalStatus.PAUSED.value:
         raise GoalPausedError(
             f"goal {goal.id} is paused; run `orx goal resume` before starting"
             " new work"
+        )
+    if status in (GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value):
+        raise GoalCancellingError(
+            f"goal {goal.id} is {status}; a cancel was requested and no new"
+            " work starts for this Goal"
         )
 
 
@@ -597,6 +620,308 @@ def goal_resume(project: Project) -> dict:
         ),
         "in_flight": _in_flight_snapshot(project, goal, run),
         "next": "orx run",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Goal cancel: request, safe wrap-up, convergence (G010 T003)
+#
+# Cancel is TWO persisted phases, never a jump:
+#
+#   active|paused -> cancelling   the REQUEST (`orx goal cancel`). From this
+#                                commit on, every new executor start is
+#                                refused and the active->done completion CAS
+#                                can no longer fire — a completion racing the
+#                                cancel records its real facts but can never
+#                                aggregate the Goal as successfully done.
+#   cancelling   -> cancelled     the CONVERGENCE. It fires only when no
+#                                unconfirmed execution remains (no running
+#                                task, no open verifier attempt).
+#
+# What the wrap-up cancels outright vs. what it waits for:
+#   - unstarted work — pending/runnable/blocked tasks, parked
+#     (waiting_host/waiting_external) assignments, verifying tasks with no
+#     dispatched verifier, and a waiting planning assignment — is cancelled
+#     explicitly, with recorded events and closed placeholder attempts.
+#   - running worker/planner/verifier executions are NEVER concluded from
+#     silence. Lost contact, overdue heartbeats, or a dead session are
+#     observations; only a real fact closes them: a late completion/verdict,
+#     an explicit fail, or `orx task recover --termination-fact` (the same
+#     fact discipline as G009). Until then the Goal stays cancelling, the
+#     unconfirmed executions are listed with their follow-up commands, and
+#     the one unfinished-Goal slot stays taken.
+#   - a CLI executor launched by THIS process is the one execution ORX can
+#     stop itself: the launch is manageable (runtime.stop_check), the stop
+#     request, signal, and actual exit are recorded on the attempt, and the
+#     task closes as cancelled on that recorded fact.
+
+
+def _cancel_next_steps(task_id: str, kind: str) -> list[str]:
+    """The executable follow-ups for one unconfirmed execution (cross-session
+    wrap-up guidance: each entry is a real command the operator can run)."""
+    steps = [f"orx task observe {task_id}"]
+    if kind == "verifier":
+        steps.append(
+            f"orx verify submit {task_id} --result <pass|fail> --entry <entry>"
+            " --attempt <attempt>  # the dispatched verifier's real verdict"
+        )
+    steps.append(
+        f"orx task complete {task_id} --evidence <file> --attempt <attempt>"
+        "  # a real late delivery still lands"
+    )
+    steps.append(
+        f"orx task recover {task_id}"
+        " --termination-fact \"<confirmed termination fact>\""
+        "  # closes it when termination is confirmed (no re-dispatch while cancelling)"
+    )
+    return steps
+
+
+def _outstanding_executions(project: Project, goal: Goal, run: Run) -> list[dict]:
+    """Every execution whose wrap-up is still unconfirmed: RUNNING tasks and
+    VERIFYING tasks with a dispatched (still-open) verifier attempt. Pure
+    read; the cancel result and the status surface list these with follow-up
+    commands. Silence of any kind adds nothing to this list and removes
+    nothing from it — only status and open attempts decide."""
+    store = project.store
+    revision = _active_revision(project, run)
+    out: list[dict] = []
+    if revision is None:
+        return out
+    for task in store.tasks_all(revision.id):
+        status = TaskStatus(task.status)
+        if status is TaskStatus.RUNNING:
+            attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+            entry = {
+                "task": task.task_id,
+                "kind": "worker",
+                "status": task.status,
+                "driver": attempt.driver if attempt else None,
+                "attempt": attempt.id if attempt else None,
+                "session_ref": attempt.session_ref if attempt else None,
+                "contract": _recovery_contract_text(
+                    task.task_id, attempt.id if attempt else 0),
+                "next": _cancel_next_steps(task.task_id, "worker"),
+            }
+            out.append(entry)
+        elif status is TaskStatus.VERIFYING:
+            verifiers = [
+                a for a in store.attempts_open_for_task(revision.id, task.task_id)
+                if a.role == Role.VERIFIER.value
+            ]
+            if verifiers:
+                out.append({
+                    "task": task.task_id,
+                    "kind": "verifier",
+                    "status": task.status,
+                    "verifiers": [
+                        {
+                            "attempt": a.id,
+                            "nonce": a.nonce,
+                            "entry": a.verify_entry,
+                            "session_ref": a.session_ref,
+                        }
+                        for a in verifiers
+                    ],
+                    "next": _cancel_next_steps(task.task_id, "verifier"),
+                })
+    return out
+
+
+def _cancel_sweep(project: Project, goal: Goal, run: Run) -> dict:
+    """Cancel every piece of unstarted work, explicitly and idempotently.
+
+    Sweeps: waiting planning assignments (no claim protocol exists — the
+    assignment IS the unstarted artifact; a late `plan submit` is refused by
+    the startup gate), and active-revision tasks that never started
+    (pending/runnable/blocked/parked, plus verifying tasks with no
+    dispatched verifier). Each task cancellation is a legal machine
+    transition with a recorded event; still-open placeholder attempts close
+    with result 'cancelled' and a reason — started_at is never synthesized.
+    Already-cancelled tasks are skipped, so a repeated sweep (a repeated
+    `orx goal cancel`, or the convergence re-check after every late fact)
+    writes nothing new."""
+    store = project.store
+    cancelled = {"assignments": [], "tasks": [], "attempts": []}
+    assignment = store.assignment_waiting(run.id)
+    if assignment is not None:
+        open_attempt = store.attempt_open_for_assignment(assignment.id)
+        with store.tx():
+            store.assignment_set_status(assignment.id, AssignmentStatus.CANCELLED)
+            if open_attempt is not None:
+                store.attempt_update(
+                    open_attempt.id,
+                    ended_at=db_now(),
+                    result="cancelled",
+                    failure_reason=(
+                        "goal cancel: planning assignment cancelled before"
+                        " submission (no plan landed; a late submit is"
+                        " refused while the Goal is cancelled)"
+                    ),
+                )
+        cancelled["assignments"].append({
+            "assignment": assignment.id,
+            "run": run.id,
+            "attempt": open_attempt.id if open_attempt else None,
+        })
+    revision = _active_revision(project, run)
+    if revision is None:
+        return cancelled
+    for task in store.tasks_all(revision.id):
+        status = TaskStatus(task.status)
+        if status in (
+            TaskStatus.PENDING, TaskStatus.RUNNABLE, TaskStatus.BLOCKED,
+            TaskStatus.WAITING_HOST, TaskStatus.WAITING_EXTERNAL,
+        ):
+            if not _cancel_task(
+                project, revision.id, task.task_id,
+                "goal cancel requested; work never started",
+            ):
+                # A racing fact submission moved the task first (the
+                # transition's in-tx re-read is the arbiter): that fact is
+                # the legal wrap-up result for this task — the sweep skips
+                # it and the outcome below reflects whichever won.
+                continue
+            closed = store.attempts_close_for_tasks(
+                revision.id, [task.task_id],
+                ended_at=db_now(), result="cancelled",
+                failure_reason=(
+                    "goal cancel requested; assignment cancelled before start"
+                ),
+            )
+            cancelled["tasks"].append(task.task_id)
+            cancelled["attempts"].extend(closed)
+        elif status is TaskStatus.VERIFYING:
+            open_verifiers = [
+                a for a in store.attempts_open_for_task(revision.id, task.task_id)
+                if a.role == Role.VERIFIER.value
+            ]
+            if not open_verifiers:
+                # Verifying with no dispatched verifier execution: there is
+                # no unconfirmed executor to wait for, and no follow-up
+                # verification may start — the cancel closes it.
+                if _cancel_task(
+                    project, revision.id, task.task_id,
+                    "goal cancel requested; no verifier execution in flight"
+                    " and no follow-up verification may start",
+                ):
+                    cancelled["tasks"].append(task.task_id)
+    return cancelled
+
+
+def _cancel_task(project: Project, revision_row_id: int, task_id: str,
+                 reason: str) -> bool:
+    """One idempotent task cancellation inside the sweep. The machine's
+    in-transaction status re-read arbitrates every race: if a real fact
+    (completion, verdict, fail) moved the task first, the transition is
+    illegal and False comes back — that fact is the one legal wrap-up result
+    for this task and the sweep leaves it alone."""
+    try:
+        machine.transition(
+            project.store, revision_row_id, task_id, "goal_cancel",
+            TaskStatus.CANCELLED, reason=reason,
+        )
+    except TransitionError:
+        return False
+    return True
+
+
+def _converge_cancelled(project: Project, goal: Goal, run: Run) -> bool:
+    """Re-run the idempotent sweep and, when nothing unconfirmed remains,
+    converge cancelling -> cancelled (compare-and-set). Called from
+    `goal cancel` itself and after every real fact that can close an
+    executor (completion, failed delivery, fail, recover, verify verdict,
+    and the manageable-CLI stop): each closing fact is one more step toward
+    the convergence, and the last one flips the Goal. Returns whether the
+    convergence fired."""
+    store = project.store
+    if store.goal_status(goal.id) != GoalStatus.CANCELLING.value:
+        return False
+    _cancel_sweep(project, goal, run)
+    if _outstanding_executions(project, goal, run):
+        return False
+    converged = machine.goal_converge_cancelled(store, goal.id)
+    if converged:
+        refresh(store, store.goal_get(goal.id), run)
+    return converged
+
+
+def _goal_cancel_stop_check(project: Project, goal: Goal):
+    """The read-only predicate handed to a manageable CLI launch: true once
+    the Goal's persisted status says a cancel was requested. Cheap (one
+    indexed status read), polled by the runtime, and never writing."""
+    store = project.store
+
+    def check() -> bool:
+        try:
+            status = store.goal_status(goal.id)
+        except NotFoundError:
+            return False
+        return status in (
+            GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value,
+        )
+
+    return check
+
+
+def _stop_reason(run_result) -> str:
+    """The recorded reason for a manageable launch stopped at ORX's own
+    request: the stop request, the signal sent, and the actual exit waited
+    for — the machine-produced termination fact."""
+    return (
+        "goal cancel: stop requested for this launch;"
+        f" signal {run_result.stop_signal} sent to the launch's own process"
+        f" group; waited for actual exit (code {run_result.exit_code})"
+        + (" after SIGKILL escalation" if run_result.stop_escalated else "")
+    )
+
+
+def goal_cancel(project: Project) -> dict:
+    """Cancel the current Goal (G010 T003): request, safe wrap-up, converge.
+
+    Legal from any unfinished state — planning, executing, blocked, paused.
+    Repeats are idempotent (`changed: False`, no second wrap-up). The
+    request persists (`cancelling`), blocks every new executor start, blocks
+    the completion CAS (a racing completion can never aggregate the Goal as
+    done), and keeps the one unfinished-Goal slot taken. Unstarted work is
+    cancelled explicitly here; running executions are NEVER concluded from
+    silence — they appear as `unconfirmed` with executable follow-ups and
+    close only on real facts, at which point the Goal converges to
+    `cancelled` (the convergence also re-runs on every closing fact, so the
+    wrap-up finishes even if this call returned with work outstanding)."""
+    store = project.store
+    goal = _current_goal(store)
+    run = store.run_for_goal(goal.id)
+    if run is None:
+        raise NotFoundError(f"goal {goal.id} has no Run")
+    request = machine.goal_cancel_request(store, goal.id)
+    sweep = _cancel_sweep(project, goal, run)
+    outstanding = _outstanding_executions(project, goal, run)
+    converged = False
+    if not outstanding:
+        converged = machine.goal_converge_cancelled(store, goal.id)
+        if converged:
+            refresh(store, store.goal_get(goal.id), run)
+    goal = store.goal_get(goal.id)
+    run = store.run_get(run.id)
+    return {
+        "goal": goal.id,
+        "status": goal.status,
+        "changed": request["changed"],
+        "run": {"id": run.id, "status": run.status},
+        "cancelled": sweep,
+        "unconfirmed": outstanding,
+        "converged": converged,
+        "next": (
+            "wrap-up finished: every execution is closed on real facts"
+            if converged or not outstanding
+            else (
+                "unconfirmed executions still hold the Goal in cancelling —"
+                " close each on a real fact (deliver, verdict, confirmed"
+                " termination), then re-run `orx goal cancel` (or let the"
+                " closing fact converge it)"
+            )
+        ),
     }
 
 
@@ -1108,7 +1433,7 @@ def plan_route(
     # Startup gate (G010 T002): no planner/replan assignment may be created
     # while the Goal is paused. The clean read here; the write below re-reads
     # the gate inside its transaction (race safety).
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     # A bad context file fails before routing, attempts, or any model call.
     intent = load_replan_context(context_file) if context_file else ""
     _check_replan_allowed(store, run)
@@ -1147,7 +1472,7 @@ def plan_route(
         # lock (and a refused park leaves no stale file behind).
         write_prompt_file = False
         with store.tx():
-            _assert_goal_not_paused(store, goal)
+            _assert_goal_dispatchable(store, goal)
             assignment = store.assignment_waiting(run.id)
             if assignment is None:
                 # NOTE: a completed Run is NOT reopened here. Routing a replan
@@ -1297,7 +1622,7 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     store = project.store
     # Startup gate (G010 T002): no planner execution may launch while the
     # Goal is paused.
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
     if not probe.ok:
@@ -1359,6 +1684,8 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     prompt_path.write_text(prompt)
     _record_model_resolution(project, run.id, f"plan-{attempt.id}", launch, attempt)
 
+    launch = dataclass_replace(
+        launch, stop_check=_goal_cancel_stop_check(project, goal))
     run_result = runtime.run_launch(launch)
     # Always persist the raw transcript: paid planner calls need an audit
     # trail on success too, not only on failure.
@@ -1367,6 +1694,39 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=None)
     _record_attempt_health(store, profile.name, run_result)
+    if run_result.stop_requested:
+        # G010 T003: the launch this process started was stopped at ORX's own
+        # request. The stop request, signal, and actual exit are the recorded
+        # termination fact; the planner attempt closes cancelled and NO plan
+        # is parsed or submitted.
+        reason = _stop_reason(run_result)
+        store.evidence_add(attempt.id, "execution", log)
+        store.attempt_update(
+            attempt.id,
+            ended_at=db_now(),
+            result="cancelled",
+            actual_effort=effort.actual if effort.actual else None,
+            effort_source=effort.source,
+            failure_reason=reason,
+        )
+        _converge_cancelled(project, goal, run)
+        return {
+            "mode": "cancelled",
+            "depth": depth.value,
+            "profile": profile.name,
+            "routing": _routing_payload(result),
+            "replan": replan,
+            "context_file": context_file,
+            "prompt_file": str(prompt_path.relative_to(project.root)),
+            "attempt": attempt.id,
+            "stopped": {
+                "signal": run_result.stop_signal,
+                "escalated": run_result.stop_escalated,
+                "exit_code": run_result.exit_code,
+                "reason": reason,
+            },
+            "log": log,
+        }
     store.attempt_update(
         attempt.id,
         ended_at=db_now(),
@@ -1617,7 +1977,7 @@ def submit_plan(project: Project, ir_data: dict,
     # Startup gate (G010 T002): plan activation starts execution (every task
     # in the revision becomes dispatchable), so a paused Goal refuses it.
     # The clean read here; the activation transaction re-reads the gate.
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     # A malformed explicit session fails before the revision is written and
     # before the open planner attempt is closed.
     session_ref = resolve_session_ref(session)
@@ -1651,7 +2011,7 @@ def submit_plan(project: Project, ir_data: dict,
         # Gate inside the activation transaction: a pause that committed
         # after the precheck still refuses the activation here, and the
         # whole transaction rolls back (no partially effective revision).
-        _assert_goal_not_paused(store, goal)
+        _assert_goal_dispatchable(store, goal)
         report_row = None
         if ir.replan is not None and old is not None:
             report_row = store.replan_report_add(
@@ -2009,7 +2369,7 @@ def run_slice(project: Project) -> dict:
     # inside its own transaction, so a pause committing mid-slice is still
     # refused. Parked and in-flight work is untouched: it stays parked/owned
     # and re-surfaces after `orx goal resume`.
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     # G002/T004: best-effort registration in the user-level project index
     # (orx-analytics discovery contract). The note lands in the slice
     # output; a registration failure never gates routing.
@@ -2308,7 +2668,7 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
         ),
     )
     with store.tx():
-        _assert_goal_not_paused(store, goal)
+        _assert_goal_dispatchable(store, goal)
         attempt = store.attempt_create(
             revision_row_id=revision_row_id,
             role=Role.WORKER.value,
@@ -2488,7 +2848,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     store = project.store
     # Startup gate (G010 T002): no CLI worker may launch while the Goal is
     # paused; the in-tx re-read at the attempt creation closes the race.
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
 
@@ -2560,7 +2920,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         # Startup gate re-read inside the placeholder transaction (G010
         # T002): the attempt row, the routing audit, and the route_cli
         # transition commit together only when the Goal is still unpaused.
-        _assert_goal_not_paused(store, goal)
+        _assert_goal_dispatchable(store, goal)
         attempt = store.attempt_create(
             revision_row_id=revision.id,
             role=Role.WORKER.value,
@@ -2597,6 +2957,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         return {"task": task.task_id, "profile": profile.name, "status": "failed",
                 "reason": reason, "prompt_file": prompt_file}
 
+    launch = dataclass_replace(
+        launch, stop_check=_goal_cancel_stop_check(project, goal))
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"{task.task_id}-{attempt.id}", run_result)
     effort = adapter.effort_outcome(launch, run_result)
@@ -2626,6 +2988,42 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     error_kind = _record_attempt_health(
         store, profile.name, run_result, delivery_outcome=delivery_outcome)
     store.evidence_add(attempt.id, "execution", log)
+
+    if run_result.stop_requested:
+        # G010 T003: the manageable launch was stopped at ORX's own request
+        # (a `goal cancel` from any process flipped the persisted status).
+        # The stop request, the signal sent to THIS launch's process group,
+        # and the actual exit waited for are the recorded termination fact:
+        # the attempt closes cancelled, the task cancels on that fact, and
+        # no delivery is interpreted from a stopped process. Usage, session,
+        # and the execution log were already recorded above — the history is
+        # complete.
+        reason = _stop_reason(run_result)
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result="cancelled",
+            actual_effort=effort.actual if effort.actual else None,
+            effort_source=effort.source,
+            failure_reason=reason,
+        )
+        _cancel_task(project, revision.id, task.task_id, reason)
+        refresh(store, goal, run)
+        converged = _converge_cancelled(project, goal, run)
+        return {
+            "task": task.task_id,
+            "profile": profile.name,
+            "status": store.task_get(revision.id, task.task_id).status,
+            "reason": reason,
+            "stopped": {
+                "signal": run_result.stop_signal,
+                "escalated": run_result.stop_escalated,
+                "exit_code": run_result.exit_code,
+                "waited_for_exit": True,
+            },
+            "goal_converged": converged,
+            "log": log,
+            "prompt_file": prompt_file,
+            "attempt": attempt.id,
+        }
 
     if not run_result.ok:
         # Transport failure: the process fact dominates the result text.
@@ -4095,6 +4493,12 @@ def task_complete(
     )
     verdict = verify.apply_verdict(store, revision.id, store.task_get(revision.id, task.task_id))
     refresh(store, goal, run)
+    # G010 T003: a real completion is a closing fact for the cancel wrap-up —
+    # the delivery and its results are preserved exactly as recorded, and if
+    # it was the last unconfirmed execution the Goal converges to cancelled
+    # right here (never to done: the cancelling row blocks the completion
+    # CAS, and no follow-up verification is dispatched).
+    goal_converged = _converge_cancelled(project, goal, run)
     counts = _verification_counts(store, revision)
     result = {
         "task": task.task_id,
@@ -4108,6 +4512,8 @@ def task_complete(
         # state without a second query.
         "usage_backfill": usage_backfill,
     }
+    if goal_converged:
+        result["goal_converged_cancelled"] = True
     if replan_delivery is not None:
         result["replan_delivery"] = replan_delivery
     if mismatch is not None:
@@ -4143,6 +4549,9 @@ def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run
         reason=reason, failure_reason=reason,
     )
     refresh(store, goal, run)
+    # G010 T003: a worker-reported failed/blocked delivery is a real closing
+    # fact; the cancel wrap-up converges on it like any other.
+    _converge_cancelled(project, goal, run)
     result = {
         "task": task.task_id,
         "status": store.task_get(revision.id, task.task_id).status,
@@ -4183,6 +4592,8 @@ def task_fail(project: Project, task_id: str, reason: str,
         failure_reason=reason,
     )
     refresh(store, goal, run)
+    # G010 T003: an explicit fail is a real closing fact for the wrap-up.
+    _converge_cancelled(project, goal, run)
     out = {"task": task.task_id, "status": "failed"}
     if attempt is not None:
         out["attempt"] = attempt.id
@@ -4868,7 +5279,13 @@ def task_recover(project: Project, task_id: str, termination_fact: str,
     for routing; no second writer is ever started here (the next `orx run`
     routes a fresh attempt with a fresh nonce), and the closed attempt's
     late deliveries/reports are refused by the existing stale/ownership
-    gates (`attempt_closed` / stale submission)."""
+    gates (`attempt_closed` / stale submission).
+
+    G010 T003: while the Goal is cancelling, this SAME explicit fact entry
+    closes the execution for the cancel wrap-up — the task lands cancelled
+    (never re-dispatched), the operator's fact and the machine-read facts
+    are recorded next to each other, and the Goal converges when this was
+    the last unconfirmed execution."""
     fact = (termination_fact or "").strip()
     if not fact or len(fact) > 512:
         raise _recovery_input_error(
@@ -4916,6 +5333,47 @@ def task_recover(project: Project, task_id: str, termination_fact: str,
         attempt = store.attempt_get(attempt.id)
     facts_line = _observed_facts_line(project, attempt)
     reason = f"recovered: {fact}; {facts_line}"
+    # G010 T003: while a cancel is pending, the explicit fact entry CLOSES
+    # the execution without re-dispatch — criterion: a confirmed-terminated
+    # host/external execution closes through this explicit fact entry and
+    # nothing is re-routed. The task lands cancelled (not runnable), the
+    # recorded reason still carries the operator's fact next to the
+    # machine-read facts, and the wrap-up converges.
+    cancelling = store.goal_status(goal.id) == GoalStatus.CANCELLING.value
+    if cancelling:
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result="cancelled", failure_reason=reason,
+        )
+        usage_backfill = _usage_autobill(project, attempt.id)
+        _cancel_task(
+            project, revision.id, task.task_id,
+            f"goal cancel: {reason}",
+        )
+        store.task_event_add(
+            revision.id, task.task_id, "running", "cancelled", "task_recovered",
+            reason=reason,
+        )
+        refresh(store, goal, run)
+        converged = _converge_cancelled(project, goal, run)
+        return {
+            "task": task.task_id,
+            "status": store.task_get(revision.id, task.task_id).status,
+            "closed_attempt": attempt.id,
+            "termination_fact": fact,
+            "failure_reason": reason,
+            "usage_backfill": usage_backfill,
+            "goal_converged": converged,
+            "next": (
+                "closed without re-dispatch: the Goal is cancelling, so the"
+                " confirmed-terminated execution closes here and the wrap-up"
+                " continues (nothing is routed again for this Goal)"
+            ),
+            "contract": (
+                "explicit fact entry: the operator-confirmed termination"
+                " closed this execution; its late completions are rejected"
+                " as stale and its reports as attempt_closed"
+            ),
+        }
     store.attempt_update(
         attempt.id, ended_at=db_now(), result="failed", failure_reason=reason,
     )
@@ -5065,7 +5523,7 @@ def verify_dispatch(project: Project) -> dict:
     # already in verifying keep their dispatched verifiers, and verdict
     # submissions (`orx verify submit`) stay legal — those are facts from a
     # running executor, not new starts.
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
 
     quota.refresh(project)  # best-effort preflight before verifier routing
 
@@ -5129,7 +5587,7 @@ def verify_dispatch(project: Project) -> dict:
                 # nothing new, and one committing after leaves a fully
                 # bound verifier whose verdict still closes it.
                 with store.tx():
-                    _assert_goal_not_paused(store, goal)
+                    _assert_goal_dispatchable(store, goal)
                     attempt = store.attempt_open_verifier_for_entry(
                         revision.id, task.task_id, item.raw
                     )
@@ -5197,7 +5655,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     # Startup gate (G010 T002): no CLI verifier may launch while the Goal
     # is paused (verify_dispatch's read covers the entry; this re-read
     # closes the launch race on this path).
-    _assert_goal_not_paused(store, goal)
+    _assert_goal_dispatchable(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
     scratch = _launch_dir(project, run.id, f"verify-{task.task_id}")
@@ -5273,6 +5731,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         verify.apply_verdict(store, revision.id, task, failure_hint=item.raw)
         return {"task": task.task_id, "entry": item.raw, "verdict": "failed", "reason": reason}
 
+    launch = dataclass_replace(
+        launch, stop_check=_goal_cancel_stop_check(project, goal))
     run_result = runtime.run_launch(launch)
     log = _record_execution_log(project, run.id, f"verify-{task.task_id}-{attempt.id}", run_result)
     # The verifier's EffortOutcome is recorded like the planner's and the
@@ -5282,6 +5742,38 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
     _record_attempt_health(store, profile.name, run_result)
+    if run_result.stop_requested:
+        # G010 T003: the manageable verifier launch was stopped at ORX's own
+        # request. The stop request, signal, and actual exit are the recorded
+        # termination fact: the verifier attempt closes cancelled, NO verdict
+        # row is written (a stopped process produced no verdict), and the
+        # task cancels on that machine-produced fact.
+        reason = _stop_reason(run_result)
+        store.evidence_add(attempt.id, "execution", log)
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result="cancelled",
+            actual_effort=effort.actual if effort.actual else None,
+            effort_source=effort.source,
+            failure_reason=reason,
+        )
+        _cancel_task(project, revision.id, task.task_id, reason)
+        refresh(store, goal, run)
+        converged = _converge_cancelled(project, goal, run)
+        return {
+            "task": task.task_id,
+            "entry": item.raw,
+            "verdict": "cancelled",
+            "stopped": {
+                "signal": run_result.stop_signal,
+                "escalated": run_result.stop_escalated,
+                "exit_code": run_result.exit_code,
+                "waited_for_exit": True,
+            },
+            "goal_converged": converged,
+            "reason": reason,
+            "log": log,
+            "model_resolution": launch.model_resolution,
+        }
     # Scan the agent's extracted message FIRST: CLI agents wrap their output
     # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
     # line inside the raw stdout never appears as a standalone line. The raw
@@ -5519,6 +6011,9 @@ def verify_submit(
         failure_hint=reason or (chosen.raw if not passed else None),
     )
     refresh(store, goal, run)
+    # G010 T003: the dispatched verifier's real verdict is a closing fact —
+    # the cancel wrap-up converges on it.
+    goal_converged = _converge_cancelled(project, goal, run)
     result = {
         "task": task.task_id,
         "entry": chosen.raw,
@@ -5528,6 +6023,8 @@ def verify_submit(
         "attempt": bound.id,
         "usage_backfill": usage_backfill,
     }
+    if goal_converged:
+        result["goal_converged_cancelled"] = True
     if discovery is not None:
         result["session_discovery"] = discovery
         result["session_ref"] = bound.session_ref
@@ -5785,7 +6282,7 @@ def status_data(project: Project) -> dict:
             "planner_profile": revision.planner_profile,
             "status": revision.status,
         }
-    return {
+    out = {
         "goal": {
             "id": goal.id,
             "objective": goal.objective,
@@ -5808,6 +6305,20 @@ def status_data(project: Project) -> dict:
         "resources": resource_list(project),
         "result": run.status,
     }
+    # G010 T003: while a cancel is pending, the status surface lists the
+    # unconfirmed executions and their executable follow-ups — the wrap-up
+    # state is visible exactly where the operator already looks.
+    if goal.status == GoalStatus.CANCELLING.value:
+        out["cancellation"] = {
+            "unconfirmed": _outstanding_executions(project, goal, run),
+            "next": (
+                "close each unconfirmed execution on a real fact (deliver,"
+                " verdict, or `orx task recover --termination-fact`), then"
+                " re-run `orx goal cancel` — the closing fact may converge"
+                " the Goal by itself"
+            ),
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------

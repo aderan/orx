@@ -131,7 +131,7 @@ def test_restart_recovery_mid_run(project, goal, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert {t["id"]: t["status"] for t in dispatch.task_list(reopened)} == before
-        assert reopened.store.schema_version() == 13
+        assert reopened.store.schema_version() == 14
         result = dispatch.task_complete(reopened, "T001", str(write_evidence(tmp_path)))
         assert result["status"] == "passed"
         dispatch.run_slice(reopened)
@@ -1440,3 +1440,488 @@ def test_downgrade_fallback_startup_is_gated_while_paused(project, goal):
     assert bucket == "waiting_external"  # host-worker stays non-routable
     assert entry["task"] == "T001"
     assert entry["attempt"]
+
+
+# -- Goal cancel: request, safe wrap-up, convergence (G010 T003) ---------------
+
+
+def test_cancel_unstarted_work_is_explicit_and_running_waits_for_real_facts(
+        project, goal, tmp_path):
+    """The wrap-up matrix: pending/runnable/blocked and parked
+    (waiting_host/waiting_external) work is cancelled explicitly with
+    recorded events and closed placeholder attempts; a RUNNING host worker
+    is never concluded from the request — it is listed as unconfirmed with
+    executable follow-ups, keeps reporting, and only a real fact closes it
+    and converges the Goal."""
+    from orx.records import GoalCancellingError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["test -f t2.marker"]),
+        task_spec("T003", deps=["T001"], acceptance=goal.acceptance),
+    ]))
+    dispatch.run_slice(project)  # parks T001 and T002; T003 pending
+    revision = project.store.revision_active("R001")
+    parked_attempt = project.store.attempt_latest_for_task(revision.id, "T002")
+    dispatch.task_claim(project, "T001", session="sess-running")
+
+    out = dispatch.goal_cancel(project)
+    assert out["changed"] is True
+    assert out["status"] == "cancelling"  # T001 running: not converged yet
+    assert out["converged"] is False
+
+    # Unstarted work cancelled explicitly: tasks, events, closed attempts.
+    statuses = {t["id"]: t["status"] for t in dispatch.task_list(project)}
+    assert statuses == {"T001": "running", "T002": "cancelled", "T003": "cancelled"}
+    events = [
+        (e.from_status, e.to_status, e.event)
+        for e in project.store.task_events(revision.id, "T002")
+    ]
+    assert ("waiting_host", "cancelled", "goal_cancel") in events
+    closed = project.store.attempt_get(parked_attempt.id)
+    assert closed.ended_at is not None and closed.result == "cancelled"
+    assert closed.started_at is None  # never claimed; never synthesized
+    assert "goal cancel" in (closed.failure_reason or "")
+
+    # The unconfirmed execution is listed with executable follow-ups.
+    [unconfirmed] = out["unconfirmed"]
+    assert unconfirmed["task"] == "T001" and unconfirmed["kind"] == "worker"
+    assert unconfirmed["attempt"]
+    assert unconfirmed["session_ref"] == "sess-running"
+    joined = " ".join(unconfirmed["next"])
+    assert "orx task observe T001" in joined
+    assert "orx task recover T001 --termination-fact" in joined
+
+    # No new work starts: every dispatch entry is gated.
+    with pytest.raises(GoalCancellingError):
+        dispatch.run_slice(project)
+    with pytest.raises(GoalCancellingError):
+        dispatch.plan_route(project)
+    with pytest.raises(GoalCancellingError):
+        dispatch.verify_dispatch(project)
+
+    # The cancelling Goal still occupies the one unfinished-Goal slot.
+    with pytest.raises(Exception, match="cancelling"):
+        dispatch.create_goal(project, "second", ["a"])
+
+    # Fact submissions from the running executor keep landing; the status
+    # surface lists the unconfirmed execution and its follow-ups.
+    beat = dispatch.task_heartbeat(project, "T001", unconfirmed["attempt"], "working")
+    assert beat["sequence"] == 1
+    status = dispatch.status_data(project)
+    assert status["goal"]["status"] == "cancelling"
+    [listed] = status["cancellation"]["unconfirmed"]
+    assert listed["task"] == "T001"
+
+    # A real fact closes it and converges the Goal right there.
+    closed_out = dispatch.task_fail(project, "T001", "operator closed the run")
+    assert closed_out["status"] == "failed"  # the real fact is recorded
+    assert project.store.goal_get(goal.id).status == "cancelled"
+
+    # Repeating the cancel re-runs nothing: no new events, idempotent result.
+    events_before = len(project.store.task_events_all())
+    repeat = dispatch.goal_cancel(project)
+    assert repeat["changed"] is False and repeat["status"] == "cancelled"
+    assert len(project.store.task_events_all()) == events_before
+
+    # Late writes cannot revive anything.
+    with pytest.raises(Exception, match="requires running or waiting_external"):
+        dispatch.task_complete(
+            project, "T002", str(write_evidence(tmp_path, "late.json")))
+
+
+def test_cancel_from_paused_and_blocked_states(project, goal, tmp_path):
+    """The cancel request is legal from paused and from a blocked run —
+    every unfinished Goal state — and converges through the same wrap-up."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", deps=["T001"], acceptance=goal.acceptance),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    dispatch.task_fail(project, "T001", "cannot proceed")  # run blocked
+
+    # From blocked: the failed task keeps its real result; the blocked
+    # dependent is cancelled; nothing is unconfirmed -> converged at once.
+    blocked_cancel = dispatch.goal_cancel(project)
+    assert blocked_cancel["status"] == "cancelled"
+    assert blocked_cancel["converged"] is True
+    statuses = {t["id"]: t["status"] for t in dispatch.task_list(project)}
+    assert statuses == {"T001": "failed", "T002": "cancelled"}
+
+    # From paused, on a fresh Goal.
+    goal2 = dispatch.create_goal(project, "pausable cancel", ["p1"])[0]
+    dispatch.goal_pause(project)
+    assert project.store.goal_get(goal2.id).status == "paused"
+    paused_cancel = dispatch.goal_cancel(project)
+    assert paused_cancel["status"] == "cancelled"
+    assert paused_cancel["changed"] is True
+    from orx.records import TransitionError
+    with pytest.raises(TransitionError, match="cannot resume from cancelled"):
+        dispatch.goal_resume(project)
+
+
+def test_cancel_cancels_waiting_planning_assignment_and_refuses_late_submit(
+        project, goal):
+    """A waiting planning assignment is unstarted work: the assignment and
+    its open planner attempt are cancelled explicitly, the Goal converges
+    (nothing unconfirmed), and a late `plan submit` is refused by the gate —
+    the planner story stays explicit, never silence-based."""
+    from orx.records import GoalCancellingError
+
+    routed = dispatch.plan_route(project)
+    assert routed["mode"] == "host_required"
+    assignment_id = routed["assignment"]["id"]
+    attempt_id = routed["assignment"]["execution"]["attempt"]
+
+    out = dispatch.goal_cancel(project)
+    assert out["status"] == "cancelled" and out["converged"] is True
+    assert [entry["assignment"] for entry in out["cancelled"]["assignments"]] \
+        == [assignment_id]
+
+    assignment = project.store.assignment_get(assignment_id)
+    assert assignment.status == "cancelled"
+    planner_attempt = project.store.attempt_get(attempt_id)
+    assert planner_attempt.ended_at is not None
+    assert planner_attempt.result == "cancelled"
+    assert "goal cancel" in (planner_attempt.failure_reason or "")
+
+    with pytest.raises(GoalCancellingError):
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance)]))
+
+
+def test_cancel_racing_completion_yields_exactly_one_legal_outcome(
+        project, goal, tmp_path):
+    """Both orders of the completion/cancel race converge on ONE legal
+    wrap-up result. Completion first: the Goal is done and a late cancel is
+    a domain error (done is terminal). Cancel first: the persisted
+    `cancelling` row blocks the completion CAS, the real delivery and its
+    results are preserved verbatim, no follow-up verification or retry
+    starts, and the Goal converges to cancelled — never to done."""
+    from orx.records import GoalStatus, TransitionError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    (project.root / "t1.marker").write_text("done")
+
+    # Completion first: the Goal is done; cancel is refused.
+    dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert project.store.goal_get(goal.id).status == "done"
+    with pytest.raises(TransitionError, match="cannot cancel from done"):
+        dispatch.goal_cancel(project)
+    assert project.store.goal_get(goal.id).status == "done"
+
+    # Cancel first (fresh Goal): the delivery lands, is preserved, and the
+    # Goal converges to cancelled — the completion never aggregates to done.
+    goal2, _ = dispatch.create_goal(project, "cancel vs completion", ["c1"])
+    dispatch.submit_plan(project, ir_for(goal2, [
+        task_spec("T001", acceptance=goal2.acceptance,
+                  verification=["test -f t2.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R002")
+    claim = dispatch.task_claim(project, "T001")
+    out = dispatch.goal_cancel(project)
+    assert out["status"] == "cancelling"
+    [unconfirmed] = out["unconfirmed"]
+
+    (project.root / "t2.marker").write_text("done")
+    late = dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "late.json")),
+        attempt_id=claim["attempt"],
+    )
+    # The real result is preserved exactly as recorded...
+    assert late["status"] == "passed"
+    assert project.store.task_get(revision.id, "T001").status == "passed"
+    attempt = project.store.attempt_get(claim["attempt"])
+    assert attempt.result == "completed"
+    assert [row for row in project.store.evidence_for_task(revision.id, "T001")
+            if row[0] == "completion"]
+    # ...and the Goal converged to cancelled, never done, with no retry.
+    assert late.get("goal_converged_cancelled") is True
+    assert project.store.goal_get(goal2.id).status == GoalStatus.CANCELLED.value
+    assert project.store.run_for_goal(goal2.id).status == "done"  # run fact kept
+    assert dispatch.task_list(project)[0]["status"] == "passed"
+    with pytest.raises(Exception):
+        dispatch.task_retry(project, "T001")  # passed: no retry door anyway
+
+
+def test_cancel_racing_a_claim_is_refused_by_the_gate(project, goal):
+    """The deterministic claim/cancel race, both orders: a claim whose
+    transaction runs after the cancel commit is refused inside the gate
+    (GoalCancellingError, task stays parked, no running transition); a
+    claim that committed first survives as the unconfirmed execution the
+    wrap-up waits for."""
+    from orx import machine
+    from orx.records import ConflictError, GoalCancellingError
+    from orx.state import Store
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+
+    # Cancel commits on an independent connection while the park exists.
+    store_b = Store.open(project.db_path)
+    try:
+        assert machine.goal_cancel_request(store_b, goal.id)["changed"] is True
+    finally:
+        store_b.close()
+    with pytest.raises(GoalCancellingError):
+        machine.claim(project.store, revision.id, "T001")
+    assert project.store.task_get(revision.id, "T001").status == "waiting_host"
+    assert not [
+        e for e in project.store.task_events(revision.id, "T001")
+        if e.event == "claim"
+    ]
+
+    # The other order: the claim fully commits, then the cancel request —
+    # the claimed task is the unconfirmed execution, not a casualty.
+    dispatch.goal_cancel(project)  # sweep cancels the parked task cleanly
+    assert project.store.task_get(revision.id, "T001").status == "cancelled"
+    assert project.store.goal_get(goal.id).status == "cancelled"
+
+
+def test_verifying_task_with_dispatched_verifier_closes_on_the_real_verdict(
+        project, goal, tmp_path):
+    """A dispatched host verifier is an unconfirmed execution: the cancel
+    waits for its real verdict (never concludes it from silence), the
+    verdict closes exactly the dispatched attempt, and the Goal converges
+    right there. A verifying task with NO dispatched verifier is unstarted
+    follow-up work: cancelled without dispatching anything."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+    # T001 completes FIRST and gets its verifier dispatched; T002 completes
+    # AFTER the dispatch, so it is verifying with NO verifier execution.
+    dispatch.task_claim(project, "T001")
+    dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path, "t1.json")))
+    dispatched = dispatch.verify_dispatch(project)
+    t1_entries = [e for e in dispatched["agent_required"] if e["task"] == "T001"]
+    assert t1_entries
+    verifier = project.store.attempt_open_verifier_for_entry(
+        revision.id, "T001", "agent: honest work")
+    assert verifier is not None
+    dispatch.task_claim(project, "T002")
+    dispatch.task_complete(
+        project, "T002", str(write_evidence(tmp_path, "t2.json")))
+
+    out = dispatch.goal_cancel(project)
+    assert out["status"] == "cancelling"
+    [unconfirmed] = out["unconfirmed"]
+    assert unconfirmed["kind"] == "verifier" and unconfirmed["task"] == "T001"
+    # T002 (verifying, no verifier execution) was cancelled by the sweep.
+    assert project.store.task_get(revision.id, "T002").status == "cancelled"
+    # T001 keeps verifying: the dispatched verifier still owns the verdict.
+    assert project.store.task_get(revision.id, "T001").status == "verifying"
+    assert project.store.attempt_get(verifier.id).ended_at is None
+
+    verdict = dispatch.verify_submit(
+        project, "T001", "pass", "agent: honest work", None,
+        attempt_id=verifier.id)
+    assert verdict["status"] == "passed"  # the real verdict is the record
+    assert verdict.get("goal_converged_cancelled") is True
+    assert project.store.attempt_get(verifier.id).ended_at is not None
+    assert project.store.goal_get(goal.id).status == "cancelled"
+
+
+def test_recover_during_cancel_closes_without_redispatch(project, goal):
+    """The explicit fact entry during a cancel: `orx task recover` closes
+    the confirmed-terminated execution, the task lands cancelled (NOT
+    runnable — nothing is re-dispatched for a cancelling Goal), and the
+    wrap-up converges on the operator's fact recorded next to the
+    machine-read facts."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+    claim = dispatch.task_claim(project, "T001", session="sess-lost")
+    out = dispatch.goal_cancel(project)
+    assert out["status"] == "cancelling"
+
+    result = dispatch.task_recover(
+        project, "T001", "operator confirmed the session is finished")
+    assert result["status"] == "cancelled"  # closed, not reopened
+    assert result["closed_attempt"] == claim["attempt"]
+    assert "operator confirmed the session is finished" in result["failure_reason"]
+    assert project.store.task_get(revision.id, "T001").status == "cancelled"
+    assert project.store.goal_get(goal.id).status == "cancelled"
+
+
+def test_cancel_stops_a_running_cli_worker_from_another_process(
+        tmp_path, monkeypatch):
+    """The manageable CLI: `orx run` launches the worker and waits; another
+    PROCESS (a real `orx goal cancel` subprocess) cancels during the
+    execution wait; the launching process stops only its own child group,
+    records the stop request, signal, and actual exit, cancels the task on
+    that recorded fact, and converges the Goal."""
+    import subprocess
+    import sys
+    import threading
+    import time
+    from conftest import HOST_CONFIG_TOML, HOST_PROFILES_TOML, make_project
+
+    monkeypatch.chdir(tmp_path)
+    profiles = HOST_PROFILES_TOML + """
+[profiles.cli-sleeper]
+driver = "cli"
+harness = "shell"
+executable = "/bin/sh"
+args = ["-c", "sleep 30"]
+prompt_transport = "stdin"
+model = "fake"
+class = "economy"
+effort = "low"
+capabilities = ["coding"]
+"""
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cli-sleeper", "host-worker", "host-external"]')
+    project = make_project(tmp_path, config_toml=config, profiles_toml=profiles)
+    try:
+        goal = dispatch.create_goal(
+            project, "cli cancel", ["marker exists"], [], "")[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        revision = project.store.revision_active("R001")
+
+        outcome: dict = {}
+
+        def run_worker():
+            own = dispatch.open_project()  # this thread's connection
+            try:
+                outcome["slice"] = dispatch.run_slice(own)
+            except Exception as exc:  # pragma: no cover - failure detail
+                outcome["error"] = repr(exc)
+            finally:
+                own.close()
+
+        thread = threading.Thread(target=run_worker)
+        thread.start()
+        # Wait until the CLI worker is really RUNNING (committed row).
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            row = project.store.task_get(revision.id, "T001")
+            if row.status == "running":
+                break
+            time.sleep(0.05)
+        assert project.store.task_get(revision.id, "T001").status == "running"
+
+        # ANOTHER PROCESS cancels during the execution wait.
+        env = os.environ.copy()
+        env["ORX_PROJECT"] = str(project.root)
+        env["ORX_QUOTA_PREFLIGHT"] = "0"
+        env["ORX_CONFIG_DIR"] = os.environ["ORX_CONFIG_DIR"]
+        env["ORX_DATA_DIR"] = os.environ["ORX_DATA_DIR"]
+        cancel = subprocess.run(
+            [sys.executable, "-m", "orx", "goal", "cancel", "--json"],
+            capture_output=True, text=True, cwd=str(project.root), env=env,
+        )
+        assert cancel.returncode == 0, cancel.stderr or cancel.stdout
+        body = json.loads(cancel.stdout)
+        assert body["ok"] is True and body["status"] == "cancelling"
+        assert [e["task"] for e in body["unconfirmed"]] == ["T001"]
+
+        thread.join(timeout=20)
+        assert not thread.is_alive(), "the stop must end the launch wait"
+        entry = outcome["slice"]["started"][0]
+        assert entry["task"] == "T001"
+        assert entry["status"] == "cancelled"
+        stopped = entry["stopped"]
+        assert stopped["signal"] == "SIGTERM"
+        assert stopped["waited_for_exit"] is True
+        assert stopped["exit_code"] is not None and stopped["exit_code"] != 0
+
+        # The recorded history: task cancelled on the machine-produced stop
+        # fact, attempt closed cancelled with the stop reason, execution log
+        # kept as evidence, and the Goal converged.
+        assert project.store.task_get(revision.id, "T001").status == "cancelled"
+        attempt = project.store.attempt_latest_for_task(revision.id, "T001")
+        assert attempt.result == "cancelled"
+        assert "goal cancel: stop requested" in (attempt.failure_reason or "")
+        assert "SIGTERM" in (attempt.failure_reason or "")
+        assert [row for row in project.store.evidence_for_task(
+            revision.id, "T001") if row[0] == "execution"]
+        assert project.store.goal_get(goal.id).status == "cancelled"
+    finally:
+        project.close()
+
+
+def test_cancelled_goal_history_stays_queryable_and_survives_a_new_goal(
+        project, goal, tmp_path):
+    """After the terminal cancel, everything is still queryable by
+    Goal/Run: revisions, attempts, evidence, verifications, events, usage;
+    late writes cannot revive anything; and a NEW Goal does not disturb the
+    old Goal's history."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance, verification=["true"]),
+        task_spec("T003", deps=["T001"], acceptance=goal.acceptance),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+    dispatch.task_claim(project, "T001")
+    (project.root / "t1.marker").write_text("done")
+    dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    # usage observation bound to the attempt (queryable history)
+    project.store.usage_add(
+        project.store.attempt_latest_for_task(revision.id, "T001").id,
+        "host-worker", "R001", "T001", 10, 5, None, "host_report", "exact")
+
+    dispatch.task_claim(project, "T002")
+    dispatch.goal_cancel(project)  # T003 (runnable) is swept: cancelled
+    dispatch.task_fail(project, "T002", "wrapped up by the cancel")
+    assert project.store.goal_get(goal.id).status == "cancelled"
+    assert project.store.task_get(revision.id, "T003").status == "cancelled"
+
+    # Queries by Goal/Run keep working on the cancelled Goal.
+    status = dispatch.status_data(project)
+    assert status["goal"]["status"] == "cancelled"
+    assert status["run"]["id"] == "R001"
+    events_before = len(project.store.task_events_all())
+    timeline_out = dispatch.timeline(project, run_id="R001")
+    assert any(
+        "goal_cancel" in e["event"] for e in timeline_out["entries"])
+    usage_out = dispatch.usage(project)
+    assert any(
+        p["profile"] == "host-worker" and p["input_tokens"] == 10
+        for p in usage_out["profiles"])
+    verifications = project.store.verifications_for(revision.id, "T001")
+    assert verifications and all(v.passed for v in verifications)
+
+    # Late writes cannot revive the cancelled work.
+    with pytest.raises(Exception):
+        dispatch.task_complete(
+            project, "T002", str(write_evidence(tmp_path, "late.json")))
+    with pytest.raises(Exception):
+        dispatch.run_slice(project)
+
+    # A new Goal is legal now, and it does not disturb the old history.
+    goal2, run2 = dispatch.create_goal(project, "after cancel", ["n1"])
+    assert goal2.id == "G002" and run2.id == "R002"
+    assert dispatch.status_data(project)["goal"]["id"] == "G002"
+    assert len(project.store.task_events_all()) == events_before
+    assert dispatch.timeline(project, run_id="R001")["entries"] \
+        == timeline_out["entries"]
+    assert project.store.goal_get(goal.id).status == "cancelled"
+    assert [t.status for t in project.store.tasks_all(revision.id)] \
+        == ["passed", "failed", "cancelled"]

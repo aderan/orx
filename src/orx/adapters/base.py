@@ -539,10 +539,17 @@ class Launch:
     sandbox: str | None = None
     # G008 T003: the resolution decision behind the model argument, as
     # ResolvedModel.to_dict() — the full semantic request, the exact CLI
-    # slug, the strategy, and the catalog generation it resolved
-    # against. None when the adapter resolves no model (shell). Records
+    # slug, the strategy, and the catalog generation it resolved against.
+    # None when the adapter resolves no model (shell). Records
     # the REQUEST; observed reality stays with the run result.
     model_resolution: dict | None = None
+    # G010 T003: makes THIS launch manageable by the process that created
+    # it. Dispatch attaches a cheap read-only predicate (closed over the
+    # goal status); runtime polls it while waiting and, when it fires,
+    # stops the launch's own process group (SIGTERM, escalating) and waits
+    # for the actual exit. Adapters never set this; it is not part of the
+    # adapter contract, only of the caller's ownership of its own child.
+    stop_check: object = None
 
 
 class Adapter(Protocol):

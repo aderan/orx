@@ -181,3 +181,98 @@ def test_goal_pause_resume_payload_carries_in_flight_ownership(project, goal):
         revision.id, "T001", "agent: honest work")
     assert open_attempt.id == verifier["attempt"]
     assert open_attempt.nonce == verifier["nonce"]
+
+
+# -- Goal cancel (G010 T003) ---------------------------------------------------
+
+
+def test_goal_cancel_from_planning_converges_and_persists(project, tmp_path):
+    """The simplest cancel: a Goal still in planning (no revision) cancels
+    outright — cancelling persists across reopen as its own state until
+    convergence, and converged cancelled Goals still answer goal show."""
+    goal = dispatch.create_goal(project, "cancel me", ["c1"])[0]
+    out = dispatch.goal_cancel(project)
+    assert out["changed"] is True and out["status"] == "cancelled"
+    assert out["converged"] is True and out["unconfirmed"] == []
+    assert project.store.goal_get(goal.id).status == "cancelled"
+    assert project.store.goal_active() is None
+
+    project.close()
+    reopened = dispatch.open_project()
+    try:
+        assert reopened.store.goal_get(goal.id).status == "cancelled"
+        assert reopened.store.schema_version() == 14
+        # reads keep working on the cancelled Goal
+        shown = dispatch.goal_show(reopened)
+        assert shown["goal"]["id"] == goal.id
+        assert shown["goal"]["status"] == "cancelled"
+        # and the slot is free again: a new Goal is legal
+        goal2 = dispatch.create_goal(reopened, "after cancel", ["n1"])[0]
+        assert goal2.id == "G002"
+    finally:
+        reopened.close()
+
+
+def test_goal_cancel_cli_text_and_json_interfaces(project, goal):
+    from typer.testing import CliRunner
+    from orx.cli import app
+
+    runner = CliRunner()
+    env = {"ORX_PROJECT": str(project.root)}
+
+    out = runner.invoke(app, ["goal", "cancel", "--json"], env=env)
+    assert out.exit_code == 0, out.stdout
+    body = json.loads(out.stdout)
+    assert body["ok"] is True
+    assert body["goal"] == goal.id
+    assert body["status"] == "cancelled"  # planning-only Goal converges now
+    assert body["changed"] is True
+
+    # repeated cancel: idempotent, exit 0, no re-run
+    again = runner.invoke(app, ["goal", "cancel", "--json"], env=env)
+    assert again.exit_code == 0, again.stdout
+    repeat = json.loads(again.stdout)
+    assert repeat["changed"] is False and repeat["status"] == "cancelled"
+    text_repeat = runner.invoke(app, ["goal", "cancel"], env=env)
+    assert text_repeat.exit_code == 0
+    assert "cancel already requested" in text_repeat.stdout
+
+    # human rendering of an unconfirmed wrap-up: create a second Goal with a
+    # running task so the cancel lists the unconfirmed execution
+    goal2 = dispatch.create_goal(project, "with a runner", ["r1"])[0]
+    from conftest import ir_for, task_spec
+    dispatch.submit_plan(project, ir_for(goal2, [
+        task_spec("T001", acceptance=goal2.acceptance, verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    text = runner.invoke(app, ["goal", "cancel"], env=env)
+    assert text.exit_code == 0, text.stdout
+    assert "cancel requested" in text.stdout
+    assert "cancelling" in text.stdout
+    assert "unconfirmed executions" in text.stdout
+    assert "orx task observe T001" in text.stdout
+    assert "silence will NOT close it" in text.stdout
+
+    # status lists the unconfirmed execution while cancelling
+    status = runner.invoke(app, ["status", "--json"], env=env)
+    assert status.exit_code == 0, status.stdout
+    payload = json.loads(status.stdout)
+    assert payload["goal"]["status"] == "cancelling"
+    assert [e["task"] for e in payload["cancellation"]["unconfirmed"]] == ["T001"]
+
+    # a done Goal refuses the cancel, exit 1
+    dispatch.task_fail(project, "T001", "closed for the test")
+    assert project.store.goal_get(goal2.id).status == "cancelled"
+    goal3 = dispatch.create_goal(project, "finish me", ["f1"])[0]
+    from conftest import ir_for as _ir
+    dispatch.submit_plan(project, _ir(goal3, [
+        task_spec("T001", acceptance=goal3.acceptance, verification=["true"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    dispatch.task_complete(project, "T001", str(write_evidence(project.root)))
+    assert project.store.goal_get(goal3.id).status == "done"
+    done = runner.invoke(app, ["goal", "cancel", "--json"], env=env)
+    assert done.exit_code == 1
+    assert "cannot cancel from done" in json.loads(done.stdout)["error"]

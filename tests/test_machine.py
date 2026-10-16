@@ -164,18 +164,28 @@ def test_events_persist_transition_history(seeded):
     assert all(e.reason is None or isinstance(e.reason, str) for e in events)
 
 
-# -- Goal lifecycle state machine (G010 T002) ---------------------------------
+# -- Goal lifecycle state machine (G010 T002/T003) ----------------------------
 
 
 GOAL_LEGAL_PAIRS = [
-    ("active", "paused"), ("active", "done"), ("active", "cancelled"),
+    ("active", "paused"), ("active", "done"),
+    # G010 T003: cancel is a REQUEST first — active|paused -> cancelling,
+    # and cancelling converges to cancelled only through the wrap-up.
+    ("active", "cancelling"), ("paused", "cancelling"),
+    ("cancelling", "cancelled"),
     ("paused", "active"),
 ]
 
 GOAL_ILLEGAL_PAIRS = [
-    ("paused", "done"), ("paused", "cancelled"), ("paused", "paused"),
-    ("done", "paused"), ("done", "active"),
-    ("cancelled", "paused"), ("cancelled", "active"),
+    # Direct jumps to cancelled are illegal: the persisted cancelling phase
+    # (the request) cannot be skipped — a racing completion must find the
+    # Goal already cancelling, not have it flip under itself.
+    ("active", "cancelled"), ("paused", "cancelled"), ("paused", "paused"),
+    ("cancelling", "active"),   # not resumable
+    ("cancelling", "done"),     # never aggregates to done
+    ("cancelling", "paused"),
+    ("done", "paused"), ("done", "active"), ("done", "cancelling"),
+    ("cancelled", "paused"), ("cancelled", "active"), ("cancelled", "cancelling"),
 ]
 
 
@@ -207,6 +217,55 @@ def test_goal_pause_and_resume_transition_with_idempotent_repeats(project, goal)
     repeated = machine.goal_resume(store, goal.id)
     assert repeated == {"goal": goal.id, "status": "active", "changed": False}
     assert store.goal_get(goal.id).status == "active"
+
+
+def test_goal_cancel_request_is_idempotent_and_refuses_done(project, goal):
+    """active -> cancelling -> cancelled at the machine seam: the request
+    repeats as an explicit no-op, the convergence is a compare-and-set that
+    fires once, and a done Goal refuses the request outright (completion
+    that already converged is the one legal wrap-up result)."""
+    store = project.store
+    first = machine.goal_cancel_request(store, goal.id)
+    assert first == {"goal": goal.id, "status": "cancelling", "changed": True}
+    assert store.goal_get(goal.id).status == "cancelling"
+
+    # A repeated request never re-runs anything.
+    again = machine.goal_cancel_request(store, goal.id)
+    assert again == {"goal": goal.id, "status": "cancelling", "changed": False}
+
+    # cancelling is not resumable and cannot aggregate to done.
+    with pytest.raises(TransitionError, match="cannot resume from cancelling"):
+        machine.goal_resume(store, goal.id)
+    with pytest.raises(TransitionError, match="cannot pause from cancelling"):
+        machine.goal_pause(store, goal.id)
+
+    assert machine.goal_converge_cancelled(store, goal.id) is True
+    assert store.goal_get(goal.id).status == "cancelled"
+    # The convergence CAS fires once; a repeated call is a clean no-op.
+    assert machine.goal_converge_cancelled(store, goal.id) is False
+    assert store.goal_get(goal.id).status == "cancelled"
+
+    # Cancel of an already cancelled Goal: the idempotent repeat.
+    repeat = machine.goal_cancel_request(store, goal.id)
+    assert repeat == {"goal": goal.id, "status": "cancelled", "changed": False}
+
+    # A done Goal keeps its completion: the late cancel is a domain error.
+    store.goal_set_status(goal.id, machine.GoalStatus.DONE)
+    with pytest.raises(TransitionError, match="cannot cancel from done"):
+        machine.goal_cancel_request(store, goal.id)
+    assert store.goal_get(goal.id).status == "done"
+
+
+def test_goal_cancel_request_legal_from_paused(project, goal):
+    """Cancel is legal from a paused Goal: pausing stops new work but the
+    operator may still decide to cancel; the paused slot is handed to the
+    cancelling wrap-up, not resurrected."""
+    store = project.store
+    machine.goal_pause(store, goal.id)
+    outcome = machine.goal_cancel_request(store, goal.id)
+    assert outcome == {"goal": goal.id, "status": "cancelling", "changed": True}
+    assert machine.goal_converge_cancelled(store, goal.id) is True
+    assert store.goal_get(goal.id).status == "cancelled"
 
 
 def test_goal_pause_resume_refuse_terminal_statuses(project, goal):

@@ -1060,3 +1060,49 @@ docs/diagnostics/g010/t002-pause-resume.md。
 - 取消与安全收尾（G010 另一半）未实现；本轮零改动。
 - 本轮提交不得裹挟用户未提交的 docs/m1.2-report.md 改动（测试已不再
   触碰该文件）。
+
+# G010/T003：Goal 取消请求、真实停止确认与安全收尾（2026-10-16）
+
+主功能第二支：取消与安全收尾落地。设计全文见 docs/goal-lifecycle.md；
+实现事实与竞态论证见 docs/diagnostics/g010/t003-cancel.md。
+
+## 交付内容
+
+- schema v14：goals.status CHECK 增设 'cancelling'（父表重建沿用 v13
+  模式，FK 延迟换表；零回填，身份/历史/用量全保留）。observability
+  读取白名单与 schema_gate 扩至 8..14（第九修正案，analytics 保持只读）。
+- 两段式取消：active|paused -> cancelling（幂等请求，重复不重复收尾）
+  -> cancelled（仅在无未确认执行时 CAS 收敛）。cancelling 不可 resume、
+  仍占用唯一未完成 Goal 槽位；planning/执行中/blocked/paused 均可发起；
+  done 终态拒绝迟到取消（完成与取消并发只产生一个合法收尾结果）。
+- 明确取消未启动工作：pending/runnable/blocked/waiting_host/
+  waiting_external 任务与无已派发 verifier 的 verifying 任务、等待中的
+  planning assignment 及其 planner attempt——全部走合法任务机转移并记
+  goal_cancel 事件，占位 attempt 以 result='cancelled' 关闭（不伪造
+  started_at）。运行中的 worker/planner/verifier 绝不凭静默收尾：只在
+  真实事实（迟到交付/裁决/fail/recover 终止事实）上收尾，每个收尾事实
+  都会重跑收敛检查；cancel 输出与 orx status 列出未确认执行及可执行
+  后续操作。
+- 可管理 CLI 停止：Launch 携带只读 stop_check（goal 状态闭包），运行时
+  以独立会话派生子进程，停止仅向本次启动的进程组发 SIGTERM（宽限后
+  SIGKILL 升级），始终等待真实退出并把停止请求/信号/退出码记录在
+  attempt 与 goal_cancel_stop 事件上；usage/session/执行日志照常完整。
+  另一进程（真实 orx goal cancel 子进程）可在执行等待期间发起取消。
+- 显式事实入口：取消中 task recover 关闭而不重派（任务落 cancelled，
+  运营者事实与机器事实并排记录）；verdict 照常关闭其派发 attempt。
+  取消终态后 revision/attempt/证据/验证/事件/用量仍可按 Goal/Run 查询，
+  迟到写入被既有 stale/not-running 门拒绝；新 Goal 不影响旧 Goal 历史。
+- 回归：runtime（可管理停止三态：正常/停止/升级）、machine（取消转移
+  表 + 幂等）、goal（planning/paused 取消、CLI 双接口、槽位）、
+  lifecycle（收尾矩阵、静默不收尾、双序完成竞态、claim 竞态、
+  planning 取消、verifier 收尾、recover 不重派、跨进程 CLI 停止、
+  终态后查询与新 Goal 隔离）。全量测试通过。
+
+## 范围外披露（机械性 schema 消费者）
+
+- tests/test_inbox.py、tests/test_m12_acceptance.py、
+  tests/test_subagent_contract.py、tests/test_package_acceptance.py 中
+  五处硬编码 schema 版本字面量 13→14（仅数字，含一处裸 SQL 与一处相邻
+  注释）：沿 T002 先例最小迁移并在此披露；这些文件无任何行为改动。
+- 本轮提交不得裹挟用户未提交的 docs/m1.2-report.md 改动（测试未触碰
+  该文件）。

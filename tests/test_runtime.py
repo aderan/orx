@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from orx import runtime
@@ -138,3 +139,81 @@ def test_denylist():
         "cat src/main.py",
     ):
         assert runtime.forbidden_command(command) is None, command
+
+
+# -- manageable launches: stop request, signal, and the actual exit (G010 T003) --
+
+
+def test_manageable_launch_without_stop_behaves_normally(tmp_path):
+    """A stop_check that never fires is a plain launch: same success shape,
+    stdin still delivered through the writer thread, no stop fields set."""
+    launch = Launch(
+        argv=["/bin/sh", "-c", "cat"], cwd=tmp_path, timeout=10,
+        stdin_text="payload-through-stdin",
+        stop_check=lambda: False,
+    )
+    result = runtime.run_launch(launch)
+    assert result.ok and result.exit_code == 0
+    assert "payload-through-stdin" in result.stdout
+    assert result.stop_requested is False
+    assert result.stop_signal is None
+
+
+def test_manageable_launch_stop_records_request_signal_and_actual_exit(tmp_path):
+    """The stop the CALLER requested: SIGTERM to the launch's own process
+    group (the launched process and its controlled children), the actual
+    exit waited for and reported, and no timeout flag — the stop is the
+    fact, not a deadline."""
+    import threading
+
+    released = threading.Event()
+    holder: dict = {}
+
+    def stop_check() -> bool:
+        return released.is_set()
+
+    launch = Launch(
+        # a group with a controlled child, so the group kill is observable
+        argv=["/bin/sh", "-c", "sleep 30 & wait"], cwd=tmp_path, timeout=60,
+        stdin_text="",
+        stop_check=stop_check,
+    )
+
+    def run_it():
+        holder["result"] = runtime.run_launch(launch)
+
+    thread = threading.Thread(target=run_it)
+    start = time.monotonic()
+    thread.start()
+    time.sleep(0.5)  # the launch is mid-wait when the cancel lands
+    released.set()
+    thread.join(timeout=15)
+    assert not thread.is_alive(), "the stop must end the wait, not hang"
+    result = holder["result"]
+    assert result.stop_requested is True
+    assert result.stop_signal == "SIGTERM"
+    assert result.stop_escalated is False
+    assert result.timed_out is False
+    assert result.exit_code is not None  # the actual, reaped exit — a fact
+    assert result.exit_code != 0         # died by signal, not a clean exit
+    assert result.duration_sec < 20      # far short of `sleep 30`
+
+
+def test_manageable_launch_escalates_to_sigkill_when_ignored(tmp_path):
+    """A process group that ignores SIGTERM is stopped anyway: the grace
+    window escalates to SIGKILL and the escalation is recorded."""
+    launch = Launch(
+        # trap '' TERM makes the shell AND its child ignore SIGTERM
+        argv=["/bin/sh", "-c", "trap '' TERM; sleep 30"], cwd=tmp_path,
+        timeout=60, stdin_text="",
+    )
+    result = runtime._run_manageable(
+        launch.argv, cwd=tmp_path, timeout=60, stdin_text="",
+        limit=runtime.STREAM_LIMIT, stop_check=lambda: True,
+        poll=0.05, grace=0.3,
+    )
+    assert result.stop_requested is True
+    assert result.stop_signal == "SIGKILL"
+    assert result.stop_escalated is True
+    assert result.exit_code is not None and result.exit_code != 0
+    assert result.duration_sec < 15

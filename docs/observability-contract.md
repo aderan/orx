@@ -1,8 +1,8 @@
-# ORX observability read contract (schema v8/v9/v10/v11/v12/v13)
+# ORX observability read contract (schema v8/v9/v10/v11/v12/v13/v14)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
 v9, 2026-10-06 for v10, 2026-10-06 for v11, 2026-10-08 for v12, 2026-10-16
-for v13). This document is the supported
+for v13, 2026-10-16 for v14). This document is the supported
 way to analyze `.orx/state.db` from outside this repository. The analysis
 implementation (`orx-analytics`) lives in a separate repository and is not
 shipped here; this contract names no fixed checkout location for it — where
@@ -19,7 +19,7 @@ against `tests/fixtures/observability/seed.sql`.
 
 `meta.schema_version` is the integer version of the file, stored as text.
 The gate accepts **exactly the explicitly supported versions — `8`, `9`,
-`10`, `11`, `12`, and `13`** and refuses every other value: never a range, never "at
+`10`, `11`, `12`, `13`, and `14`** and refuses every other value: never a range, never "at
 least X".
 
 | File value | Reader action |
@@ -32,7 +32,8 @@ least X".
 | `11` | read everything, including the v11 identity-anchor queries below |
 | `12` | read everything; the usage `source` CHECK admits `zcode_db` (see the sixth amendment) |
 | `13` | read everything; `goals.status` admits `paused` (see the eighth amendment) |
-| integer greater than 13 | refuse; do not rewrite the file |
+| `14` | read everything; `goals.status` admits `cancelling` (see the ninth amendment) |
+| integer greater than 14 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -152,6 +153,23 @@ rebuild follows the v2/v7/v12 backup-replace pattern inside the
 copy-then-replace migration (with foreign keys deferred around the goals
 parent-table swap); a failed migration leaves the original file in place.
 
+The ninth amendment, dated 2026-10-16 (G010 T003 goal cancel and safe
+wrap-up), adds **v14**. v14 widens the same CHECK again and changes no
+column: `goals.status` admits `cancelling`.
+
+| Change | Meaning |
+|---|---|
+| `goals.status = 'cancelling'` (new CHECK value) | A persisted cancel REQUEST (`orx goal cancel`). Not a run aggregate state: `runs.status` keeps its task-derived meaning exactly as before. From this commit ORX refuses every new executor start, and a completion racing the cancel records its real facts but can never aggregate the Goal to `done`. Unstarted work (pending/runnable/blocked tasks, parked assignments, verifying tasks with no dispatched verifier, waiting planning assignments) is cancelled explicitly — task events carry the `goal_cancel` transition and still-open placeholder attempts close with `result='cancelled'`. Running executions are NEVER concluded from silence: they close only on real facts (a late delivery, a verifier verdict, or `orx task recover --termination-fact`), after which the Goal converges to `cancelled` (compare-and-set). Readers aggregating goal states must treat `cancelling` as an UNFINISHED state — the one unfinished-Goal slot stays taken until convergence, and a second unfinished Goal cannot exist beside it. |
+| `attempts.result = 'cancelled'` (existing vocabulary, new writer) | The cancel sweep closes placeholder attempts of never-started work with this result; a manageable CLI launch stopped at ORX's own request records the stop request, the signal, and the actual exit in `failure_reason`. Terminal non-delivery disposition, like `superseded`. |
+
+No row is rewritten or backfilled: a database upgraded from v13 has no
+`cancelling` rows, and every existing status keeps its exact value. The
+rebuild follows the v13 pattern (backup-replace with foreign keys deferred
+around the goals parent-table swap); a failed migration leaves the
+original file in place. Analytics stays read-only over both values: it
+displays `cancelling`/`cancelled` and the recorded dispositions, and never
+gains scheduling authority (the v13 amendment's rule, unchanged).
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -183,7 +201,7 @@ runs a completion) separate.
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9', '10', '11', '12', '13') THEN 'ok'
+  ) IN ('8', '9', '10', '11', '12', '13', '14') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```

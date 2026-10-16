@@ -22,7 +22,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 13
+CODE_SCHEMA_VERSION = 14
 
 
 def mint_nonce() -> str:
@@ -680,6 +680,46 @@ def _migrate_v13(conn: sqlite3.Connection) -> None:
     )
 
 
+# v14 (G010 T003): widen the goals status CHECK again to admit 'cancelling' —
+# the persisted cancel REQUEST behind `orx goal cancel`. Same additive shape
+# as v13: every goal row survives verbatim, nothing is backfilled (a database
+# upgraded from v13 has no cancelling goals and every existing status keeps
+# its exact value), and goals is a PARENT table so the swap runs with
+# PRAGMA foreign_keys=OFF (a no-op inside a fresh database's surrounding
+# transaction, where the copied-out table is empty anyway).
+SCHEMA_V14_GOALS = """
+CREATE TABLE goals_v14 (
+  id TEXT PRIMARY KEY,
+  objective TEXT NOT NULL,
+  constraints_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_json TEXT NOT NULL DEFAULT '[]',
+  context TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('active','paused','cancelling','done','cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO goals_v14 (id, objective, constraints_json, acceptance_json, context,
+                       status, created_at, updated_at)
+  SELECT id, objective, constraints_json, acceptance_json, context,
+         status, created_at, updated_at FROM goals;
+DROP TABLE goals;
+ALTER TABLE goals_v14 RENAME TO goals;
+"""
+
+
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(SCHEMA_V14_GOALS)
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -695,6 +735,7 @@ MIGRATIONS: dict[int, callable] = {
     11: _migrate_v11,
     12: _migrate_v12,
     13: _migrate_v13,
+    14: _migrate_v14,
 }
 
 
@@ -1521,12 +1562,15 @@ class Store:
         return _goal(r) if r else None
 
     def goal_unfinished(self) -> Goal | None:
-        """The one unfinished Goal, active OR paused (G010 T002). A paused
-        Goal is still unfinished: creating a second Goal while one is paused
-        would break the single-unfinished-Goal invariant, so `goal new` and
-        inbox auto-accept must refuse on this read, not on `goal_active`."""
+        """The one unfinished Goal: active, paused, OR cancelling (G010
+        T002/T003). A paused Goal is unfinished, and so is a cancelling one —
+        the wrap-up has not converged, so creating a second Goal would break
+        the single-unfinished-Goal invariant and silently release the slot
+        the unconfirmed executions still hold. `goal new` and inbox
+        auto-accept refuse on this read until the Goal converges to
+        cancelled (or finishes)."""
         r = self.conn.execute(
-            "SELECT * FROM goals WHERE status IN ('active','paused')"
+            "SELECT * FROM goals WHERE status IN ('active','paused','cancelling')"
             " ORDER BY created_at, id LIMIT 1"
         ).fetchone()
         return _goal(r) if r else None

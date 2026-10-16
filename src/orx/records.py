@@ -43,6 +43,17 @@ class GoalPausedError(ORXError):
     submissions (complete/fail/heartbeat/verify verdict) stay legal."""
 
 
+class GoalCancellingError(ORXError):
+    """The unified startup gate refused an executor start (G010 T003).
+
+    The Goal is cancelling (or already cancelled): a cancel was requested
+    and no new work may start — no planner/worker/verifier dispatch, no
+    parked-assignment claim, no plan activation, no downgrade fallback.
+    Fact submissions from executors that were already running (complete /
+    fail / heartbeat / recover / verify verdict) stay legal: they are the
+    real facts the wrap-up converges on."""
+
+
 class TransitionError(ORXError):
     """An illegal task state transition was requested."""
 
@@ -144,6 +155,15 @@ class GoalStatus(str, Enum):
     # starts. refresh never lifts it implicitly (completion converges at
     # resume through the existing invariants).
     PAUSED = "paused"
+    # G010 T003: a persisted cancel REQUEST. The wrap-up is two phases on
+    # purpose: `cancelling` blocks every new executor start AND blocks the
+    # active -> done completion CAS (a completion racing the cancel cannot
+    # aggregate the Goal as successfully done), while unstarted work is
+    # cancelled outright and running executors are closed only by real
+    # facts. When nothing unconfirmed remains, the Goal converges to
+    # `cancelled`. Not resumable; still occupies the one unfinished-Goal
+    # slot until it converges.
+    CANCELLING = "cancelling"
     DONE = "done"
     CANCELLED = "cancelled"
 

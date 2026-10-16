@@ -305,11 +305,11 @@ def test_fixture_is_a_genuine_non_trivial_v030_v8_sample(chain):
 def test_upgrade_preserves_every_v8_row_and_adds_only_defaults(chain):
     upgrade = chain["upgrade"]
     assert upgrade["problems"] == []
-    # G010 T002 consumer migration: the upgrade chain migrates the v8
-    # fixture to the current CODE_SCHEMA_VERSION (13: goals status CHECK
-    # admits 'paused'); the value itself is read from the migrated file by
-    # scripts/check_release.py, never hardcoded there.
-    assert upgrade["upgraded_schema_version"] == 13
+    # G010 T002/T003 consumer migration: the upgrade chain migrates the v8
+    # fixture to the current CODE_SCHEMA_VERSION (14: goals status CHECK
+    # admits 'paused' and 'cancelling'); the value itself is read from the
+    # migrated file by scripts/check_release.py, never hardcoded there.
+    assert upgrade["upgraded_schema_version"] == 14
     checked = upgrade["identity"]["tables_checked"]
     for table in check_release.V8_CORE_TABLES:
         assert table in checked, table

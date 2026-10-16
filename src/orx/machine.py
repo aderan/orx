@@ -17,6 +17,7 @@ from orx import records
 from orx.records import (
     ACTIVE_EXECUTION_STATUSES,
     ConflictError,
+    GoalCancellingError,
     GoalPausedError,
     GoalStatus,
     RunStatus,
@@ -65,9 +66,16 @@ def is_legal(from_status: TaskStatus, to_status: TaskStatus) -> bool:
 
 GOAL_ALLOWED_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
     GoalStatus.ACTIVE: frozenset(
-        {GoalStatus.PAUSED, GoalStatus.DONE, GoalStatus.CANCELLED}
+        {GoalStatus.PAUSED, GoalStatus.DONE, GoalStatus.CANCELLING}
     ),
-    GoalStatus.PAUSED: frozenset({GoalStatus.ACTIVE}),
+    # G010 T003: cancel is legal from a paused Goal too — pausing stops new
+    # work but never resurrects it; the operator may still decide to cancel.
+    GoalStatus.PAUSED: frozenset({GoalStatus.ACTIVE, GoalStatus.CANCELLING}),
+    # The persisted cancel REQUEST converges one way only: cancelling ->
+    # cancelled, and only when no unconfirmed execution remains (see
+    # dispatch._converge_cancelled). cancelling is NOT resumable — a cancel
+    # cannot be un-asked, only concluded by real facts.
+    GoalStatus.CANCELLING: frozenset({GoalStatus.CANCELLED}),
     GoalStatus.DONE: frozenset(),
     GoalStatus.CANCELLED: frozenset(),
 }
@@ -104,7 +112,8 @@ def goal_resume(store: Store, goal_id: str) -> dict:
     """paused -> active. Idempotent: resuming an already active Goal is a
     no-op that reports `changed: False`. Resume starts NOTHING itself — the
     caller re-reads in-flight ownership and the next `orx run` dispatches.
-    Terminal statuses refuse."""
+    Terminal statuses refuse; a cancelling Goal refuses too (it converges to
+    cancelled, it cannot be resumed)."""
     with store.tx():
         status = store.goal_status(goal_id)
         current = GoalStatus(status)
@@ -113,10 +122,44 @@ def goal_resume(store: Store, goal_id: str) -> dict:
         if not goal_is_legal(current, GoalStatus.ACTIVE):
             raise TransitionError(
                 f"goal {goal_id}: cannot resume from {status}"
-                f" (only a paused Goal can resume)"
+                f" (only a paused Goal can resume"
+                + ("; a cancelling Goal converges to cancelled, it cannot be resumed)"
+                   if current is GoalStatus.CANCELLING else ")")
             )
         store.goal_set_status(goal_id, GoalStatus.ACTIVE)
         return {"goal": goal_id, "status": GoalStatus.ACTIVE.value, "changed": True}
+
+
+def goal_cancel_request(store: Store, goal_id: str) -> dict:
+    """active|paused -> cancelling — the persisted cancel REQUEST (G010 T003).
+
+    Idempotent: cancelling an already cancelling (or already cancelled) Goal
+    reports `changed: False` and re-runs nothing — the wrap-up itself is in
+    dispatch.goal_cancel / _converge_cancelled, which are idempotent sweeps,
+    so a repeated request never produces a second wrap-up. A done Goal
+    refuses: completion that already converged is a legal wrap-up result and
+    a cancel arriving late cannot replace it (exactly one legal wrap-up
+    result)."""
+    with store.tx():
+        status = store.goal_status(goal_id)
+        current = GoalStatus(status)
+        if current in (GoalStatus.CANCELLING, GoalStatus.CANCELLED):
+            return {"goal": goal_id, "status": status, "changed": False}
+        if not goal_is_legal(current, GoalStatus.CANCELLING):
+            raise TransitionError(
+                f"goal {goal_id}: cannot cancel from {status}"
+                f" (only an unfinished Goal — active or paused — can cancel;"
+                " a done Goal keeps its completion)"
+            )
+        store.goal_set_status(goal_id, GoalStatus.CANCELLING)
+        return {"goal": goal_id, "status": GoalStatus.CANCELLING.value, "changed": True}
+
+
+def goal_converge_cancelled(store: Store, goal_id: str) -> bool:
+    """cancelling -> cancelled, compare-and-set. Fires only when the row still
+    holds `cancelling`; the caller decides WHEN (no unconfirmed execution
+    remains). Returns whether it fired — a converged Goal stays converged."""
+    return store.goal_transition(goal_id, GoalStatus.CANCELLING, GoalStatus.CANCELLED)
 
 
 def record_insert(
@@ -168,11 +211,12 @@ def transition(
 def claim(store: Store, revision_row_id: int, task_id: str) -> None:
     """Host claim: exactly one caller may move waiting_host -> running.
 
-    The unified startup gate (G010 T002) reads the goal status INSIDE this
-    transaction: while the Goal is paused a parked assignment cannot be
-    claimed — the gate decision and the claim write serialize against a
-    concurrent `goal pause` in the same BEGIN IMMEDIATE, so there is no
-    window where a pause lands between the check and the claim."""
+    The unified startup gate (G010 T002/T003) reads the goal status INSIDE
+    this transaction: while the Goal is paused or cancelling (or converged
+    to cancelled) a parked assignment cannot be claimed — the gate decision
+    and the claim write serialize against a concurrent `goal pause` /
+    `goal cancel` in the same BEGIN IMMEDIATE, so there is no window where
+    either lands between the check and the claim."""
     with store.tx():
         row = store.task_get(revision_row_id, task_id)
         if row.status != TaskStatus.WAITING_HOST.value:
@@ -184,6 +228,13 @@ def claim(store: Store, revision_row_id: int, task_id: str) -> None:
             raise GoalPausedError(
                 f"goal is paused; task {task_id} stays parked:"
                 " run `orx goal resume` before claiming"
+            )
+        # G010 T003: the same gate refuses while a cancel is pending (or has
+        # converged) — a parked assignment is unstarted work the cancel owns.
+        if goal_status in (GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value):
+            raise GoalCancellingError(
+                f"goal is {goal_status}; task {task_id} stays parked:"
+                " a cancel was requested and no new executor starts"
             )
         store.task_update_status(revision_row_id, task_id, TaskStatus.RUNNING)
         store.task_event_add(

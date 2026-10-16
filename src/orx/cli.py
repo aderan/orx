@@ -857,6 +857,81 @@ def goal_resume(json_out: bool = JsonOpt) -> None:
             typer.echo(f"  next dispatch: {data['next']}")
 
 
+def _render_goal_cancel(data: dict) -> None:
+    typer.echo(f"Goal {data['goal']} cancel requested — status {data['status']}")
+    if not data["changed"]:
+        typer.echo("  cancel already requested; nothing re-run (idempotent)")
+    typer.echo(f"Run {data['run']['id']} [{data['run']['status']}]")
+    cancelled = data.get("cancelled") or {}
+    for entry in cancelled.get("assignments", []):
+        typer.echo(
+            f"  planning assignment {entry['assignment']} cancelled"
+            + (f" (attempt {entry['attempt']} closed)" if entry.get("attempt") else "")
+        )
+    if cancelled.get("tasks"):
+        typer.echo(f"  unstarted tasks cancelled: {', '.join(cancelled['tasks'])}")
+    unconfirmed = data.get("unconfirmed") or []
+    if not unconfirmed:
+        typer.echo(
+            "  wrap-up converged: every execution closed on real facts"
+            if data.get("converged") or not unconfirmed
+            else "  wrap-up converged"
+        )
+        return
+    typer.echo("  unconfirmed executions still hold the Goal in cancelling:")
+    for entry in unconfirmed:
+        if entry.get("kind") == "verifier":
+            verifiers = ", ".join(
+                f"attempt {v['attempt']}" for v in entry.get("verifiers", [])
+            ) or "no open verifier attempts"
+            typer.echo(
+                f"    task {entry['task']} verifying ({verifiers}) — awaiting a"
+                " real verdict or a confirmed termination fact"
+            )
+        else:
+            typer.echo(
+                f"    task {entry['task']} running on attempt"
+                f" {entry.get('attempt')} (driver {entry.get('driver')})"
+                " — not interrupted by the request; silence will NOT close it"
+            )
+        for step in entry.get("next", []):
+            typer.echo(f"      next: {step}")
+
+
+@goal_app.command("cancel")
+@handle_errors
+def goal_cancel(json_out: bool = JsonOpt) -> None:
+    """Cancel the Goal: request the cancel, wrap up safely, converge.
+
+    Legal from any unfinished state — planning, executing, blocked, paused;
+    repeats are idempotent (no second wrap-up). The request persists
+    (`cancelling`): every new executor start is refused, and a completion
+    racing the cancel can never aggregate the Goal as done. Unstarted work
+    (pending/runnable/blocked tasks, parked assignments, the waiting
+    planning assignment) is cancelled explicitly with recorded events.
+    Running executions are NEVER concluded from silence — they are listed
+    as unconfirmed with executable follow-ups and close only on real facts
+    (a late delivery, a verifier verdict, or `orx task recover
+    --termination-fact`); a CLI executor launched by this project's own
+    `orx run`/`orx plan`/`orx verify dispatch` process is stopped at ORX's
+    request (signal to that launch's process group, actual exit waited for
+    and recorded). When nothing unconfirmed remains the Goal converges to
+    `cancelled`; history, evidence, verification rows, and usage stay
+    complete and queryable. --json fields: goal, status, changed, run,
+    cancelled, unconfirmed, converged, next. Exit 0 on success (including
+    the idempotent repeat), 1 on a domain error (the Goal is done), 2 on
+    usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        data = dispatch.goal_cancel(project)
+    finally:
+        project.close()
+    _ok(json_out, **data)
+    if not json_out:
+        _render_goal_cancel(data)
+
+
 # ---------------------------------------------------------------------------
 # Plan
 
@@ -1345,6 +1420,25 @@ def _render_status(data: dict) -> None:
     typer.echo(
         f"Verification: {v['passed']} passed / {v['failed']} failed / {v['awaiting_agent']} awaiting agent"
     )
+    cancellation = data.get("cancellation")
+    if cancellation:
+        typer.echo(
+            "Cancellation: pending — unconfirmed executions (silence will not close them):"
+        )
+        for entry in cancellation.get("unconfirmed", []):
+            if entry.get("kind") == "verifier":
+                typer.echo(
+                    f"  task {entry['task']} verifying — awaiting a real verdict"
+                    " or a confirmed termination fact"
+                )
+            else:
+                typer.echo(
+                    f"  task {entry['task']} running on attempt"
+                    f" {entry.get('attempt')} (driver {entry.get('driver')})"
+                )
+            for step in entry.get("next", []):
+                typer.echo(f"    next: {step}")
+        typer.echo(f"  {cancellation['next']}")
     for resource in data["resources"]:
         typer.echo(f"  resource {resource['profile']:<24} {resource['status']}")
     typer.echo(f"Result: {banner.get(run['status'], run['status'].upper())}")
