@@ -143,6 +143,7 @@ for this Goal") and exit 1.
 | parked assignment claim (`orx task claim`) | inside the claim transaction | the task stays `waiting_host` with its prompt file and nonce |
 | verifier dispatch (`orx verify dispatch`) | clean read + inside the verifier-attempt transaction | no verifier attempt opens; tasks in `verifying` keep their dispatched verifiers |
 | downgrade startup (resource-failure reroute to the next rung) | through the same park/launch transactions the reroute lands in | the failed task is left runnable with its recorded history; the next dispatch happens after resume |
+| suppression re-verification (`orx task reverify`) | clean read before any record | no lift is recorded: the re-verification itself never starts a worker, and its lift changes dispatch eligibility — a paused or cancelling/cancelled Goal is not the moment to re-open a suppressed (task, profile); the recorded blocker facts are untouched |
 | `orx goal new` / inbox acceptance | unfinished-Goal check | refused while any paused OR cancelling Goal exists |
 
 ## What a pause never does

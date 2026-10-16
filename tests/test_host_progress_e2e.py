@@ -397,6 +397,150 @@ def test_stale_cli_attempt_cannot_deliver_after_resource_reroute(
 
 
 # ---------------------------------------------------------------------------
+# G010 T004: the suppression re-verification entry respects the Goal
+# lifecycle startup gate. Re-verification never starts a worker itself, but
+# its lift changes dispatch eligibility — so while the Goal is paused or a
+# cancel is pending/converged it refuses with the same gate errors every
+# other new-work entry point raises, and nothing is recorded.
+
+
+def test_reverify_refuses_while_paused_or_cancelling(tmp_path, monkeypatch):
+    from orx.records import GoalCancellingError, GoalPausedError
+
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="gated reverify", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        # Three host blocker rounds: the (task, profile) is suppressed and
+        # sitting runnable behind the explainable stop.
+        for _ in range(3):
+            dispatch.run_slice(project)["host_required"][0]
+            dispatch.task_claim(project, "T001", session="sess-gated")
+            blocked = write_evidence(
+                tmp_path, status="blocked",
+                summary="internal shell approval denied before execution",
+            )
+            dispatch.task_complete(project, "T001", str(blocked))
+            dispatch.task_retry(project, "T001")
+        dispatch.run_slice(project)  # the stop engages
+        assert active_task(project, "T001").status == "runnable"
+
+        def _seam_events():
+            revision = project.store.conn.execute(
+                "SELECT revision_id FROM tasks WHERE task_id = 'T001'"
+                " ORDER BY id DESC LIMIT 1").fetchone()["revision_id"]
+            return [e for e in project.store.task_events(revision, "T001")
+                    if e.event.startswith("suppression_re")]
+
+        # Paused: the gate refuses before anything is recorded.
+        dispatch.goal_pause(project)
+        with pytest.raises(GoalPausedError, match="paused"):
+            dispatch.task_reverify(
+                project, "T001", "host-worker", "conditions changed")
+        assert _seam_events() == []
+        dispatch.goal_resume(project)
+
+        # Cancelling (and converged cancelled): the same refusal, no writes.
+        dispatch.goal_cancel(project)
+        with pytest.raises(GoalCancellingError, match="cancel"):
+            dispatch.task_reverify(
+                project, "T001", "host-worker", "conditions changed")
+        assert _seam_events() == []
+        assert dispatch.goal_show(project)["goal"]["status"] == "cancelled"
+
+        # Nothing was ever launched: exactly the three blocked attempts.
+        count = project.store.conn.execute(
+            "SELECT COUNT(*) FROM attempts"
+            " WHERE role='worker' AND profile='host-worker'"
+        ).fetchone()[0]
+        assert count == 3
+    finally:
+        project.close()
+
+
+def test_reverify_cli_surfaces_decision_reason_and_exit_codes(
+        tmp_path, monkeypatch):
+    """The `orx task reverify` CLI face: an honest refusal is exit 0 with
+    the machine reason and steps in both --json and human form (a recorded
+    negative, not an error); a blank restart reason is a usage error
+    (exit 2, reason reverify_reason_invalid); an unknown profile exits 1."""
+    from typer.testing import CliRunner
+
+    from orx.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="reverify cli", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=goal.acceptance, verification=["true"]),
+        ]))
+        for _ in range(3):
+            dispatch.run_slice(project)["host_required"][0]
+            dispatch.task_claim(project, "T001", session="sess-cli-rv")
+            blocked = write_evidence(
+                tmp_path, status="blocked",
+                summary="internal shell approval denied before execution",
+            )
+            dispatch.task_complete(project, "T001", str(blocked))
+            dispatch.task_retry(project, "T001")
+        dispatch.run_slice(project)
+    finally:
+        project.close()
+
+    runner = CliRunner()
+    refused = runner.invoke(app, [
+        "task", "reverify", "T001", "--profile", "host-worker",
+        "--reason", "host conditions changed", "--json",
+    ])
+    assert refused.exit_code == 0
+    payload = json.loads(refused.stdout)
+    assert payload["ok"] is True
+    assert payload["decision"] == "refused"
+    assert payload["refusal"]["code"] == "harness_not_preflightable"
+
+    human = runner.invoke(app, [
+        "task", "reverify", "T001", "--profile", "host-worker",
+        "--reason", "host conditions changed",
+    ])
+    assert human.exit_code == 0
+    assert "refused" in human.stdout
+    assert "harness_not_preflightable" in human.stdout
+    assert "step:" in human.stdout
+
+    blank = runner.invoke(app, [
+        "task", "reverify", "T001", "--profile", "host-worker",
+        "--reason", "   ", "--json",
+    ])
+    assert blank.exit_code == 2
+    assert json.loads(blank.stdout)["error"]["reason"] == \
+        "reverify_reason_invalid"
+
+    unknown = runner.invoke(app, [
+        "task", "reverify", "T001", "--profile", "no-such-profile",
+        "--reason", "a real reason", "--json",
+    ])
+    assert unknown.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
 # The documentation teaches the contract §11 discipline (and stays inside it)
 
 

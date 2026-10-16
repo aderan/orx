@@ -2081,6 +2081,82 @@ def task_note(
         typer.echo("  history_edited: False")
 
 
+@task_app.command("reverify")
+@handle_errors
+def task_reverify(
+    task_id: str = typer.Argument(..., help="Task id, e.g. T001."),
+    profile: str = typer.Option(
+        ...,
+        "--profile",
+        help="The suppressed profile to re-verify (exactly one (task, profile) pair is lifted).",
+    ),
+    reason: str = typer.Option(
+        ...,
+        "--reason",
+        help=(
+            "What changed (1-512 characters): the operator-owned restart "
+            "reason, recorded next to both config fingerprints."
+        ),
+    ),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Re-verify a blocker-suppressed (task, profile) after a permission fix.
+
+    Reads the harness's CURRENT effective permission config (the same
+    read-only preflight `orx agent preflight` uses) and compares its
+    fingerprint against the blocking-time fingerprint recorded when the
+    suppression engaged. A genuinely different effective fingerprint lifts
+    the exclusion for exactly this (task, profile): the profile re-enters
+    this task's routing candidates and the NEXT `orx run` performs the
+    restart with a new attempt and nonce — this command never starts a
+    worker. An unchanged fingerprint (including an mtime-only touch), a
+    config that already got its relaunch, a missing blocking-time record,
+    or a harness without a permission config refuses with a machine reason
+    and the next honest step; a paused/cancelling/cancelled Goal refuses
+    at the startup gate. A passed re-verification is NOT execution
+    success: it cannot prove in-agent shell execution, and a returning
+    same-condition blocker re-engages the bounded suppression.
+
+    Exit codes: 0 decision made (lifted or refused — the decision, both
+    fingerprints, and the next step are the answer; a refusal is a
+    recorded honest negative, not an error); 1 unknown task/profile or
+    the lifecycle gate (paused/cancelling/cancelled); 2 input validation
+    (reverify_reason_invalid, reverify_profile_required).
+    """
+    project = dispatch.open_project()
+    try:
+        result = dispatch.task_reverify(project, task_id, profile, reason)
+    except ORXError as exc:
+        _render_reason_rejected(exc, json_out)
+        _recovery_exit(exc)
+    finally:
+        project.close()
+    _ok(json_out, **result)
+    if not json_out:
+        state = "lifted" if result["decision"] == "lifted" else "refused"
+        typer.echo(
+            f"task {result['task']} profile {result['profile']}:"
+            f" re-verification {state}"
+        )
+        typer.echo(f"  restart reason: {result['restart_reason']}")
+        for side in ("baseline", "current"):
+            if side in result:
+                facts = result[side]
+                typer.echo(
+                    f"  {side} fingerprint: {facts['config_fingerprint']}"
+                    f" (probed {facts.get('probed_at')};"
+                    f" origin {facts.get('origin')})"
+                )
+        if result["decision"] == "lifted":
+            typer.echo(f"  {result['preflight_note']}")
+            typer.echo(f"  next: {result['next']}")
+        else:
+            refusal = result["refusal"]
+            typer.echo(f"  refused: {refusal['code']} — {refusal['message']}")
+            for step in refusal["steps"]:
+                typer.echo(f"  step: {step}")
+
+
 # ---------------------------------------------------------------------------
 # Verify
 

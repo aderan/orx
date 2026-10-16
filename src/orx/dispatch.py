@@ -2115,14 +2115,21 @@ def submit_plan(project: Project, ir_data: dict,
 # G009 T004: the remedy sentence every suppression surface carries. It
 # names what must CHANGE, never "try again" — the incident's failure was
 # exactly retry prompts that treated a permission blocker as red tests.
+# G010 T004 adds the machine for the config-change branch: the blocking-time
+# permission-config fingerprint is recorded when the suppression engages,
+# and `orx task reverify` consumes it — the bounded, explicit restart entry
+# that does not need the excluded profile to be launched first.
 _SUPPRESSION_REMEDY = (
     "change the conditions, not the attempt count: fix the underlying"
     " setup (config change: harness approval/sandbox settings or the"
-    " profile definition), route a different profile (routing change:"
-    " reorder [worker] profiles, or take the task over as host/external),"
-    " or investigate manually (human); within this revision the"
-    " (task, profile) pair stays excluded until a different failure"
-    " signature, a success on the profile, or a replan resets the"
+    " profile definition — then `orx task reverify <task> --profile"
+    " <name> --reason <what changed>` re-verifies the recorded"
+    " blocking-time config fingerprint and re-opens this (task, profile)"
+    " for routing without launching it), route a different profile"
+    " (routing change: reorder [worker] profiles, or take the task over"
+    " as host/external), or investigate manually (human); within this"
+    " revision the (task, profile) pair stays excluded until a different"
+    " failure signature, a success on the profile, or a replan resets the"
     " recorded streak"
 )
 
@@ -2160,7 +2167,15 @@ def _suppressed_blockers(store: Store, config, revision_id: int,
     configured worker.max_same_blocker_attempts. Keyed by profile name,
     valued by the explanation payload; empty when nothing is suppressed.
     Only profiles with recorded attempts on this task can qualify — the
-    streak is a recorded fact, never a prediction."""
+    streak is a recorded fact, never a prediction.
+
+    G010 T004: a profile whose suppression was lifted by an explicit
+    re-verification (`task_reverify`) is NOT suppressed here while the
+    reopen is unconsumed — the lift is one-shot: the profile's next
+    recorded attempt on this task consumes it, after which the trailing
+    streak decides again on its own (a returning same-condition blocker
+    re-engages the bounded suppression; a success or a different failure
+    resets it honestly)."""
     limit = config.worker_max_same_blocker_attempts
     profiles = {
         a.profile for a in store.attempts_for_task(revision_id, task_id)
@@ -2170,8 +2185,171 @@ def _suppressed_blockers(store: Store, config, revision_id: int,
     for name in sorted(profiles):
         streak = health.blocker_streak(store, revision_id, task_id, name)
         if streak is not None and streak.count >= limit:
+            if _suppression_reopen_active(store, revision_id, task_id, name):
+                continue
             out[name] = _suppression_payload(streak, limit)
     return out
+
+
+# G010 T004: the bounded suppression restart seam. Three append-only
+# task-event kinds carry its machine facts (the reason column holds the
+# JSON payload; every read below tolerates a payload it cannot parse —
+# history is never rewritten to fit a reader):
+#
+#   suppression_baseline         the BLOCKING-TIME conditions: the effective
+#                                permission-config fingerprint (probes,
+#                                G009 T007) with its sources, bound to the
+#                                blocker episode (blocker fingerprint) it
+#                                was recorded for. origin=block_time when
+#                                captured as the suppression engaged;
+#                                origin=reverify_capture when a reverify
+#                                found no historical fingerprint and
+#                                recorded the current config as the
+#                                supplementary baseline instead of lifting
+#                                on a claim it cannot check.
+#   suppression_reopen           the LIFT: a re-verification that proved a
+#                                different effective fingerprint. Carries
+#                                both fingerprints, the sources, the
+#                                operator's restart reason, and the
+#                                attempt watermark; the profile re-enters
+#                                this task's routing candidates until its
+#                                next recorded attempt consumes the reopen.
+#   suppression_reverify_refused a re-verification that refused to lift,
+#                                with its machine reason (same effective
+#                                fingerprint / mtime-only / already
+#                                reopened for this exact config / no
+#                                baseline / harness has no config
+#                                fingerprint / not suppressed) — the audit
+#                                trail that repeated reverifies never
+#                                silently unbound anything.
+SUPPRESSION_BASELINE_EVENT = "suppression_baseline"
+SUPPRESSION_REOPEN_EVENT = "suppression_reopen"
+SUPPRESSION_REVERIFY_REFUSED_EVENT = "suppression_reverify_refused"
+
+#: The harnesses whose permission config T007's preflight can fingerprint
+#: (host/shell harnesses have no config file to consume — their reverify
+#: refusal carries routing-shaped steps instead).
+PREFLIGHTABLE_HARNESSES = ("cursor", "codex")
+
+
+def _suppression_event_payloads(store: Store, revision_id: int, task_id: str,
+                                profile: str, event: str) -> list[dict]:
+    """The parsed payloads of one suppression-seam event kind for one
+    (task, profile), oldest first; a payload named another profile or one
+    that no longer parses is skipped, never guessed."""
+    out: list[dict] = []
+    for row in store.task_events(revision_id, task_id):
+        if row.event != event or row.reason is None:
+            continue
+        try:
+            payload = json.loads(row.reason)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("profile") != profile:
+            continue
+        out.append(payload)
+    return out
+
+
+def _worker_attempt_count(store: Store, revision_id: int, task_id: str,
+                          profile: str) -> int:
+    return sum(
+        1 for a in store.attempts_for_task(revision_id, task_id)
+        if a.role == "worker" and a.profile == profile
+    )
+
+
+def _suppression_reopen_active(store: Store, revision_id: int, task_id: str,
+                               profile: str) -> bool:
+    """Whether an explicit re-verification lift is still unconsumed: the
+    latest reopen's attempt watermark equals the profile's CURRENT worker
+    attempt count on this task. The profile's next recorded attempt (any
+    result) moves the count and consumes the lift — bounded by
+    construction, never a standing override."""
+    reopens = _suppression_event_payloads(
+        store, revision_id, task_id, profile, SUPPRESSION_REOPEN_EVENT)
+    if not reopens:
+        return False
+    latest = reopens[-1]
+    watermark = latest.get("attempts_at_reopen")
+    if not isinstance(watermark, int):
+        return False
+    return _worker_attempt_count(store, revision_id, task_id, profile) \
+        == watermark
+
+
+def _task_command_entries(task) -> list[str]:
+    """The task's command verification entries — the toolchain binding the
+    baseline and the re-verification share, so the two fingerprints
+    compare the same launch conditions (the entries are plan facts; a
+    replan is a new revision and a new episode either way)."""
+    return [item.raw for item in verify.entries_for(task)
+            if item.kind == "command"]
+
+
+def _blocking_condition_preflight(project: Project, profile: Profile,
+                                  task) -> dict | None:
+    """The effective permission-config preflight for one suppressed
+    profile, read NOW (read-only; never a completion, never a write to the
+    harness config). None when the harness has no permission config to
+    fingerprint (host/shell) or the read itself fails — the caller treats
+    None as 'no consumable fingerprint', never as success or failure."""
+    if profile.harness.value not in PREFLIGHTABLE_HARNESSES:
+        return None
+    try:
+        return probes.build_permission_preflight(
+            profile.harness.value, profile=profile, role="worker",
+            workspace=project.root,
+            check_commands=_task_command_entries(task),
+        )
+    except (ValueError, KeyError, OSError):
+        return None
+
+
+def _record_suppression_baselines(project: Project, revision, task,
+                                  suppressed: dict[str, dict]) -> None:
+    """Capture the blocking-time conditions once per blocker episode: for
+    every actively suppressed profile of this task whose current episode
+    has no baseline yet, record the effective permission-config fingerprint
+    with its sources. Host/shell profiles record nothing (there is no
+    config to consume; their reverify refusal carries the explicit steps).
+    Failure of the read skips the baseline silently-honestly: the reverify
+    will then refuse with no_baseline_recorded and its supplementary
+    steps rather than lift on an unverifiable claim."""
+    store = project.store
+    for name, payload in suppressed.items():
+        profile = project.profiles.get(name)
+        if profile is None:
+            continue
+        existing = _suppression_event_payloads(
+            store, revision.id, task.task_id, name,
+            SUPPRESSION_BASELINE_EVENT)
+        if any(p.get("blocker_fingerprint") == payload["fingerprint"]
+               for p in existing):
+            continue  # this episode already has its blocking-time record
+        preflight = _blocking_condition_preflight(project, profile, task)
+        if preflight is None:
+            continue
+        record = {
+            "kind": "suppression_baseline",
+            "profile": name,
+            "harness": profile.harness.value,
+            "origin": "block_time",
+            "blocker_fingerprint": payload["fingerprint"],
+            "blocker_class": payload["failure_class"],
+            "count": payload["count"],
+            "limit": payload["limit"],
+            "config_fingerprint": preflight["fingerprint"],
+            "axes": preflight["axes"],
+            "sources": preflight["sources"],
+            "cli": preflight["cli"],
+            "probed_at": preflight["probed_at"],
+        }
+        store.task_event_add(
+            revision.id, task.task_id, task.status, task.status,
+            SUPPRESSION_BASELINE_EVENT, reason=json.dumps(
+                record, sort_keys=True, default=str),
+        )
 
 
 def _annotate_suppression(entry: dict, suppressed: dict[str, dict],
@@ -2445,6 +2623,12 @@ def run_slice(project: Project) -> dict:
         # gate; when nothing is routable the stop is recorded and explained.
         suppressed = _suppressed_blockers(
             store, project.config, revision.id, task.task_id)
+        if suppressed:
+            # G010 T004: the blocking-time conditions of every engaged
+            # suppression are recorded once per episode — the config
+            # fingerprint a later `orx task reverify` consumes.
+            _record_suppression_baselines(
+                project, revision, current, suppressed)
         request = routing.RouteRequest(
             role=Role.WORKER,
             required_capabilities=caps,
@@ -4634,6 +4818,360 @@ def task_retry(project: Project, task_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# G010 T004: explicit re-verification after a permission fix — the bounded
+# suppression restart.
+#
+# The gap this closes (docs/recovery-hardening-report.md T008): a suppressed
+# (task, profile) could only be un-suppressed by that very profile recording
+# a different-fingerprint attempt on the task, but the suppression is what
+# keeps it from being launched. The remedy always said "change the
+# conditions (config change)" — this entry is the machine that consumes the
+# claim: it compares the CURRENT effective permission-config fingerprint
+# (G009 T007's preflight, read-only) against the one recorded when the
+# suppression engaged, and lifts the exclusion for exactly this (task,
+# profile) when — and only when — the fingerprint genuinely differs.
+#
+# Bounded and honest by construction:
+#   * the re-verification starts NO worker (no attempt, no nonce, no state
+#     transition); the restart itself is the next `orx run`'s normal
+#     dispatch, which creates the new attempt and nonce;
+#   * the lift is one-shot per distinct effective fingerprint: an unchanged
+#     fingerprint, an mtime-only touch, a repeated reverify, or a repeated
+#     retry never lifts; a fingerprint that already got its relaunch and
+#     failed again is refused until the config changes for real;
+#   * a missing blocking-time fingerprint never lifts — the current config
+#     is recorded as the supplementary baseline and the steps say so;
+#   * the goal lifecycle startup gate applies (paused/cancelling/cancelled
+#     refuse before anything is recorded);
+#   * scope is exactly (task, profile): other tasks' streaks, other
+#     profiles, resource/quota gates, and the recorded failure history keep
+#     their own semantics; a returning same-condition blocker re-engages
+#     the bounded suppression from the recorded streak.
+
+#: Input-validation rejection reasons for the re-verification surface
+#: (usage-class, exit 2 at the CLI; members of RECOVERY_INPUT_REASONS —
+#: the same discipline as the recovery surfaces).
+REVERIFY_INPUT_REASONS = (
+    "reverify_reason_invalid",
+    "reverify_profile_required",
+)
+
+_REVERIFY_STEPS_NO_BASELINE = (
+    "no blocking-time fingerprint exists for this suppression (it engaged"
+    " before G010 T004 or no readable config existed then): the CURRENT"
+    " effective config has been recorded as the supplementary baseline —"
+    " change the permission conditions for real (harness config or profile"
+    " definition), then run `orx task reverify` again; only a fingerprint"
+    " that differs from the recorded baseline lifts the suppression",
+)
+_REVERIFY_STEPS_NO_PREFLIGHT = (
+    "this harness has no permission-config fingerprint to consume (no CLI"
+    " config file exists for ORX to re-read): change the routing instead —"
+    " reorder [worker] profiles, take the task over as host/external, or"
+    " replan (a replan resets the recorded streak); a manual"
+    " `orx resource set` stays available for quota-shaped gates",
+)
+_REVERIFY_PREFLIGHT_NOTE = (
+    "the preflight proves the CLI identity and the permission axes with"
+    " their sources; it cannot prove internal shell execution inside the"
+    " agent session — a passed re-verification is not execution success."
+    " The restart is the next `orx run`: normal dispatch creates the new"
+    " attempt and nonce; if the same blocker returns under the new"
+    " conditions, the bounded suppression re-engages from the recorded"
+    " streak"
+)
+
+
+def task_reverify(project: Project, task_id: str, profile: str,
+                  reason: str) -> dict:
+    """Explicitly re-verify a blocker-suppressed (task, profile) after the
+    operator changed the real permission conditions (G010 T004).
+
+    Reads the harness's CURRENT effective permission config (the same
+    read-only preflight `orx agent preflight` uses) and compares it with
+    the blocking-time fingerprint recorded when the suppression engaged.
+    A genuinely different effective fingerprint lifts the exclusion for
+    exactly this (task, profile) — the profile re-enters this task's
+    routing candidates, and the next `orx run` performs the restart with
+    a NEW attempt and nonce. Anything else refuses with a machine reason
+    and the next honest step; every invocation (lift or refusal) appends
+    its facts to the task's event history.
+    """
+    # Operator input first (usage class, exit 2): the restart reason is the
+    # operator-owned statement of WHAT CHANGED — the same 1-512 discipline
+    # as the recovery surfaces.
+    reason_clean = (reason or "").strip()
+    if not reason_clean or len(reason_clean) > 512:
+        raise _recovery_input_error(
+            "reverify_reason_invalid",
+            "--reason must be 1-512 characters after stripping whitespace"
+            f" (got {len(reason_clean)}); the restart reason is the"
+            " operator-owned statement of what changed — a re-verification"
+            " without its fact is noise",
+        )
+    profile_clean = (profile or "").strip()
+    if not profile_clean:
+        raise _recovery_input_error(
+            "reverify_profile_required",
+            "--profile is required: the re-verification lifts exactly one"
+            " (task, profile) pair, never a whole ladder",
+        )
+
+    store = project.store
+    goal, run = _active_context(project)
+    revision, task = _active_task(project, run, task_id)
+    # The lifecycle startup gate (G010 T002/T003): the lift changes dispatch
+    # eligibility, so it is new-work-shaped — while the Goal is paused or a
+    # cancel is pending/converged, refuse before anything is recorded. The
+    # re-verification never starts a worker either way.
+    _assert_goal_dispatchable(store, goal)
+
+    profile_obj = project.profiles.get(profile_clean)
+    if profile_obj is None:
+        raise NotFoundError(
+            f"profile {profile_clean!r} is not defined in the effective"
+            " profiles; the re-verification names one configured profile")
+
+    streak = health.blocker_streak(store, revision.id, task.task_id,
+                                   profile_clean)
+    limit = project.config.worker_max_same_blocker_attempts
+    status = task.status
+
+    def _refuse(code: str, message: str, *, steps, current=None,
+                baseline=None, extra: dict | None = None) -> dict:
+        record = {
+            "kind": "suppression_reverify_refused",
+            "profile": profile_clean,
+            "code": code,
+            "reason": reason_clean,
+            "blocker_fingerprint": streak.fingerprint if streak else None,
+            "current_config_fingerprint":
+                (current or {}).get("fingerprint"),
+        }
+        store.task_event_add(
+            revision.id, task.task_id, status, status,
+            SUPPRESSION_REVERIFY_REFUSED_EVENT,
+            reason=json.dumps(record, sort_keys=True, default=str),
+        )
+        result = {
+            "task": task.task_id,
+            "profile": profile_clean,
+            "decision": "refused",
+            "refusal": {"code": code, "message": message,
+                        "steps": list(steps)},
+            "restart_reason": reason_clean,
+        }
+        if baseline is not None:
+            result["baseline"] = baseline
+        if current is not None:
+            result["current"] = current
+        if extra:
+            result.update(extra)
+        return result
+
+    def _current_facts(preflight: dict) -> dict:
+        return {
+            "config_fingerprint": preflight["fingerprint"],
+            "probed_at": preflight["probed_at"],
+            "sources": preflight["sources"],
+        }
+
+    # Precondition: the pair must actually be suppressed. The raw streak is
+    # the fact (an unconsumed reopen does not change it — a reverify against
+    # a pending reopen is judged by the fingerprint rules below).
+    if streak is None or streak.count < limit:
+        count = streak.count if streak is not None else 0
+        return _refuse(
+            "not_suppressed",
+            f"profile {profile_clean!r} is not blocker-suppressed for task"
+            f" {task.task_id} (trailing streak {count}/{limit}); there is"
+            " nothing to re-verify — normal routing already considers it",
+            steps=("nothing to lift: the profile already re-enters routing"
+                   " for this task through `orx run`",),
+        )
+
+    # Harnesses without a permission config cannot be re-verified this way:
+    # refuse with the routing-shaped steps, never a silent lift.
+    if profile_obj.harness.value not in PREFLIGHTABLE_HARNESSES:
+        return _refuse(
+            "harness_not_preflightable",
+            f"harness {profile_obj.harness.value!r} has no permission-config"
+            " fingerprint to consume (the preflight applies to"
+            f" {', '.join(PREFLIGHTABLE_HARNESSES)}); the recorded remedy"
+            " for this shape is a routing or replan change",
+            steps=_REVERIFY_STEPS_NO_PREFLIGHT,
+        )
+
+    # The CURRENT effective conditions — read-only, the same preflight
+    # `orx agent preflight` runs; never a completion, never a config write.
+    preflight = probes.build_permission_preflight(
+        profile_obj.harness.value, profile=profile_obj, role="worker",
+        workspace=project.root,
+        check_commands=_task_command_entries(task),
+    )
+    current = _current_facts(preflight)
+
+    # The blocking-time record for THIS blocker episode. Missing (a
+    # suppression that engaged before G010 T004): record the current config
+    # as the supplementary baseline and refuse with the steps — never lift
+    # on a claim that cannot be checked.
+    baselines = _suppression_event_payloads(
+        store, revision.id, task.task_id, profile_clean,
+        SUPPRESSION_BASELINE_EVENT)
+    episode = [b for b in baselines
+               if b.get("blocker_fingerprint") == streak.fingerprint]
+    if not episode:
+        capture = {
+            "kind": "suppression_baseline",
+            "profile": profile_clean,
+            "harness": profile_obj.harness.value,
+            "origin": "reverify_capture",
+            "blocker_fingerprint": streak.fingerprint,
+            "blocker_class": streak.failure_class,
+            "count": streak.count,
+            "limit": limit,
+            "config_fingerprint": preflight["fingerprint"],
+            "axes": preflight["axes"],
+            "sources": preflight["sources"],
+            "cli": preflight["cli"],
+            "probed_at": preflight["probed_at"],
+        }
+        store.task_event_add(
+            revision.id, task.task_id, status, status,
+            SUPPRESSION_BASELINE_EVENT,
+            reason=json.dumps(capture, sort_keys=True, default=str),
+        )
+        return _refuse(
+            "no_baseline_recorded",
+            "no blocking-time config fingerprint is recorded for this"
+            f" suppression episode (blocker fingerprint {streak.fingerprint});"
+            " the current effective config has been recorded as the"
+            " supplementary baseline instead — lifting now would be an"
+            " unverifiable claim",
+            steps=_REVERIFY_STEPS_NO_BASELINE, current=current,
+            baseline=_current_facts(preflight),
+        )
+    baseline_payload = episode[-1]
+    baseline = {
+        "config_fingerprint": baseline_payload.get("config_fingerprint"),
+        "probed_at": baseline_payload.get("probed_at"),
+        "sources": baseline_payload.get("sources", []),
+        "origin": baseline_payload.get("origin"),
+    }
+
+    # Comparison 1 — the effective fingerprint itself. Identical means the
+    # conditions did not change; an mtime-only touch is reported for what
+    # it is (the tripwire fired, the content did not move).
+    if current["config_fingerprint"] == baseline["config_fingerprint"]:
+        mtime_reasons = [
+            r for r in probes.preflight_invalid_reasons(
+                _baseline_as_preflight(baseline_payload), preflight)
+            if "mtime" in r
+        ]
+        message = (
+            "the effective permission config is UNCHANGED (fingerprint"
+            f" {current['config_fingerprint']} equals the recorded"
+            " blocking-time fingerprint); re-launching would face the same"
+            " blocker")
+        if mtime_reasons:
+            message += (
+                "; config file mtimes changed but the effective fingerprint"
+                " is identical — touching the file is not a condition"
+                " change")
+        return _refuse(
+            "same_effective_fingerprint", message,
+            steps=("change the harness approval/sandbox settings or the"
+                   " profile definition for real, then re-run"
+                   " `orx task reverify` — the fingerprint comparison is"
+                   " over effective axis values and their sources, never"
+                   " file timestamps",),
+            current=current, baseline=baseline,
+            extra={"mtime_changed": bool(mtime_reasons)},
+        )
+
+    # Comparison 2 — one bounded chance per distinct effective fingerprint:
+    # a config that already got its relaunch and failed again is refused
+    # until the conditions change beyond it.
+    reopens = _suppression_event_payloads(
+        store, revision.id, task.task_id, profile_clean,
+        SUPPRESSION_REOPEN_EVENT)
+    already = [r for r in reopens
+               if r.get("config_fingerprint")
+               == current["config_fingerprint"]]
+    if already:
+        prior = already[-1]
+        return _refuse(
+            "config_already_reopened",
+            "this exact effective config already got its re-verification"
+            f" chance (reopened at {prior.get('probed_at')}) and the"
+            " profile failed again under it; the same fingerprint cannot"
+            " lift the suppression twice",
+            steps=("change the conditions beyond the fingerprint that"
+                   " already failed — a further config or profile change"
+                   " opens the next bounded chance; routing and replan"
+                   " remain the alternatives",),
+            current=current, baseline=baseline,
+        )
+
+    # The lift: a genuinely different effective fingerprint. Recorded with
+    # both sides, the sources, the operator's restart reason, and the
+    # attempt watermark that makes the reopen one-shot. No worker starts
+    # here — the next `orx run` performs the restart through normal
+    # dispatch (a new attempt and nonce).
+    watermark = _worker_attempt_count(
+        store, revision.id, task.task_id, profile_clean)
+    reopen = {
+        "kind": "suppression_reopen",
+        "profile": profile_clean,
+        "harness": profile_obj.harness.value,
+        "blocker_fingerprint": streak.fingerprint,
+        "blocker_class": streak.failure_class,
+        "count": streak.count,
+        "limit": limit,
+        "baseline_fingerprint": baseline["config_fingerprint"],
+        "baseline_probed_at": baseline["probed_at"],
+        "config_fingerprint": current["config_fingerprint"],
+        "axes": preflight["axes"],
+        "sources": preflight["sources"],
+        "cli": preflight["cli"],
+        "probed_at": preflight["probed_at"],
+        "reason": reason_clean,
+        "attempts_at_reopen": watermark,
+    }
+    store.task_event_add(
+        revision.id, task.task_id, status, status,
+        SUPPRESSION_REOPEN_EVENT,
+        reason=json.dumps(reopen, sort_keys=True, default=str),
+    )
+    return {
+        "task": task.task_id,
+        "profile": profile_clean,
+        "decision": "lifted",
+        "restart_reason": reason_clean,
+        "baseline": baseline,
+        "current": current,
+        "attempts_at_reopen": watermark,
+        "preflight_note": _REVERIFY_PREFLIGHT_NOTE,
+        "next": (
+            "orx run — normal dispatch creates the new attempt and nonce;"
+            " if the same blocker returns, the bounded suppression"
+            " re-engages from the recorded streak"
+        ),
+    }
+
+
+def _baseline_as_preflight(baseline_payload: dict) -> dict:
+    """Shape a stored baseline payload back into the preflight form
+    `probes.preflight_invalid_reasons` compares (fingerprint + sources with
+    mtimes); fields the old record may lack stay absent — the comparison
+    only needs those two."""
+    return {
+        "fingerprint": baseline_payload.get("config_fingerprint"),
+        "sources": baseline_payload.get("sources", []),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Same-session check-fix loop budget (R002 follow-up).
 #
 # `worker.max_check_rounds` bounds how many check rounds one worker attempt
@@ -5005,11 +5543,15 @@ def _verification_counts(store: Store, revision: Revision) -> dict:
 
 #: Input-validation rejection reasons for the recovery surfaces: usage-class
 #: errors, exit 2 at the CLI (same discipline as HEARTBEAT_INPUT_REASONS).
+#: G010 T004 adds the re-verification surface's two (the restart reason and
+#: the profile it names are operator input).
 RECOVERY_INPUT_REASONS = (
     "termination_fact_invalid",
     "note_kind_invalid",
     "note_detail_invalid",
     "note_attempt_required",
+    "reverify_reason_invalid",
+    "reverify_profile_required",
 )
 
 #: The controlled operator-note kinds (task_note); the vocabulary is closed

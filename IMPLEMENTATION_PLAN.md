@@ -1106,3 +1106,43 @@ docs/diagnostics/g010/t002-pause-resume.md。
   注释）：沿 T002 先例最小迁移并在此披露；这些文件无任何行为改动。
 - 本轮提交不得裹挟用户未提交的 docs/m1.2-report.md 改动（测试未触碰
   该文件）。
+
+# G010/T004：权限修复后的显式复验与抑制重启用（2026-10-16）
+
+配套功能：落地 G009 T008 记录的缺口「抑制重启用缺少配置指纹消费者」。
+实现事实与设计全文见 docs/diagnostics/g010/t004-suppression-reverify.md。
+
+## 交付内容
+
+- 复现钉：权限配置真实修复（allowlist→unrestricted）后，被抑制
+  profile 默认仍不被重新启动——路由循环与重复 retry 都不消费指纹；
+  该行为先被复现并钉为默认语义（永久回归测试）。
+- 阻塞时条件记录：抑制在 run_slice 生效时，按阻塞 episode（blocker
+  fingerprint）为可预检 profile 记录 suppression_baseline 事件——
+  T007 权限配置指纹（有效轴值+来源+CLI 身份，只读）一次性捕获。
+- 显式复验入口 `orx task reverify <task> --profile <name> --reason`：
+  重读当前有效指纹与基线比较；不同 ⇒ suppression_reopen（记录双侧
+  指纹/来源/操作者重启原因/attempt 水位），恰该 (task, profile)
+  重新进入路由候选；复验本身不启动 worker、不建 attempt/nonce，重启
+  由下次 `orx run` 正常派发执行；结果显式声明预检通过不是执行成功。
+- 有界性：相同有效指纹、仅 mtime（如实标注）、重复复验、重复 retry
+  均不解除；同一指纹已获重启且再失败 ⇒ config_already_reopened 拒绝
+  （每不同指纹恰一次）；lift 一次性——该 profile 下次 attempt 消费
+  reopen，同阻塞复发从记录 streak 恢复有界抑制；无历史指纹 ⇒ 记录
+  补充基线（reverify_capture）+ 明确补证步骤，绝不在不可核验的主张
+  上解除；host/shell 无配置可消费 ⇒ 路由形态步骤拒绝。
+- 原有语义保持：故障分类/blocker 指纹/streak 零改动；配额与 quota_
+  domain 门禁独立于 lift（lift 后 exhausted 的停止原因如实变为
+  exhausted）；恢复身份规则不动；作用域恰 (task, profile)；生命周期
+  启动门禁覆盖复验（paused/cancelling/cancelled 先拒绝、零写入）；
+  Analytics 只读不扩权。零 schema 变更（三个追加式 task_event）。
+- 验证：新增 10 例先红后绿（1 例复现钉按设计实现前即绿）；门禁三
+  文件 172 passed；e2e 三文件 64 passed；全量 1124 passed（T003 基线
+  1115+9）零新增 skip；git diff --check（排除 m1.2-report.md）干净；
+  全部确定性替身，零付费调用。
+
+## 范围外披露
+
+- 用户未提交的 docs/m1.2-report.md：本轮全量验证后 sha256 与 T001
+  postscript 记录一致（未进一步改变）；保持未暂存未提交，prescribed
+  检查排除该文件，本轮提交不含它。

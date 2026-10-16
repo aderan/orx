@@ -139,6 +139,43 @@ task event — naming the blocker, the count, the fingerprint, and the remedy
 (operator intent) but reports the suppression in its payload. A different
 failure signature, a success on the profile, or a replan resets the streak.
 
+**Explicit re-verification after a permission fix (G010 T004).** The
+suppression above had a recorded gap (recovery-hardening-report T008): the
+excluded profile could never record the different-fingerprint attempt that
+would break its own streak — the exclusion is what kept it from launching.
+The config-change branch of the remedy now has a machine: when a
+suppression engages, `orx run` records the profile's effective
+permission-config fingerprint (the G009 T007 preflight, read-only) as a
+`suppression_baseline` task event bound to that blocker episode; after the
+operator fixes the real config, `orx task reverify <task> --profile <name>
+--reason <what changed>` re-reads the current effective fingerprint and
+compares. A genuinely different fingerprint lifts the exclusion for exactly
+that (task, profile) — a `suppression_reopen` event records both
+fingerprints, their sources, the operator's restart reason, and the attempt
+watermark. The lift is bounded and honest by construction:
+
+- the re-verification starts no worker (no attempt, no nonce, no state
+  change); the restart is the next `orx run`'s normal dispatch, which
+  creates the new attempt and nonce — and a passed preflight is never
+  stated as execution success (in-agent shell execution stays unprovable);
+- the lift is one-shot: the profile's next recorded attempt on the task
+  consumes it. A returning same-condition blocker re-engages the bounded
+  suppression from the recorded streak; a success or a different failure
+  resets it honestly;
+- an unchanged effective fingerprint (an mtime-only touch included), a
+  config that already got its relaunch, or a repeated reverify never lifts
+  — each refusal is a recorded `suppression_reverify_refused` event with
+  its machine reason and the next honest step;
+- a suppression with no recorded baseline (it engaged before this seam, or
+  nothing readable existed then) never lifts on a claim: the current config
+  is recorded as the supplementary baseline and the steps say what must
+  change; host/shell harnesses (no permission config to consume) get the
+  routing-shaped steps instead;
+- the Goal lifecycle startup gate applies — paused/cancelling/cancelled
+  refuse before anything is recorded; and the scope is exactly
+  (task, profile): other tasks' streaks, other profiles, resource/quota
+  gates, and the recorded failure history keep their own semantics.
+
 **Budget gates (G009 T011).** The `[budget]` config keys are the cost
 backstop, the same explainable-stop shape as suppression:
 `budget.hard_stop_task_processing_tokens` (default 50M) and

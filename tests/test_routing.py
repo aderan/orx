@@ -1187,6 +1187,530 @@ def test_suppression_is_task_scoped_other_tasks_still_get_the_profile(
 
 
 # ---------------------------------------------------------------------------
+# G010 T004: explicit re-verification after a permission fix — the bounded
+# suppression restart. G009 T008 recorded the production gap: a suppressed
+# (task, profile) pair could only be un-suppressed by that very profile
+# recording a different-fingerprint attempt on the task, but the suppression
+# is exactly what keeps it from being launched (chicken-and-egg). The remedy
+# named a "config change" yet no machine consumed T007's permission config
+# fingerprint. This seam closes that loop: the blocking-time effective config
+# fingerprint is recorded when the suppression engages, and
+# `orx task reverify <task> --profile <p> --reason <what changed>` compares
+# the CURRENT effective fingerprint against it — an explicit, operator-owned,
+# bounded restart entry that never launches the excluded profile to find out.
+
+import os as _os
+
+from orx.records import ORXError as _ORXError
+
+
+def _reverify_home(monkeypatch, tmp_path, approval="allowlist"):
+    """A deterministic permission-config environment for the reverify seam:
+    an isolated HOME with a cursor cli-config.json plus a fake `agent`
+    binary on PATH, so the config fingerprint the seam compares reads
+    exactly these files. Returns the cli-config.json path."""
+    home = tmp_path / "rv-home"
+    (home / ".cursor").mkdir(parents=True)
+    config = home / ".cursor" / "cli-config.json"
+    config.write_text(_json.dumps({
+        "approvalMode": approval,
+        "permissions": {"allow": ["Shell(ls)"], "deny": []},
+        "sandbox": {"mode": "disabled"},
+    }))
+    monkeypatch.setenv("HOME", str(home))
+    bindir = tmp_path / "rv-bin"
+    bindir.mkdir(exist_ok=True)
+    agent = bindir / "agent"
+    agent.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "--version" ]; then echo "agent 2026.10.01"; exit 0; fi\n'
+        'if [ "$1" = "--help" ]; then '
+        'echo "--print --output-format --workspace --trust --model"; exit 0; fi\n'
+        'exit 1\n')
+    agent.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{_os.environ['PATH']}")
+    return config
+
+
+def _cursor_payload_with(result_text: str) -> dict:
+    return {
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": "t004-session",
+        "result": result_text,
+        "usage": {"inputTokens": 10, "outputTokens": 4, "cacheReadTokens": 50},
+    }
+
+
+_T004_PASSED_ENVELOPE = _cursor_payload_with(
+    '```json\n{"status":"passed","summary":"permission fix verified by real'
+    ' execution","checks":[],"artifacts":[]}\n```'
+)
+
+
+def _engage_suppression(project, rounds: int = 3):
+    """Drive `rounds` blocked delivery rounds (task left FAILED), then retry
+    and run once so the suppression engages with its explainable stop — and
+    the blocking-time baseline is captured. Returns that final run_slice."""
+    _run_rounds(project, rounds, retry_last=False)
+    dispatch.task_retry(project, "T001")
+    return dispatch.run_slice(project)
+
+
+def _set_result_envelope(monkeypatch, envelope: dict):
+    """Swap the captured CLI stand-in's result envelope (only the model
+    process output is replaced — the real dispatch stack stays in place)."""
+    monkeypatch.setattr(
+        _runtime, "run_launch",
+        lambda launch: _runtime.CommandResult(
+            command="captured-agent", exit_code=0,
+            stdout=_json.dumps(envelope), stderr="",
+            duration_sec=0.01, timed_out=False))
+
+
+def _suppression_events(project, event: str, task_id: str = "T001"):
+    """The task's suppression-seam events, resolved from the tasks table so
+    the lookup still works after the Run/Goal converged (done/cancelled)."""
+    row = project.store.conn.execute(
+        "SELECT revision_id FROM tasks WHERE task_id = ?"
+        " ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+    revision = row["revision_id"]
+    return [e for e in project.store.task_events(revision, task_id)
+            if e.event == event]
+
+
+def test_suppressed_profile_stays_excluded_until_the_explicit_reverify(
+        tmp_path, monkeypatch):
+    """Reproduction of the gap (the behavior T004 starts from, pinned as the
+    DEFAULT semantics): with the permission config GENUINELY fixed — a
+    different effective fingerprint exists on disk — `orx run` still refuses
+    to relaunch the suppressed profile. Neither the routing loop nor
+    repeated `task retry` consumes the config fingerprint; the fix alone
+    changes nothing. Only the explicit re-verification entry below lifts
+    the exclusion."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _engage_suppression(project)
+        assert len(_cursor_attempts(project)) == 3
+
+        # The user fixes the real permission config (allowlist -> unrestricted):
+        # the effective fingerprint on disk is now provably different.
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "disabled"},
+        }))
+
+        # Two more slices: nothing consumes the new fingerprint. The profile
+        # is never launched again (still 3 attempts), the stop stays
+        # explained, the task stays runnable.
+        for _ in range(2):
+            stopped = dispatch.run_slice(project)
+            [error] = [e for e in stopped["routing_errors"]
+                       if e["task"] == "T001"]
+            assert "suppressed_blocker" in error["error"]
+        assert len(_cursor_attempts(project)) == 3
+        assert active_task(project, "T001").status == "runnable"
+    finally:
+        project.close()
+
+
+def test_reverify_after_real_permission_change_lifts_and_normal_dispatch_relaunches(
+        tmp_path, monkeypatch):
+    """The restart entry itself: after a REAL effective-config change, one
+    explicit re-verification lifts the (task, profile) exclusion — no launch
+    of the excluded profile was needed to produce the different fingerprint.
+    The re-verification starts NO worker (attempt count and task state are
+    untouched); the relaunch is the NEXT `orx run`'s normal dispatch, which
+    records the new attempt. The recorded result never claims execution
+    success — a preflight pass is stated as a preflight pass."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _engage_suppression(project)
+        assert len(_cursor_attempts(project)) == 3
+
+        # Blocking-time conditions are recorded: the baseline event carries
+        # the effective config fingerprint, its sources, and the blocker
+        # episode it belongs to.
+        [baseline_event] = _suppression_events(
+            project, "suppression_baseline")
+        baseline = _json.loads(baseline_event.reason)
+        revision = active_task(project, "T001").revision_id
+        streak = health.blocker_streak(
+            project.store, revision, "T001", "cursor-blocked")
+        assert baseline["profile"] == "cursor-blocked"
+        assert baseline["origin"] == "block_time"
+        assert baseline["config_fingerprint"].startswith("sha256:")
+        assert baseline["blocker_fingerprint"] == streak.fingerprint
+        assert baseline["sources"]
+
+        # The real fix, then the explicit re-verification.
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "disabled"},
+        }))
+        result = dispatch.task_reverify(
+            project, "T001", "cursor-blocked",
+            "user changed approvalMode allowlist->unrestricted",
+        )
+        assert result["decision"] == "lifted"
+        assert result["restart_reason"] == (
+            "user changed approvalMode allowlist->unrestricted")
+        # Both sides of the comparison are recorded with their sources.
+        assert result["baseline"]["config_fingerprint"].startswith("sha256:")
+        assert result["current"]["config_fingerprint"].startswith("sha256:")
+        assert (result["baseline"]["config_fingerprint"]
+                != result["current"]["config_fingerprint"])
+        assert result["current"]["sources"]
+        # A preflight pass is never presented as execution success.
+        assert "cannot prove" in result["preflight_note"]
+        assert "not execution success" in result["preflight_note"]
+        assert "new attempt" in result["next"]
+
+        # The re-verification itself started no worker: same attempts, same
+        # task state, no new rows of any kind for the task.
+        assert len(_cursor_attempts(project)) == 3
+        assert active_task(project, "T001").status == "runnable"
+        [reopen_event] = _suppression_events(project, "suppression_reopen")
+        reopen = _json.loads(reopen_event.reason)
+        assert reopen["attempts_at_reopen"] == 3
+        assert reopen["config_fingerprint"] == \
+            result["current"]["config_fingerprint"]
+
+        # Normal dispatch performs the restart: a NEW attempt on the same
+        # profile, this time executing the now-permitted work.
+        _set_result_envelope(monkeypatch, _T004_PASSED_ENVELOPE)
+        outcome = dispatch.run_slice(project)
+        [started] = [e for e in outcome["started"] if e["task"] == "T001"]
+        assert started["profile"] == "cursor-blocked"
+        assert started["status"] == "passed"
+        attempts = _cursor_attempts(project)
+        assert len(attempts) == 4
+        task_row = project.store.conn.execute(
+            "SELECT * FROM tasks WHERE task_id = 'T001'"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+        assert task_row["status"] == "passed"
+        # The streak is gone: a success on the profile reset it.
+        assert health.blocker_streak(
+            project.store, task_row["revision_id"],
+            "T001", "cursor-blocked") is None
+    finally:
+        project.close()
+
+
+def test_reverify_refuses_same_fingerprint_mtime_only_and_repeats(
+        tmp_path, monkeypatch):
+    """The bounded half: an UNCHANGED effective fingerprint cannot lift the
+    suppression — not by re-running reverify, not by an mtime-only touch
+    (the content is identical; touching a file is not a condition change),
+    and not by repeated `task retry`. Every refusal is recorded and names
+    the next honest step."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _engage_suppression(project)
+
+        # Same effective fingerprint: refused.
+        first = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "nothing changed actually")
+        assert first["decision"] == "refused"
+        assert first["refusal"]["code"] == "same_effective_fingerprint"
+        assert (first["baseline"]["config_fingerprint"]
+                == first["current"]["config_fingerprint"])
+        assert first["refusal"]["steps"]
+        assert "suppressed" not in first  # never reported as lifted
+
+        # Mtime-only: the tripwire fires, the fingerprint holds, still
+        # refused — a touch is not a condition change.
+        stat = _os.stat(config_path)
+        _os.utime(config_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+        touched = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "only touched the file")
+        assert touched["decision"] == "refused"
+        assert touched["refusal"]["code"] == "same_effective_fingerprint"
+        assert touched["mtime_changed"] is True
+        assert "mtime" in touched["refusal"]["message"]
+
+        # Repeated reverify: still suppressed, still 3 attempts, the stop
+        # stays explainable — and `task retry` is not even reachable (the
+        # suppressed stop parks the task runnable; only failed tasks retry,
+        # so no retry loop can lift the exclusion either).
+        again = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "retrying the reverify")
+        assert again["decision"] == "refused"
+        with pytest.raises(dispatch.ConflictError, match="runnable"):
+            dispatch.task_retry(project, "T001")
+        stopped = dispatch.run_slice(project)
+        [error] = [e for e in stopped["routing_errors"] if e["task"] == "T001"]
+        assert "suppressed_blocker" in error["error"]
+        assert len(_cursor_attempts(project)) == 3
+        # Every refusal left its audit row; no reopen was ever recorded.
+        refusals = _suppression_events(project, "suppression_reverify_refused")
+        assert len(refusals) == 3
+        assert _suppression_events(project, "suppression_reopen") == []
+    finally:
+        project.close()
+
+
+def test_relift_needs_a_new_fingerprint_and_reengages_when_still_failing(
+        tmp_path, monkeypatch):
+    """The one-shot rule and the re-engagement: a lifted config gets exactly
+    one relaunch. If the SAME blocker returns under the new conditions, the
+    bounded suppression re-engages from the recorded streak, and re-verifying
+    the very same (failed) fingerprint again is refused — only a genuinely
+    new effective fingerprint opens another bounded chance."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        _engage_suppression(project)
+
+        # First fix + lift + relaunch that STILL hits the same blocker.
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "disabled"},
+        }))
+        lifted = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "approvalMode to unrestricted")
+        assert lifted["decision"] == "lifted"
+        dispatch.run_slice(project)  # 4th attempt, blocked envelope again
+        assert len(_cursor_attempts(project)) == 4
+        dispatch.task_retry(project, "T001")
+        reengaged = dispatch.run_slice(project)
+        [error] = [e for e in reengaged["routing_errors"]
+                   if e["task"] == "T001"]
+        [suppressed] = error["suppressed"]
+        assert suppressed["profile"] == "cursor-blocked"
+        assert suppressed["count"] == 4  # the streak resumed where it stood
+        assert active_task(project, "T001").status == "runnable"
+
+        # Re-verifying the same (already-chanced) fingerprint: refused.
+        same = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "same config, honest retry")
+        assert same["decision"] == "refused"
+        assert same["refusal"]["code"] == "config_already_reopened"
+
+        # A genuinely NEW effective fingerprint opens the next bounded chance.
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "enabled"},
+        }))
+        second = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "sandbox enabled as well")
+        assert second["decision"] == "lifted"
+        reopens = _suppression_events(project, "suppression_reopen")
+        assert len(reopens) == 2  # bounded: one reopen per distinct config
+    finally:
+        project.close()
+
+
+def test_reverify_is_task_scoped_and_quota_gates_stay_intact(
+        tmp_path, monkeypatch):
+    """Scope and neighbors: the lift touches exactly one (task, profile).
+    Another task's own streak on the same profile is a separate fact (its
+    reverify is refused with the streak it actually has), and the resource/
+    quota gates keep their own semantics — a lifted profile that is quota-
+    exhausted is still not launched; the stop names exhaustion, not the
+    (no longer active) suppression."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cursor-blocked"]',
+    )
+    project = make_project(tmp_path, config_toml=config,
+                           profiles_toml=BLOCKED_CURSOR_PROFILES_TOML)
+    adapter = _adapters.get_adapter("cursor")
+    monkeypatch.setattr(adapter, "probe",
+                        lambda: _ProbeReport(True, "captured CLI stand-in"))
+    monkeypatch.setattr(
+        adapter, "build_worker_launch",
+        lambda **kwargs: _Launch(argv=["captured-agent"], cwd=tmp_path,
+                                  timeout=5))
+    monkeypatch.setattr(
+        _runtime, "run_launch",
+        lambda launch: _runtime.CommandResult(
+            command="captured-agent", exit_code=0,
+            stdout=_json.dumps(_BLOCKED_ENVELOPE), stderr="",
+            duration_sec=0.01, timed_out=False))
+    goal = dispatch.create_goal(
+        project, objective="scoped reverify", acceptance=["done"],
+        constraints=[], context="",
+    )[0]
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["true"],
+                  complexity="low"),
+        task_spec("T002", acceptance=goal.acceptance, verification=["true"],
+                  complexity="low"),
+    ]))
+    try:
+        # T001 suppressed (T002 defers behind the one-process cap each slice).
+        for _ in range(3):
+            outcome = dispatch.run_slice(project)
+            assert active_task(project, "T001").status == "failed"
+            dispatch.task_retry(project, "T001")
+        dispatch.run_slice(project)  # the explainable stop engages
+
+        # T002 has no recorded attempts on the profile: its own reverify is
+        # an honest not-suppressed refusal, never T001's lift.
+        other = dispatch.task_reverify(
+            project, "T002", "cursor-blocked", "why not mine")
+        assert other["decision"] == "refused"
+        assert other["refusal"]["code"] == "not_suppressed"
+
+        # T001's lift works exactly as the single-task case (same real
+        # config change, scoped to this task's suppression only).
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "disabled"},
+        }))
+        lifted = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "fixed permissions")
+        assert lifted["decision"] == "lifted"
+
+        # The quota gate is untouched by the lift: an exhaustion (unknown
+        # reset, G009 T005 semantics) still refuses the launch.
+        project.store.resource_set("cursor-blocked", ResourceStatus.EXHAUSTED,
+                                   "operator: shared account drained")
+        gated = dispatch.run_slice(project)
+        assert gated["started"] == [] and gated["host_required"] == []
+        [error] = [e for e in gated["routing_errors"] if e["task"] == "T001"]
+        assert "exhausted" in error["error"]
+        assert "suppressed_blocker" not in error["error"]
+        assert active_task(project, "T001").status == "runnable"
+        # The recorded blocker history is untouched: still 3 blocked rows.
+        rows = project.store.conn.execute(
+            "SELECT result FROM attempts"
+            " WHERE role='worker' AND profile='cursor-blocked'"
+            " AND task_id='T001' ORDER BY id"
+        ).fetchall()
+        assert [r["result"] for r in rows] == ["blocked"] * 3
+    finally:
+        project.close()
+
+
+def test_reverify_without_a_baseline_records_evidence_and_steps(
+        tmp_path, monkeypatch):
+    """Missing historical fingerprint (the pre-G010 database shape: the
+    suppression exists, no blocking-time fingerprint was ever recorded):
+    the reverify refuses to lift on a claim it cannot check, records the
+    CURRENT effective config as the supplementary baseline, and spells out
+    the steps — change the conditions for real, then reverify again."""
+    config_path = _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        # Three blocked rounds, task left FAILED — the suppression facts are
+        # recorded but the baseline was never captured (no engaging slice).
+        _run_rounds(project, 3, retry_last=False)
+        assert _suppression_events(project, "suppression_baseline") == []
+
+        refused = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "config was fixed earlier")
+        assert refused["decision"] == "refused"
+        assert refused["refusal"]["code"] == "no_baseline_recorded"
+        assert refused["refusal"]["steps"]
+        assert "change" in " ".join(refused["refusal"]["steps"]).lower()
+        # The supplementary evidence is now on record: a baseline captured
+        # from the current effective config.
+        [captured] = _suppression_events(project, "suppression_baseline")
+        payload = _json.loads(captured.reason)
+        assert payload["origin"] == "reverify_capture"
+        assert payload["config_fingerprint"] == \
+            refused["current"]["config_fingerprint"]
+
+        # Unchanged config still cannot lift; a real change now can.
+        dispatch.task_retry(project, "T001")
+        dispatch.run_slice(project)
+        same = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "still the same config")
+        assert same["decision"] == "refused"
+        assert same["refusal"]["code"] == "same_effective_fingerprint"
+        config_path.write_text(_json.dumps({
+            "approvalMode": "unrestricted",
+            "permissions": {"allow": ["Shell(ls)"], "deny": []},
+            "sandbox": {"mode": "disabled"},
+        }))
+        after = dispatch.task_reverify(
+            project, "T001", "cursor-blocked", "approvalMode unrestricted")
+        assert after["decision"] == "lifted"
+    finally:
+        project.close()
+
+
+def test_reverify_on_a_host_harness_refuses_with_explicit_steps(
+        tmp_path, monkeypatch):
+    """Host profiles have no permission-config fingerprint to consume (there
+    is no CLI config file; T007's preflight applies to cursor/codex only).
+    The reverify refuses with the routing-shaped steps the remedy always
+    named — never a silent lift, never a fourth paid assignment."""
+    monkeypatch.chdir(tmp_path)
+    config = HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker"]',
+    )
+    project = make_project(tmp_path, config_toml=config)
+    try:
+        goal = dispatch.create_goal(
+            project, objective="host blocker reverify", acceptance=["done"],
+            constraints=[], context="",
+        )[0]
+        dispatch.submit_plan(project, ir_for(goal, [task_spec(
+            "T001", acceptance=goal.acceptance, verification=["true"],
+            complexity="low",
+        )]))
+        _host_blocker_rounds(project, tmp_path, 3)
+
+        refused = dispatch.task_reverify(
+            project, "T001", "host-worker", "host conditions changed")
+        assert refused["decision"] == "refused"
+        assert refused["refusal"]["code"] == "harness_not_preflightable"
+        steps = " ".join(refused["refusal"]["steps"]).lower()
+        for word in ("routing", "replan"):
+            assert word in steps
+        assert _suppression_events(project, "suppression_reopen") == []
+        # Still suppressed: nothing is parked or launched a fourth time.
+        outcome = dispatch.run_slice(project)
+        assert outcome["host_required"] == [] and outcome["started"] == []
+        attempts = project.store.conn.execute(
+            "SELECT COUNT(*) FROM attempts"
+            " WHERE role='worker' AND profile='host-worker'"
+        ).fetchone()[0]
+        assert attempts == 3
+    finally:
+        project.close()
+
+
+def test_reverify_input_validation(tmp_path, monkeypatch):
+    """Usage-class rejections (exit 2 at the CLI): the restart reason is
+    required operator input, 1-512 characters after stripping — the same
+    discipline as the recovery surfaces."""
+    _reverify_home(monkeypatch, tmp_path, approval="allowlist")
+    project = _t004_project(tmp_path, monkeypatch, _BLOCKED_ENVELOPE,
+                            ladder='["cursor-blocked"]')
+    try:
+        with pytest.raises(_ORXError) as excinfo:
+            dispatch.task_reverify(project, "T001", "cursor-blocked", "   ")
+        assert excinfo.value.reason == "reverify_reason_invalid"
+        with pytest.raises(_ORXError) as excinfo:
+            dispatch.task_reverify(project, "T001", "cursor-blocked", "x" * 513)
+        assert excinfo.value.reason == "reverify_reason_invalid"
+        with pytest.raises(dispatch.NotFoundError):
+            dispatch.task_reverify(
+                project, "T001", "no-such-profile", "a good reason")
+    finally:
+        project.close()
+
+
+# ---------------------------------------------------------------------------
 # G009 T005 (2026-10-07 incident): shared-quota failure domains in routing.
 # The controller and the worker died on the SAME provider quota at 02:05 —
 # profiles drawing one account's quota are one failure domain, never
