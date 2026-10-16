@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "summary": "G010 T004 delivered: reproduced the suppressed-profile-cannot-rerun behavior as a permanent regression pin, then closed the G009 T008 gap by consuming the existing G009 T007 permission-config fingerprint. When a suppression engages, run_slice records the blocking-time effective config fingerprint (suppression_baseline task event, once per blocker episode); the new `orx task reverify <task> --profile <name> --reason <what changed>` re-reads the current effective fingerprint (read-only preflight) and lifts the exclusion for exactly that (task, profile) only on a genuinely different fingerprint (suppression_reopen event with both fingerprints, sources, operator restart reason, attempt watermark). Bounded by construction: same effective fingerprint, mtime-only touch (honestly flagged), repeated reverify, repeated retry, and an already-reopened-and-failed config all refuse (recorded suppression_reverify_refused events); the lift is one-shot (consumed by the profile's next attempt; a returning same-condition blocker re-engages the bounded suppression from the recorded streak); a missing blocking-time fingerprint records a supplementary baseline plus explicit steps and never lifts on an unverifiable claim; host/shell harnesses get routing-shaped steps. Original semantics preserved: failure classification/blocker fingerprints/streaks untouched, quota and quota-domain gates independent of the lift (an exhausted lifted profile stops with the exhaustion reason), recovery identity rules untouched (reverify starts no worker, creates no attempt/nonce; the restart is the next orx run's normal dispatch), and the Goal lifecycle startup gate refuses reverify while paused/cancelling/cancelled before any write. Zero schema change (three append-only task-event kinds, JSON payloads in the reason column). New tests: 10 (9 red-first new-behavior tests + 1 reproduction pin), full suite 1125 passed 0 failures. User's uncommitted docs/m1.2-report.md untouched (sha matches the T001 postscript record), left unstaged and out of the task commit 924d7f1.",
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_probes.py tests/test_health.py tests/test_routing.py tests/test_state.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T004/01-0003-command.log"
+    },
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_host_recovery_facts.py tests/test_host_progress_e2e.py tests/test_delivery_gate_e2e.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T004/02-0004-command.log"
+    },
+    {
+      "command": "git diff --check -- . ':!docs/m1.2-report.md'",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T004/03-0005-command.log"
+    }
+  ],
+  "artifacts": [
+    "src/orx/dispatch.py",
+    "src/orx/cli.py",
+    "tests/test_routing.py",
+    "tests/test_host_progress_e2e.py",
+    "docs/routing-strategy.md",
+    "docs/goal-lifecycle.md",
+    "docs/diagnostics/g010/t004-suppression-reverify.md",
+    "IMPLEMENTATION_PLAN.md"
+  ]
+}
