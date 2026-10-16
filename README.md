@@ -30,6 +30,8 @@ uv run orx task claim T001
 uv run orx task complete T001 --evidence evidence.json
 uv run orx verify               # deterministic checks + agent verifier dispatch
 uv run orx verify submit T001 --result pass
+uv run orx goal pause             # stop NEW dispatch; running executors finish
+uv run orx goal resume            # keep run/revision/attempt/nonce; then:
 uv run orx status
 uv run orx timeline --run R001 --limit 20
 uv run orx usage --json        # per-profile tasks, runtime, tokens + accuracy
@@ -194,6 +196,15 @@ layer itself is not in this repository.
   rejected while any task is `running` or `verifying`; a new revision
   cancels the old revision's unfinished tasks and preserves terminal
   results as recorded facts.
+- A paused Goal starts nothing: `orx goal pause` (idempotent, persisted in
+  the database, one unfinished Goal per project) gates every new executor
+  start — planner/replan routing, plan activation, worker dispatch,
+  parked-assignment claims, verifier dispatch, and downgrade fallbacks —
+  while already-running executors keep their attempt, span, nonce, and
+  session, and their fact submissions still land. `orx goal resume`
+  (idempotent) starts nothing either: it returns the in-flight ownership
+  and the next dispatch is your explicit `orx run`. See
+  [Goal lifecycle](docs/goal-lifecycle.md).
 - `unknown` resource status stays routable; only `unavailable`/`exhausted` are
   skipped; `constrained` is a last resort. Resource status never rewrites TOML
   ordering.
@@ -301,7 +312,7 @@ Upgrading from 0.3.0? Follow
 SQLite-consistent backup (database + project config + run materials)
 before the new version first opens the old database (schema v8 migrates
 automatically to the current schema version — v11 in the released 0.3.1,
-v12 in the current unreleased tree; rollback restores that backup —
+v13 in the current unreleased tree; rollback restores that backup —
 never a hand-edited `schema_version`), then refresh skills with `orx
 skill update` and explicitly compare/replace the three role definitions.
 Editable installs update by checking out the release — no `uv tool
@@ -318,11 +329,15 @@ upgrade`.
   declaration form, the refreshable model catalog (`orx agent probe` /
   `orx agent info`), per-adapter resolution rules, evidence provenance, and
   diagnostics
+- [Goal lifecycle](docs/goal-lifecycle.md) — pause/resume semantics, the
+  unified startup gate matrix, in-flight ownership, and the concurrency
+  contract
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)
 - [Observability read contract](docs/observability-contract.md) — schema
-  v8/v9/v10/v11/v12 tables, joins, and read-only SQL for external analysis
+  v8/v9/v10/v11/v12/v13 tables, joins, and read-only SQL for external
+  analysis
 - [Upgrade to 0.3.1](docs/upgrade-0.3.1.md) — per-channel update steps
   (editable vs wheel), explicit role-file backup/compare/replace, the
   pre-upgrade SQLite-consistent backup with schema v8→v11 migration and

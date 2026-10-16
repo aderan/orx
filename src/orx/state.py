@@ -22,7 +22,7 @@ from pathlib import Path
 from orx import records
 from orx.records import MigrationError
 
-CODE_SCHEMA_VERSION = 12
+CODE_SCHEMA_VERSION = 13
 
 
 def mint_nonce() -> str:
@@ -632,6 +632,54 @@ def _migrate_v12(conn: sqlite3.Connection) -> None:
     )
 
 
+# v13 (G010 T002): widen the goals status CHECK to admit 'paused' — the
+# persistent, user-driven pause behind `orx goal pause` / `orx goal resume`.
+# Additive only in meaning: every goal row survives verbatim with its
+# identity, history, and usage associations (runs, attempts, observations
+# reference goals only through runs, which are untouched); nothing is
+# backfilled — a database upgraded from v12 has no paused goals and every
+# existing status keeps its exact value. goals is a PARENT table (runs
+# references it), so unlike the v2/v7/v12 child-table rebuilds the swap runs
+# with PRAGMA foreign_keys=OFF around it: outside a transaction the pragma
+# takes effect (the copy-then-replace upgrade path is in autocommit), and
+# on a fresh database — where the surrounding transaction makes the pragma
+# a no-op — the copied-out table is empty, so the DROP's implicit DELETE
+# cannot violate anything. By the end of the script the rebuilt goals table
+# holds every original row again and the runs foreign key resolves exactly
+# as before.
+SCHEMA_V13_GOALS = """
+CREATE TABLE goals_v13 (
+  id TEXT PRIMARY KEY,
+  objective TEXT NOT NULL,
+  constraints_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_json TEXT NOT NULL DEFAULT '[]',
+  context TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('active','done','cancelled','paused')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO goals_v13 (id, objective, constraints_json, acceptance_json, context,
+                       status, created_at, updated_at)
+  SELECT id, objective, constraints_json, acceptance_json, context,
+         status, created_at, updated_at FROM goals;
+DROP TABLE goals;
+ALTER TABLE goals_v13 RENAME TO goals;
+"""
+
+
+def _migrate_v13(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(SCHEMA_V13_GOALS)
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(CODE_SCHEMA_VERSION),),
+    )
+
+
 # Migrations keyed by the version they produce.
 MIGRATIONS: dict[int, callable] = {
     1: _migrate_v1,
@@ -646,6 +694,7 @@ MIGRATIONS: dict[int, callable] = {
     10: _migrate_v10,
     11: _migrate_v11,
     12: _migrate_v12,
+    13: _migrate_v13,
 }
 
 
@@ -1471,12 +1520,75 @@ class Store:
         r = self.conn.execute("SELECT * FROM goals WHERE status = 'active' ORDER BY id LIMIT 1").fetchone()
         return _goal(r) if r else None
 
+    def goal_unfinished(self) -> Goal | None:
+        """The one unfinished Goal, active OR paused (G010 T002). A paused
+        Goal is still unfinished: creating a second Goal while one is paused
+        would break the single-unfinished-Goal invariant, so `goal new` and
+        inbox auto-accept must refuse on this read, not on `goal_active`."""
+        r = self.conn.execute(
+            "SELECT * FROM goals WHERE status IN ('active','paused')"
+            " ORDER BY created_at, id LIMIT 1"
+        ).fetchone()
+        return _goal(r) if r else None
+
+    def goal_status(self, goal_id: str) -> str:
+        r = self.conn.execute("SELECT status FROM goals WHERE id = ?", (goal_id,)).fetchone()
+        if not r:
+            raise records.NotFoundError(f"goal {goal_id} not found")
+        return r["status"]
+
+    def goal_status_for_revision(self, revision_row_id: int) -> str:
+        """The goal status behind one plan revision row — the join the
+        startup gate reads INSIDE a claim/park transaction so the gate
+        decision and the write it guards are one atomic unit against a
+        concurrent `goal pause`."""
+        r = self.conn.execute(
+            "SELECT g.status AS status FROM goals g"
+            " JOIN runs r ON r.goal_id = g.id"
+            " JOIN plan_revisions pr ON pr.run_id = r.id"
+            " WHERE pr.id = ?",
+            (revision_row_id,),
+        ).fetchone()
+        if not r:
+            raise records.NotFoundError(
+                f"no goal behind plan revision row {revision_row_id}"
+            )
+        return r["status"]
+
     def goal_set_status(self, goal_id: str, status: records.GoalStatus) -> None:
         with self.tx():
             self.conn.execute(
                 "UPDATE goals SET status = ?, updated_at = ? WHERE id = ?",
                 (status.value, now(), goal_id),
             )
+
+    def goal_transition(
+        self, goal_id: str, from_status: records.GoalStatus,
+        to_status: records.GoalStatus,
+    ) -> bool:
+        """Compare-and-set one goal status transition (G010 T002). Fires only
+        when the row still holds `from_status`; returns whether it fired.
+        Called inside the caller's transaction, the read-modify-write is
+        serialized against every other writer (BEGIN IMMEDIATE), so a
+        concurrent pause/resume/completion cannot interleave."""
+        with self.tx():
+            cur = self.conn.execute(
+                "UPDATE goals SET status = ?, updated_at = ?"
+                " WHERE id = ? AND status = ?",
+                (to_status.value, now(), goal_id, from_status.value),
+            )
+            return cur.rowcount > 0
+
+    def goal_complete_if_active(self, goal_id: str) -> bool:
+        """Completion CAS: active -> done, and NOTHING when the goal is
+        paused (G010 T002). A paused goal is never implicitly lifted by a
+        refresh: when every task passed during the pause, this write skips,
+        the run records done, and the goal converges to done at `goal
+        resume` through the same invariant. Repeating done on an already
+        done goal does not fire (and never moved completed_at anyway)."""
+        return self.goal_transition(
+            goal_id, records.GoalStatus.ACTIVE, records.GoalStatus.DONE
+        )
 
     def run_get(self, run_id: str) -> Run:
         r = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -1923,6 +2035,18 @@ class Store:
         rows = self.conn.execute(
             "SELECT * FROM attempts WHERE revision_id = ? AND task_id = ?"
             " ORDER BY id",
+            (revision_row_id, task_id),
+        ).fetchall()
+        return [_attempt(r) for r in rows]
+
+    def attempts_open_for_task(self, revision_row_id: int, task_id: str) -> list[Attempt]:
+        """The task's still-open attempts (ended_at IS NULL), oldest first —
+        the in-flight ownership surface `goal pause`/`goal resume` reports:
+        these are the executors that keep running through a pause and whose
+        identity (attempt, nonce, session) a resume must return unchanged."""
+        rows = self.conn.execute(
+            "SELECT * FROM attempts WHERE revision_id = ? AND task_id = ?"
+            " AND ended_at IS NULL ORDER BY id",
             (revision_row_id, task_id),
         ).fetchall()
         return [_attempt(r) for r in rows]

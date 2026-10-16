@@ -162,3 +162,104 @@ def test_events_persist_transition_history(seeded):
         ("verifying", "passed", "verify_pass"),
     ]
     assert all(e.reason is None or isinstance(e.reason, str) for e in events)
+
+
+# -- Goal lifecycle state machine (G010 T002) ---------------------------------
+
+
+GOAL_LEGAL_PAIRS = [
+    ("active", "paused"), ("active", "done"), ("active", "cancelled"),
+    ("paused", "active"),
+]
+
+GOAL_ILLEGAL_PAIRS = [
+    ("paused", "done"), ("paused", "cancelled"), ("paused", "paused"),
+    ("done", "paused"), ("done", "active"),
+    ("cancelled", "paused"), ("cancelled", "active"),
+]
+
+
+@pytest.mark.parametrize("frm,to", GOAL_LEGAL_PAIRS)
+def test_goal_legal_transitions_allowed(frm, to):
+    assert machine.goal_is_legal(
+        machine.GoalStatus(frm), machine.GoalStatus(to)) is True
+
+
+@pytest.mark.parametrize("frm,to", GOAL_ILLEGAL_PAIRS)
+def test_goal_illegal_transitions_rejected(frm, to):
+    assert machine.goal_is_legal(
+        machine.GoalStatus(frm), machine.GoalStatus(to)) is False
+
+
+def test_goal_pause_and_resume_transition_with_idempotent_repeats(project, goal):
+    store = project.store
+    first = machine.goal_pause(store, goal.id)
+    assert first == {"goal": goal.id, "status": "paused", "changed": True}
+    assert store.goal_get(goal.id).status == "paused"
+
+    # Repeating the current state is a legal, explicit no-op.
+    again = machine.goal_pause(store, goal.id)
+    assert again == {"goal": goal.id, "status": "paused", "changed": False}
+    assert store.goal_get(goal.id).status == "paused"
+
+    resumed = machine.goal_resume(store, goal.id)
+    assert resumed == {"goal": goal.id, "status": "active", "changed": True}
+    repeated = machine.goal_resume(store, goal.id)
+    assert repeated == {"goal": goal.id, "status": "active", "changed": False}
+    assert store.goal_get(goal.id).status == "active"
+
+
+def test_goal_pause_resume_refuse_terminal_statuses(project, goal):
+    store = project.store
+    store.goal_set_status(goal.id, machine.GoalStatus.DONE)
+    with pytest.raises(TransitionError, match="cannot pause"):
+        machine.goal_pause(store, goal.id)
+    with pytest.raises(TransitionError, match="cannot resume"):
+        machine.goal_resume(store, goal.id)
+    assert store.goal_get(goal.id).status == "done"
+
+
+def test_refresh_never_lifts_a_paused_goal(seeded):
+    """The completion invariant fires only on an ACTIVE goal row: with every
+    task passed while paused, the Run records done but the Goal stays
+    paused; `goal resume` replays the same invariant and converges to done.
+    A stale Goal object (read before the pause committed) cannot lift the
+    pause either — legality is decided by the row, not the argument."""
+    project = seeded
+    store = project.store
+    goal = store.goal_get(_goal_id(project))
+    run = store.run_for_goal(goal.id)
+    rev = _rev(project)
+
+    # The stale snapshot: read while the row is still active.
+    stale_active = store.goal_get(goal.id)
+    machine.goal_pause(store, goal.id)
+    assert stale_active.status == "active"  # the object predates the pause
+    assert store.goal_get(goal.id).status == "paused"
+
+    # Every task reaches passed while the Goal is paused (fact submissions
+    # from executors that were already running).
+    for task_id in ("T001", "T002"):
+        store.task_update_status(rev, task_id, TaskStatus.RUNNING)
+        store.task_update_status(rev, task_id, TaskStatus.VERIFYING)
+        store.task_update_status(rev, task_id, TaskStatus.PASSED)
+
+    # refresh with the stale active-looking object: the row decides.
+    machine.refresh(store, stale_active, run)
+    assert store.run_get(run.id).status == "done"
+    assert store.goal_get(goal.id).status == "paused"  # never implicitly lifted
+
+    machine.goal_resume(store, goal.id)
+    machine.refresh(store, store.goal_get(goal.id), run)
+    assert store.run_get(run.id).status == "done"
+    assert store.goal_get(goal.id).status == "done"  # converged at resume
+
+
+def _goal_id(project):
+    goal = project.store.goal_active()
+    if goal is None:
+        row = project.store.conn.execute(
+            "SELECT id FROM goals WHERE status != 'cancelled'"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+        goal = project.store.goal_get(row["id"])
+    return goal.id

@@ -1018,3 +1018,45 @@ settling_request_rows、zcode_usage_unsettled、zcode_duplicate_backfill 非缺�
 类、闭合结果携带 usage_backfill）+ 缺失原因表扩充。诊断报告（已证实根因/
 排除项/未知项/R002 样本 vs 规划背景 16+1→18 差异算术/外部零写入声明）。
 本文件 G010/T001 轮次记录。技能与 agent 定义未改动（身份锚点转交协议原样）。
+
+# G010/T002：持久化 Goal 暂停与继续及统一启动门禁（2026-10-16）
+
+主功能第一支：Goal 暂停与继续落地。设计全文见
+docs/goal-lifecycle.md；实现事实与竞态论证见
+docs/diagnostics/g010/t002-pause-resume.md。
+
+## 交付内容
+
+- schema v13：goals.status CHECK 增设 'paused'（父表重建，FK 延迟换表；
+  迁移保留全部身份/历史/用量，失败不动原库；零回填）。读取白名单与
+  schema_gate 扩至 8..13（observability-contract 第八修正案）。
+- 状态机（machine.py）：Goal 转移表 + goal_pause/goal_resume（重复调用为
+  显式幂等 no-op，changed=False；终态拒绝）；refresh 的完成写改为
+  active→done CAS——paused 永不被 refresh 隐式解除，暂停期间全部完成则
+  在 resume 时按既有不变量收敛为 done。
+- 统一启动门禁（GoalPausedError）：planner/replan 路由、计划激活、
+  worker 派发（host/external 停泊与 CLI 启动）、停泊 assignment 的
+  claim、verifier 派发、降级 reroute——门禁读与占位写同事务（BEGIN
+  IMMEDIATE），提示词文件写在事务外；已运行执行者不受抢占/杀死/改绑，
+  事实提交（heartbeat/complete/fail/recover/note/observe/check/verdict）
+  暂停期间照常。
+- goal pause/resume：dispatch + CLI 文本/JSON 双接口；resume 不启动任何
+  执行，返回 run/revision/assignment/attempt/nonce 原归属与恢复指引；
+  paused 跨会话/跨进程持久；暂停期间不可创建第二个未结束 Goal。
+- dogfood 隔离：m12 报告输出移入 pytest tmp_path（不再读写用户
+  docs/m1.2-report.md）；用量回放改为对 tmp 私有快照库执行
+  python -m orx usage record；新增子进程回归证明两文件逐字节不变、
+  产物确实落在临时树。
+- 回归：machine/goal/lifecycle/state/observability/m12 扩充（转移表、
+  门禁矩阵、双确定性排序、并发 claim、并发 resume、子进程暂停/继续、
+  新进程身份保持、迁移三态）。全量 1092 通过。
+
+## 范围外披露
+
+- tests/test_package_acceptance.py 的 upgraded_schema_version 断言
+  12→13：范围清单遗漏的机械 schema 消费者，最小单行迁移并在此披露。
+- sources.py 的 --auto-accept 在暂停时响亮失败（items 留 pending）：
+  该文件不在本任务写范围；安全行为已记入 docs/goal-lifecycle.md。
+- 取消与安全收尾（G010 另一半）未实现；本轮零改动。
+- 本轮提交不得裹挟用户未提交的 docs/m1.2-report.md 改动（测试已不再
+  触碰该文件）。

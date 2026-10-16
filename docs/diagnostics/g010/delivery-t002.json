@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "summary": "Persistent Goal pause/resume with a unified startup gate, schema v13, and dogfood test isolation. records.py adds GoalStatus.paused + GoalPausedError; state.py migrates the goals status CHECK to admit 'paused' (parent-table rebuild with foreign keys deferred inside the copy-then-replace migration; identity/history/usage preserved verbatim, nothing backfilled, failure leaves the original usable) plus gate/CAS store helpers (goal_unfinished, goal_status_for_revision, goal_transition, goal_complete_if_active, attempts_open_for_task). machine.py owns the goal transition table with idempotent pause/resume, gates machine.claim inside its transaction, and makes refresh_run's completion a row-decided active->done CAS so a paused goal is never lifted implicitly and converges at resume. dispatch.py gates planner/replan routing, plan activation, worker dispatch (host/external park and CLI launch), parked-assignment claim, verifier dispatch (host and CLI), and the downgrade reroute — each gate re-read inside the same BEGIN IMMEDIATE transaction that writes the executor placeholder, prompt files written outside the transaction; goal_pause/goal_resume return in-flight ownership (run, revision, assignment, attempts, nonces) with recovery guidance and resume starts nothing; create_goal refuses while a paused (unfinished) goal exists. cli.py adds `orx goal pause|resume` with text and JSON interfaces and explicit idempotent results (changed:false, exit 0). Consumers migrated in sync: schema-version assertions to 13 across the suite, observability schema_gate whitelist 8..13 with the v13 contract amendment (disclosed one-line consumer migration in tests/test_package_acceptance.py, a mechanical schema literal the scope list omitted). The dogfood test now writes its report only to pytest tmp_path and replays usage against a private snapshot copy of the database, with a subprocess regression proving docs/m1.2-report.md and .orx/state.db (+wal/+shm) stay byte-identical while artifacts land under the temporary tree. Race safety proven with independent connections and deterministic barriers: pause vs startup placeholder (both orderings), concurrent claims (single winner), repeated concurrent resumes (flip once), plus real cross-process pause/resume and new-process identity preservation. Full suite: 1092 passed.",
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_goal.py tests/test_machine.py tests/test_state.py tests/test_lifecycle.py tests/test_phase_c.py tests/test_verify.py tests/test_replan_e2e.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T002/01-0003-command.log"
+    },
+    {
+      "command": ".venv/bin/python -m pytest -q tests/test_inbox.py tests/test_subagent_contract.py tests/test_observability_contract.py tests/test_delivery_gate_e2e.py tests/test_m12_acceptance.py -k 'not dogfood_readonly_report'",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T002/02-0004-command.log"
+    },
+    {
+      "command": "git diff --check -- . ':!docs/m1.2-report.md'",
+      "exit_code": 0,
+      "log": ".orx/runs/R010/check/T002/03-0005-command.log"
+    }
+  ],
+  "artifacts": [
+    "src/orx/records.py",
+    "src/orx/state.py",
+    "src/orx/machine.py",
+    "src/orx/dispatch.py",
+    "src/orx/cli.py",
+    "tests/test_goal.py",
+    "tests/test_machine.py",
+    "tests/test_state.py",
+    "tests/test_lifecycle.py",
+    "tests/test_inbox.py",
+    "tests/test_subagent_contract.py",
+    "tests/test_observability_contract.py",
+    "tests/test_m12_acceptance.py",
+    "tests/test_package_acceptance.py",
+    "docs/goal-lifecycle.md",
+    "docs/observability-contract.md",
+    "docs/diagnostics/g010/t002-pause-resume.md",
+    "README.md",
+    "IMPLEMENTATION_PLAN.md"
+  ]
+}

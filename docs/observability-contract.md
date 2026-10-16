@@ -1,7 +1,8 @@
-# ORX observability read contract (schema v8/v9/v10/v11/v12)
+# ORX observability read contract (schema v8/v9/v10/v11/v12/v13)
 
 Status: contract for external readers (2026-10-04; amended 2026-10-05 for
-v9, 2026-10-06 for v10, 2026-10-06 for v11, 2026-10-08 for v12). This document is the supported
+v9, 2026-10-06 for v10, 2026-10-06 for v11, 2026-10-08 for v12, 2026-10-16
+for v13). This document is the supported
 way to analyze `.orx/state.db` from outside this repository. The analysis
 implementation (`orx-analytics`) lives in a separate repository and is not
 shipped here; this contract names no fixed checkout location for it — where
@@ -18,7 +19,7 @@ against `tests/fixtures/observability/seed.sql`.
 
 `meta.schema_version` is the integer version of the file, stored as text.
 The gate accepts **exactly the explicitly supported versions — `8`, `9`,
-`10`, `11`, and `12`** and refuses every other value: never a range, never "at
+`10`, `11`, `12`, and `13`** and refuses every other value: never a range, never "at
 least X".
 
 | File value | Reader action |
@@ -30,7 +31,8 @@ least X".
 | `10` | read everything except the v11 nonce column; `attempts.nonce` does not exist on a v10 file |
 | `11` | read everything, including the v11 identity-anchor queries below |
 | `12` | read everything; the usage `source` CHECK admits `zcode_db` (see the sixth amendment) |
-| integer greater than 12 | refuse; do not rewrite the file |
+| `13` | read everything; `goals.status` admits `paused` (see the eighth amendment) |
+| integer greater than 13 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -136,6 +138,20 @@ unbound:
 | `zcode_duplicate_backfill` (stated conflict, NOT a missing reason) | The attempt already carries a `zcode_db` observation and a fresh read returned different numbers. The stored row stays authoritative, no second row is written, and the attempt is NOT marked missing (it is observed); the closure result states both numbers for a human to reconcile. |
 | closure results carry `usage_backfill` | `task complete`, `task fail`, `task recover`, and `verify submit` results now embed what the closure's auto-backfill did (`recorded`, or the stated reason it could not be), so the caller sees the book's state without a second query. |
 
+The eighth amendment, dated 2026-10-16 (G010 T002 goal pause/resume),
+adds **v13**. v13 widens one CHECK and changes no column: `goals.status`
+admits `paused`.
+
+| Change | Meaning |
+|---|---|
+| `goals.status = 'paused'` (new CHECK value) | A persistent, user-driven pause (`orx goal pause` / `orx goal resume`). It is a GOAL state, not a run aggregate state: `runs.status` keeps its task-derived meaning (`planning`/`running`/`blocked`/`done`) exactly as before, and task statuses are unchanged by the pause. While paused, ORX refuses to create or start any new executor (planner/replan routing, plan activation, worker dispatch, parked-assignment claims, verifier dispatch, downgrade fallbacks); already-running executors keep their attempts, spans, nonces, and session bindings, and their fact submissions (completion, failure, heartbeat, verdict) are still recorded. Readers aggregating goal states must treat `paused` as an unfinished state — a paused Goal is still THE Goal of its run, and a second unfinished Goal cannot exist beside it. |
+
+No row is rewritten or backfilled: a database upgraded from v12 has no
+`paused` rows, and every existing status keeps its exact value. The
+rebuild follows the v2/v7/v12 backup-replace pattern inside the
+copy-then-replace migration (with foreign keys deferred around the goals
+parent-table swap); a failed migration leaves the original file in place.
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -167,7 +183,7 @@ runs a completion) separate.
 SELECT CASE
   WHEN (
     SELECT value FROM meta WHERE key = 'schema_version'
-  ) IN ('8', '9', '10', '11', '12') THEN 'ok'
+  ) IN ('8', '9', '10', '11', '12', '13') THEN 'ok'
   ELSE 'refuse'
 END AS decision;
 ```
@@ -307,7 +323,7 @@ integers 0 and 1 (`verifications.passed`, `attempts.fallback_used`).
 | Column | Null | Role in this contract |
 |---|---|---|
 | `key` | no | `schema_version` is the only key readers need |
-| `value` | no | text; current files store `8`, `9`, or `10` |
+| `value` | no | text; current files store one of the supported versions `8` through `13` |
 
 ### `runs`
 

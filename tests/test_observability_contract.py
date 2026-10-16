@@ -133,7 +133,7 @@ def test_schema_gate_accepts_only_explicitly_supported_versions(tmp_path: Path):
 
     for value, expected in (("8", "ok"), ("9", "ok"), ("7", "refuse"),
                             ("10", "ok"), ("11", "ok"), ("12", "ok"),
-                            ("13", "refuse"),
+                            ("13", "ok"), ("14", "refuse"),
                             ("v9", "refuse"), (None, "refuse")):
         sample = tmp_path / f"state-{value}.db"
         build_db(sample)

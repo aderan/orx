@@ -770,6 +770,93 @@ def goal_show(json_out: bool = JsonOpt) -> None:
             typer.echo(f"Run {run['id']} [{run['status']}]")
 
 
+def _render_goal_lifecycle(data: dict, verb: str) -> None:
+    typer.echo(f"Goal {data['goal']} {verb} — status {data['status']}")
+    if not data["changed"]:
+        typer.echo("  already in that state; nothing changed (idempotent)")
+    typer.echo(f"Run {data['run']['id']} [{data['run']['status']}]")
+    in_flight = data.get("in_flight")
+    if not in_flight:
+        return
+    for entry in in_flight.get("planning", []):
+        typer.echo(
+            f"  planning assignment {entry['assignment']} (attempt"
+            f" {entry['attempt']}) still open"
+        )
+    for entry in in_flight.get("parked", []):
+        typer.echo(
+            f"  task {entry['task']} parked {entry['status']}"
+            f" (attempt {entry['attempt']}, keeps its nonce)"
+        )
+    for entry in in_flight.get("running", []):
+        typer.echo(
+            f"  task {entry['task']} still running on attempt"
+            f" {entry['attempt']} — not interrupted, keeps ownership"
+        )
+    for entry in in_flight.get("verifying", []):
+        verifiers = ", ".join(
+            f"attempt {v['attempt']}" for v in entry.get("verifiers", [])
+        ) or "no open verifier attempts"
+        typer.echo(f"  task {entry['task']} verifying ({verifiers})")
+
+
+@goal_app.command("pause")
+@handle_errors
+def goal_pause(json_out: bool = JsonOpt) -> None:
+    """Pause the current Goal: no new dispatch until `orx goal resume`.
+
+    Idempotent: pausing an already paused Goal reports the unchanged state
+    and exits 0. After the pause the startup gate refuses every new
+    executor start — planner/replan routing, plan activation, worker
+    dispatch, parked-assignment claims, verifier dispatch, and downgrade
+    fallbacks. Already-running executors are untouched: attempts, spans,
+    nonces, and session bindings stay exactly as recorded, and their fact
+    submissions (task complete/fail/heartbeat, verify verdicts) keep
+    working. Paused persists in the database: a new process sees it, and
+    `orx goal new` / inbox acceptance refuse until the Goal is resumed or
+    done. --json fields: goal, status, changed, run, in_flight.
+    Exit 0 on success (including the idempotent repeat), 1 on a domain
+    error (e.g. the Goal is already done), 2 on usage errors.
+    """
+    project = dispatch.open_project()
+    try:
+        data = dispatch.goal_pause(project)
+    finally:
+        project.close()
+    _ok(json_out, **data)
+    if not json_out:
+        _render_goal_lifecycle(data, "paused")
+
+
+@goal_app.command("resume")
+@handle_errors
+def goal_resume(json_out: bool = JsonOpt) -> None:
+    """Resume the paused Goal; nothing is started by the resume itself.
+
+    Idempotent: resuming an already active Goal reports the unchanged state
+    and exits 0. The resume keeps run, revision, planning assignment,
+    attempts, and nonces exactly as they were and returns the in-flight
+    ownership (parked tasks, running workers, dispatched verifiers) with
+    recovery guidance — it never launches a second executor. The next
+    dispatch is the operator's explicit `orx run`. If every task completed
+    during the pause, this call converges the Run and Goal to done through
+    the normal completion invariant. --json fields: goal, status, changed,
+    run, plan, in_flight, next. Exit 0 on success (including the idempotent
+    repeat), 1 on a domain error (e.g. the Goal is done), 2 on usage
+    errors.
+    """
+    project = dispatch.open_project()
+    try:
+        data = dispatch.goal_resume(project)
+    finally:
+        project.close()
+    _ok(json_out, **data)
+    if not json_out:
+        _render_goal_lifecycle(data, "resumed")
+        if data.get("next"):
+            typer.echo(f"  next dispatch: {data['next']}")
+
+
 # ---------------------------------------------------------------------------
 # Plan
 

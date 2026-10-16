@@ -17,6 +17,7 @@ from orx import records
 from orx.records import (
     ACTIVE_EXECUTION_STATUSES,
     ConflictError,
+    GoalPausedError,
     GoalStatus,
     RunStatus,
     TaskStatus,
@@ -50,6 +51,72 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 
 def is_legal(from_status: TaskStatus, to_status: TaskStatus) -> bool:
     return to_status in ALLOWED_TRANSITIONS[from_status]
+
+
+# ---------------------------------------------------------------------------
+# Goal lifecycle (G010 T002)
+#
+# The Goal state machine is a transition table like the task one, with one
+# deliberate difference: pause/resume are IDEMPOTENT operations. Repeating
+# the current state (pause on paused, resume on active) is a legal, explicit
+# no-op with a clear result, because the operator cannot lose by asking
+# twice — the state they asked for already holds. Every other pair follows
+# the plain legality rule.
+
+GOAL_ALLOWED_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
+    GoalStatus.ACTIVE: frozenset(
+        {GoalStatus.PAUSED, GoalStatus.DONE, GoalStatus.CANCELLED}
+    ),
+    GoalStatus.PAUSED: frozenset({GoalStatus.ACTIVE}),
+    GoalStatus.DONE: frozenset(),
+    GoalStatus.CANCELLED: frozenset(),
+}
+
+# Terminal goal statuses: pause/resume refuse with a transition error, they
+# never resurrect a finished or cancelled Goal.
+GOAL_TERMINAL_STATUSES = frozenset({GoalStatus.DONE, GoalStatus.CANCELLED})
+
+
+def goal_is_legal(from_status: GoalStatus, to_status: GoalStatus) -> bool:
+    return to_status in GOAL_ALLOWED_TRANSITIONS[from_status]
+
+
+def goal_pause(store: Store, goal_id: str) -> dict:
+    """active -> paused. Idempotent: pausing an already paused Goal is a
+    no-op that reports `changed: False`. A paused Goal blocks every new
+    executor start (see dispatch's startup gate); running executors are
+    untouched. Terminal statuses refuse."""
+    with store.tx():
+        status = store.goal_status(goal_id)
+        current = GoalStatus(status)
+        if current is GoalStatus.PAUSED:
+            return {"goal": goal_id, "status": status, "changed": False}
+        if not goal_is_legal(current, GoalStatus.PAUSED):
+            raise TransitionError(
+                f"goal {goal_id}: cannot pause from {status}"
+                f" (only an active Goal can pause)"
+            )
+        store.goal_set_status(goal_id, GoalStatus.PAUSED)
+        return {"goal": goal_id, "status": GoalStatus.PAUSED.value, "changed": True}
+
+
+def goal_resume(store: Store, goal_id: str) -> dict:
+    """paused -> active. Idempotent: resuming an already active Goal is a
+    no-op that reports `changed: False`. Resume starts NOTHING itself — the
+    caller re-reads in-flight ownership and the next `orx run` dispatches.
+    Terminal statuses refuse."""
+    with store.tx():
+        status = store.goal_status(goal_id)
+        current = GoalStatus(status)
+        if current is GoalStatus.ACTIVE:
+            return {"goal": goal_id, "status": status, "changed": False}
+        if not goal_is_legal(current, GoalStatus.ACTIVE):
+            raise TransitionError(
+                f"goal {goal_id}: cannot resume from {status}"
+                f" (only a paused Goal can resume)"
+            )
+        store.goal_set_status(goal_id, GoalStatus.ACTIVE)
+        return {"goal": goal_id, "status": GoalStatus.ACTIVE.value, "changed": True}
 
 
 def record_insert(
@@ -99,12 +166,24 @@ def transition(
 
 
 def claim(store: Store, revision_row_id: int, task_id: str) -> None:
-    """Host claim: exactly one caller may move waiting_host -> running."""
+    """Host claim: exactly one caller may move waiting_host -> running.
+
+    The unified startup gate (G010 T002) reads the goal status INSIDE this
+    transaction: while the Goal is paused a parked assignment cannot be
+    claimed — the gate decision and the claim write serialize against a
+    concurrent `goal pause` in the same BEGIN IMMEDIATE, so there is no
+    window where a pause lands between the check and the claim."""
     with store.tx():
         row = store.task_get(revision_row_id, task_id)
         if row.status != TaskStatus.WAITING_HOST.value:
             raise ConflictError(
                 f"task {task_id} is {row.status}, not waiting_host; nothing to claim"
+            )
+        goal_status = store.goal_status_for_revision(revision_row_id)
+        if goal_status == GoalStatus.PAUSED.value:
+            raise GoalPausedError(
+                f"goal is paused; task {task_id} stays parked:"
+                " run `orx goal resume` before claiming"
             )
         store.task_update_status(revision_row_id, task_id, TaskStatus.RUNNING)
         store.task_event_add(
@@ -146,7 +225,15 @@ def refresh_readiness(store: Store, run: Run) -> None:
 def refresh_run(store: Store, goal: Goal, run: Run) -> None:
     """Done is an invariant, not a judgment call: a Run is done only when every
     active-revision task is passed. Cancelled tasks exist only in superseded
-    revisions, so the active revision never contains them."""
+    revisions, so the active revision never contains them.
+
+    G010 T002: the goal-side completion write is a compare-and-set on
+    active -> done. A PAUSED goal is never lifted here — the caller's Goal
+    object may be a stale snapshot (a pause can commit between the caller's
+    read and this refresh), so legality is decided by the row, not by the
+    argument. When every task passed during a pause the run records done
+    and the goal converges to done at `goal resume` (the same invariant,
+    replayed after the transition)."""
     revision = store.revision_active(run.id)
     if revision is None:
         if run.status != RunStatus.PLANNING.value:
@@ -155,8 +242,7 @@ def refresh_run(store: Store, goal: Goal, run: Run) -> None:
     statuses = {TaskStatus(t.status) for t in store.tasks_all(revision.id)}
     if statuses and statuses <= {TaskStatus.PASSED}:
         store.run_set_status(run.id, RunStatus.DONE)
-        if goal.status == GoalStatus.ACTIVE.value:
-            store.goal_set_status(goal.id, GoalStatus.DONE)
+        store.goal_complete_if_active(goal.id)
     elif statuses & ACTIVE_EXECUTION_STATUSES:
         store.run_set_status(run.id, RunStatus.RUNNING)
     else:

@@ -2,12 +2,18 @@
 
 The hermetic test never opens the dogfood database and never calls a paid
 model. The dogfood test reads `.orx/state.db` read-only, replays one stored
-host_report through the real CLI (same counts, so the write is idempotent),
-and records the contract queries verbatim in docs/m1.2-report.md.
+host_report through the real CLI against a PRIVATE snapshot copy of the
+database (same counts, so the write is idempotent), and writes the report
+to pytest's tmp_path. G010 T002 isolation: the dogfood test writes only
+temporary artifacts and snapshots — never the user's docs/m1.2-report.md
+and never the real execution database (see
+test_dogfood_writes_only_temporary_artifacts, which re-runs this test in a
+subprocess and proves both files are byte-identical afterwards).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -29,7 +35,7 @@ from test_observability_contract import load_queries, open_readonly, run as run_
 from test_state import _narrow_usage_check, _strip_v7_columns
 
 ROOT = Path(__file__).parents[1]
-REPORT = ROOT / "docs" / "m1.2-report.md"
+USER_REPORT = ROOT / "docs" / "m1.2-report.md"
 LIVE_DB = ROOT / ".orx" / "state.db"
 runner = CliRunner()
 
@@ -51,7 +57,7 @@ def test_m12_acceptance_integration(tmp_path: Path, monkeypatch):
     fresh = tmp_path / "fresh.db"
     opened = Store.open(fresh)
     try:
-        assert opened.schema_version() == 12
+        assert opened.schema_version() == 13
         assert {"session_ref", "run_id", "usage_missing_reason"} <= _columns(opened.conn, "attempts")
         assert {"started_at", "completed_at"} <= _columns(opened.conn, "runs")
     finally:
@@ -77,7 +83,7 @@ def test_m12_acceptance_integration(tmp_path: Path, monkeypatch):
 
     upgraded = Store.open(legacy)
     try:
-        assert upgraded.schema_version() == 12
+        assert upgraded.schema_version() == 13
         migrated = upgraded.run_get(run.id)
         assert migrated.started_at is None and migrated.completed_at is None
         assert migrated.updated_at == "2099-01-01T00:00:00+00:00"
@@ -356,6 +362,8 @@ def test_dogfood_readonly_report(tmp_path: Path):
     finally:
         src.close()
     before = LIVE_DB.stat().st_mtime_ns
+    live_digest = LIVE_DB.read_bytes()
+    report_digest_before = _file_digest(USER_REPORT)
 
     conn = open_readonly(snap)
     try:
@@ -415,8 +423,33 @@ def test_dogfood_readonly_report(tmp_path: Path):
     replay_cmd = None
     if host_reports:
         latest = host_reports[-1]
+        # G010 T002 isolation: the idempotent replay runs against a PRIVATE
+        # snapshot copy of the database inside a throwaway project directory
+        # under tmp_path — the real .orx/state.db is never opened for
+        # writing and never migrated by the replay.
+        replay_project = tmp_path / "replay-project"
+        (replay_project / ".orx").mkdir(parents=True, exist_ok=True)
+        # A minimal valid project configuration so the CLI can open the
+        # snapshot project without touching any real configuration layer.
+        (replay_project / ".orx" / "config.toml").write_text(dispatch.DEFAULT_CONFIG_TOML)
+        (replay_project / ".orx" / "profiles.toml").write_text(dispatch.DEFAULT_PROFILES_TOML)
+        replay_db = replay_project / ".orx" / "state.db"
+        src = open_readonly(LIVE_DB)
+        try:
+            dst = sqlite3.connect(replay_db)
+            try:
+                src.backup(dst)
+                # backup preserves the WAL header; a WAL database without
+                # its sidecars cannot be reopened mode=ro. The snapshot is
+                # ours, so switching it to a rollback journal makes it
+                # self-contained (same discipline as the report snapshot).
+                dst.execute("PRAGMA journal_mode=DELETE")
+            finally:
+                dst.close()
+        finally:
+            src.close()
         cmd = [
-            "uv", "run", "orx", "usage", "record", "--json",
+            sys.executable, "-m", "orx", "usage", "record", "--json",
             "--attempt", str(latest["attempt_id"]),
             "--input", str(latest["input_tokens"]),
             "--output", str(latest["output_tokens"]),
@@ -425,9 +458,10 @@ def test_dogfood_readonly_report(tmp_path: Path):
         if latest["cached_input_tokens"] is not None:
             cmd.extend(["--cached", str(latest["cached_input_tokens"])])
         env = os.environ.copy()
-        env.pop("ORX_CONFIG_DIR", None)
-        env.pop("ORX_DATA_DIR", None)
-        env["ORX_PROJECT"] = str(ROOT)
+        env["ORX_PROJECT"] = str(replay_project)
+        env["ORX_CONFIG_DIR"] = str(tmp_path / "replay-config")
+        env["ORX_DATA_DIR"] = str(tmp_path / "replay-data")
+        env["ORX_QUOTA_PREFLIGHT"] = "0"
         replay_cmd = cmd
         replay = subprocess.run(
             cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=False,
@@ -468,11 +502,15 @@ def test_dogfood_readonly_report(tmp_path: Path):
         "  `Store.open` was not used for the queries, so they did not migrate.",
         f"- Main file mtime_ns after the read-only snapshot `{before}`, after the",
         f"  optional usage-record replay `{after}`. The contract queries ran on",
-        "  the snapshot, not on this file.",
+        "  the snapshot, not on this file, and the replay wrote only to a",
+        "  private snapshot copy under pytest's tmp_path (G010 T002: this",
+        "  measurement writes no repository file and never the live database).",
+        "- This report is itself a temporary artifact under tmp_path; the",
+        "  user-owned docs/m1.2-report.md is never read or rewritten by the",
+        "  test suite.",
         "- Bound `:project_id` for the contract examples: `ORX`.",
-        "- The pytest process that rewrites this file is still running, so this",
-        "  file does not contain that process's exit code. The Controller's",
-        "  verification log for `uv run pytest -q` is that exit code.",
+        "- The Controller's verification log for `uv run pytest -q` carries",
+        "  the exit code of the run that measured this; the report does not.",
         "",
         "## Commands",
         "",
@@ -630,21 +668,26 @@ def test_dogfood_readonly_report(tmp_path: Path):
         "fill this section in before the Controller has observed it.",
         "",
     ])
-    if REPORT.exists():
-        previous = REPORT.read_text()
-        marker = "## Post-close transcript"
-        if marker in previous:
-            tail = previous.split(marker, 1)[1]
-            if "POST_CLOSE_CAPTURED" in tail:
-                sections = sections[: sections.index("## Post-close transcript") + 1]
-                sections.extend(["", tail.strip(), ""])
+    # G010 T002: the report is a temporary artifact under tmp_path. The
+    # user-owned docs/m1.2-report.md is never read or rewritten — the old
+    # post-close transcript preservation (which read and rewrote the user's
+    # uncommitted file) is gone with the workspace write itself.
+    report = tmp_path / "m1.2-report.md"
     text = "\n".join(sections)
     if not text.endswith("\n"):
         text += "\n"
-    REPORT.write_text(text)
-    assert REPORT.stat().st_size > 0
+    report.write_text(text)
+    assert report.stat().st_size > 0
+    assert str(report).startswith(str(tmp_path))
     assert "12/37" in text
     assert "Post-close transcript" in text
+    # The live database and the user's report are byte-identical after the
+    # whole measurement (the replay wrote to the snapshot copy only).
+    assert LIVE_DB.read_bytes() == live_digest, "the real execution database was written"
+    if USER_REPORT.exists():
+        assert USER_REPORT.read_bytes() == report_digest_before, (
+            "the user's docs/m1.2-report.md was written"
+        )
     # Pre-close the report says PENDING; once the Controller has observed
     # the real done/completed_at, the preserved transcript carries the
     # POST_CLOSE_CAPTURED marker instead (procedure step 4).
@@ -652,3 +695,55 @@ def test_dogfood_readonly_report(tmp_path: Path):
     if replay is not None:
         assert replay.returncode == 0, replay.stderr
         assert json.loads(replay.stdout)["idempotent"] is True
+
+
+def _file_digest(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
+def test_dogfood_writes_only_temporary_artifacts(tmp_path: Path):
+    """G010 T002 regression: the dogfood measurement writes ONLY temporary
+    artifacts and snapshots. Re-runs `test_dogfood_readonly_report` in a
+    real subprocess (its own pytest tmp_path, deterministic completion of
+    the process as the sync point) and proves afterwards that neither the
+    user's uncommitted docs/m1.2-report.md nor the real execution database
+    (.orx/state.db and its sidecars) changed by a single byte — while the
+    generated report and the replay snapshot really did land under the
+    subprocess's temporary tree."""
+    assert LIVE_DB.is_file(), "dogfood .orx/state.db is the M1.2 fixture"
+    before = {
+        "report": _file_digest(USER_REPORT),
+        "db": _file_digest(LIVE_DB),
+        "wal": _file_digest(Path(str(LIVE_DB) + "-wal")),
+        "shm": _file_digest(Path(str(LIVE_DB) + "-shm")),
+    }
+    basetemp = tmp_path / "basetemp"
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", "-q",
+            "-p", "no:cacheprovider",
+            f"--basetemp={basetemp}",
+            "tests/test_m12_acceptance.py::test_dogfood_readonly_report",
+        ],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=300, check=False,
+    )
+    assert proc.returncode == 0, (
+        "dogfood subprocess failed\nstdout:\n" + proc.stdout[-2000:]
+        + "\nstderr:\n" + proc.stderr[-2000:]
+    )
+    after = {
+        "report": _file_digest(USER_REPORT),
+        "db": _file_digest(LIVE_DB),
+        "wal": _file_digest(Path(str(LIVE_DB) + "-wal")),
+        "shm": _file_digest(Path(str(LIVE_DB) + "-shm")),
+    }
+    assert before == after, "the dogfood test wrote outside its temporary tree"
+
+    # the artifacts really were produced, under the subprocess's tmp only
+    reports = list(basetemp.glob("**/m1.2-report.md"))
+    assert reports, "the report was not written at all"
+    assert all(basetemp.resolve() in p.parents for p in reports)
+    snapshots = list(basetemp.glob("**/r002-snapshot.db"))
+    assert snapshots
+    replay_projects = list(basetemp.glob("**/replay-project/.orx/state.db"))
+    assert replay_projects, "the usage replay did not run against a snapshot copy"

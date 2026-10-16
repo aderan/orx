@@ -33,6 +33,16 @@ class ConflictError(ORXError):
     """A compare-and-set style update lost (e.g. two hosts claimed one task)."""
 
 
+class GoalPausedError(ORXError):
+    """The unified startup gate refused an executor start (G010 T002).
+
+    The Goal is paused: no new planner/worker/verifier may be created or
+    started, no parked assignment may be claimed, no plan may be activated,
+    and no downgrade fallback may launch. Already-running executors are
+    unaffected — they keep their attempt, span, and nonce, and their fact
+    submissions (complete/fail/heartbeat/verify verdict) stay legal."""
+
+
 class TransitionError(ORXError):
     """An illegal task state transition was requested."""
 
@@ -129,6 +139,11 @@ class SupersededDisposition(str, Enum):
 
 class GoalStatus(str, Enum):
     ACTIVE = "active"
+    # G010 T002: a persistent, user-driven pause. Not a run aggregate state:
+    # the Run keeps its task-derived status; `paused` only gates new executor
+    # starts. refresh never lifts it implicitly (completion converges at
+    # resume through the existing invariants).
+    PAUSED = "paused"
     DONE = "done"
     CANCELLED = "cancelled"
 

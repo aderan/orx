@@ -30,6 +30,7 @@ from orx.records import (
     AssignmentStatus,
     ConfigError,
     ConflictError,
+    GoalPausedError,
     GoalStatus,
     NotFoundError,
     ORXError,
@@ -270,16 +271,9 @@ def open_project() -> Project:
 
 def _active_context(project: Project) -> tuple[Goal, Run]:
     """The active Goal, or the most recent Goal when the active one finished
-    (`orx status` must keep working after the Run reaches done)."""
-    goal = project.store.goal_active()
-    if goal is None:
-        row = project.store.conn.execute(
-            "SELECT id FROM goals WHERE status != 'cancelled' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if row is not None:
-            goal = project.store.goal_get(row["id"])
-    if goal is None:
-        raise NotFoundError("no active Goal; run `orx goal new` first")
+    or is paused (`orx status` and every fact submission must keep working
+    while paused — a paused Goal is still THE Goal)."""
+    goal = _current_goal(project.store)
     run = project.store.run_for_goal(goal.id)
     if run is None:
         raise NotFoundError(f"goal {goal.id} has no Run")
@@ -361,18 +355,51 @@ def create_goal(
         raise ORXError("objective must be a non-empty string")
     if not acceptance or not all(a.strip() for a in acceptance):
         raise ORXError("at least one non-empty --acceptance criterion is required")
-    if project.store.goal_active() is not None:
-        active = project.store.goal_active()
+    unfinished = project.store.goal_unfinished()
+    if unfinished is not None:
+        if unfinished.status == GoalStatus.PAUSED.value:
+            raise ORXError(
+                f"goal {unfinished.id} is paused; ORX keeps one unfinished Goal"
+                " per project — resume it (`orx goal resume`) before creating"
+                " a new one"
+            )
         raise ORXError(
-            f"goal {active.id} is already active; ORX M0 keeps one active Goal per project"
+            f"goal {unfinished.id} is already active; ORX M0 keeps one active Goal per project"
         )
     return project.store.goal_create(objective, acceptance, constraints or [], context)
 
 
-def goal_show(project: Project) -> dict:
-    goal = project.store.goal_active()
+def _current_goal(store: Store) -> Goal:
+    """The active Goal, or the most recent non-cancelled Goal when the active
+    one finished or is paused (`orx status`/`goal show`/fact submissions must
+    keep working while paused — a paused Goal is still THE Goal)."""
+    goal = store.goal_active()
     if goal is None:
-        raise NotFoundError("no active Goal")
+        row = store.conn.execute(
+            "SELECT id FROM goals WHERE status != 'cancelled' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is not None:
+            goal = store.goal_get(row["id"])
+    if goal is None:
+        raise NotFoundError("no active Goal; run `orx goal new` first")
+    return goal
+
+
+def _assert_goal_not_paused(store: Store, goal: Goal) -> None:
+    """The unified startup gate (G010 T002), read form: refuse to create or
+    start a new executor while the Goal is paused. This is the early, clean
+    error; every write path additionally re-reads the gate INSIDE the
+    transaction that creates the executor placeholder, so a pause committing
+    between this check and the write is still refused (race safety)."""
+    if store.goal_status(goal.id) == GoalStatus.PAUSED.value:
+        raise GoalPausedError(
+            f"goal {goal.id} is paused; run `orx goal resume` before starting"
+            " new work"
+        )
+
+
+def goal_show(project: Project) -> dict:
+    goal = _current_goal(project.store)
     run = project.store.run_for_goal(goal.id)
     return {
         "goal": {
@@ -384,6 +411,192 @@ def goal_show(project: Project) -> dict:
             "status": goal.status,
         },
         "run": {"id": run.id, "status": run.status} if run else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Goal pause / resume (G010 T002)
+
+
+def _recovery_contract_text(task_id: str, attempt_id: int) -> str:
+    """The no-second-writer contract a resumed Controller sees for one
+    RUNNING host task. Identical wording on every surface that re-surfaces
+    in-flight ownership (run_slice's recovery entries, goal resume)."""
+    return (
+        "no second writer: this attempt still owns the task. First check"
+        " the original subagent (handle = session_ref) for a late result"
+        f" and submit it with `orx task complete {task_id}"
+        f" --attempt {attempt_id} --evidence <file>`; only if it is"
+        f" confirmed dead: `orx task fail {task_id} --reason <why>`"
+        f" then `orx task retry {task_id}` routes a fresh attempt."
+        " Read the terminal facts first with"
+        f" `orx task observe {task_id}` (read-only: claim, changes,"
+        " session activity, closure — never a verdict); with a"
+        " confirmed termination fact"
+        f" `orx task recover {task_id} --termination-fact \"<fact>\"`"
+        " closes this attempt and reopens dispatch in one explicit"
+        " operator step. When the controller and the worker share one"
+        " failure domain (e.g. the same quota account), record it with"
+        f" `orx task note {task_id} --kind shared-failure"
+        " --detail \"<fact>\"` and stay parked: the open attempt keeps"
+        " ownership and its late delivery stays acceptable"
+    )
+
+
+def _in_flight_snapshot(project: Project, goal: Goal, run: Run) -> dict:
+    """Everything that keeps running through a pause and must survive a
+    resume UNCHANGED: the open planning assignment, parked tasks, running
+    host tasks, and dispatched verifier attempts — each with the exact
+    attempt and nonce that own it. Pure read; nothing is started, parked,
+    failed, or rebound here."""
+    store = project.store
+    revision = _active_revision(project, run)
+    out: dict = {"planning": [], "parked": [], "running": [], "verifying": []}
+    assignment = store.assignment_waiting(run.id)
+    if assignment is not None:
+        attempt = store.attempt_open_for_assignment(assignment.id)
+        prompt_file = (
+            project.root / ".orx" / "runs" / run.id / "assignments" / f"{assignment.id}.md"
+        )
+        out["planning"].append({
+            "assignment": assignment.id,
+            "profile": assignment.profile,
+            "attempt": attempt.id if attempt else None,
+            "nonce": attempt.nonce if attempt else None,
+            "prompt_file": (
+                str(prompt_file.relative_to(project.root))
+                if prompt_file.exists() else None
+            ),
+            "submit_with": "orx plan submit --file plan.json",
+        })
+    if revision is None:
+        return out
+    for task in store.tasks_all(revision.id):
+        status = TaskStatus(task.status)
+        prompt_file = (
+            project.root / ".orx" / "runs" / run.id / "assignments" / f"{task.task_id}.md"
+        )
+        prompt_rel = (
+            str(prompt_file.relative_to(project.root)) if prompt_file.exists() else None
+        )
+        if status in (TaskStatus.WAITING_HOST, TaskStatus.WAITING_EXTERNAL):
+            attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+            entry = {
+                "task": task.task_id,
+                "status": task.status,
+                "profile": attempt.profile if attempt else None,
+                "attempt": attempt.id if attempt else None,
+                "nonce": attempt.nonce if attempt else None,
+                "prompt_file": prompt_rel,
+            }
+            if status is TaskStatus.WAITING_HOST:
+                entry["resume_with"] = (
+                    f"orx task claim {task.task_id} --discover-session"
+                )
+            else:
+                entry["resume_with"] = (
+                    f"orx task complete {task.task_id} --evidence <file>"
+                )
+            out["parked"].append(entry)
+        elif status is TaskStatus.RUNNING:
+            attempt = store.attempt_latest_for_task(revision.id, task.task_id)
+            if attempt is None:
+                continue
+            out["running"].append({
+                "task": task.task_id,
+                "status": task.status,
+                "attempt": attempt.id,
+                "nonce": attempt.nonce,
+                "session_ref": attempt.session_ref,
+                "prompt_file": prompt_rel,
+                "contract": _recovery_contract_text(task.task_id, attempt.id),
+            })
+        elif status is TaskStatus.VERIFYING:
+            verifiers = [
+                a for a in store.attempts_open_for_task(revision.id, task.task_id)
+                if a.role == Role.VERIFIER.value
+            ]
+            entry: dict = {
+                "task": task.task_id,
+                "status": task.status,
+                "verifiers": [
+                    {
+                        "attempt": a.id,
+                        "nonce": a.nonce,
+                        "entry": a.verify_entry,
+                        "session_ref": a.session_ref,
+                    }
+                    for a in verifiers
+                ],
+            }
+            if verifiers:
+                newest = verifiers[-1]
+                entry["prompt_file"] = prompt_rel
+                entry["resume_with"] = (
+                    f"orx verify submit {task.task_id} --result <pass|fail>"
+                    f" --entry {newest.verify_entry!r} --attempt {newest.id}"
+                )
+            out["verifying"].append(entry)
+    return out
+
+
+def goal_pause(project: Project) -> dict:
+    """Pause the current Goal (G010 T002). Idempotent: pausing an already
+    paused Goal reports changed=False and exits 0. After the transition no
+    new executor may be created or started (planner/replan routing, plan
+    activation, worker dispatch, parked-assignment claim, verifier
+    dispatch, downgrade fallback); everything already in flight keeps its
+    ownership — attempts, spans, nonces, and sessions are untouched, and
+    their fact submissions stay legal. The result carries the in-flight
+    snapshot so the operator sees exactly what is still running."""
+    store = project.store
+    goal = _current_goal(store)
+    run = store.run_for_goal(goal.id)
+    if run is None:
+        raise NotFoundError(f"goal {goal.id} has no Run")
+    outcome = machine.goal_pause(store, goal.id)
+    goal = store.goal_get(goal.id)
+    return {
+        "goal": goal.id,
+        "status": goal.status,
+        "changed": outcome["changed"],
+        "run": {"id": run.id, "status": run.status},
+        "in_flight": _in_flight_snapshot(project, goal, run),
+    }
+
+
+def goal_resume(project: Project) -> dict:
+    """Resume the current Goal (G010 T002). Idempotent: resuming an already
+    active Goal reports changed=False and exits 0. Resume starts NOTHING:
+    it re-reads the in-flight ownership (run, revision, planning
+    assignment, parked/running/verifying attempts with their nonces) and
+    returns it with recovery guidance — `orx run` does the next dispatch,
+    with the operator in the loop. If every task completed during the
+    pause, the refresh run right here converges the Run and Goal to done
+    through the existing completion invariant."""
+    store = project.store
+    goal = _current_goal(store)
+    run = store.run_for_goal(goal.id)
+    if run is None:
+        raise NotFoundError(f"goal {goal.id} has no Run")
+    outcome = machine.goal_resume(store, goal.id)
+    goal = store.goal_get(goal.id)
+    run = store.run_get(run.id)
+    refresh(store, goal, run)
+    goal = store.goal_get(goal.id)
+    run = store.run_get(run.id)
+    revision = _active_revision(project, run)
+    return {
+        "goal": goal.id,
+        "status": goal.status,
+        "changed": outcome["changed"],
+        "run": {"id": run.id, "status": run.status},
+        "plan": (
+            {"revision": revision.revision, "status": revision.status}
+            if revision else None
+        ),
+        "in_flight": _in_flight_snapshot(project, goal, run),
+        "next": "orx run",
     }
 
 
@@ -892,6 +1105,10 @@ def plan_route(
     # call.
     quota.refresh(project)
     goal, run = _active_context(project)
+    # Startup gate (G010 T002): no planner/replan assignment may be created
+    # while the Goal is paused. The clean read here; the write below re-reads
+    # the gate inside its transaction (race safety).
+    _assert_goal_not_paused(store, goal)
     # A bad context file fails before routing, attempts, or any model call.
     intent = load_replan_context(context_file) if context_file else ""
     _check_replan_allowed(store, run)
@@ -921,45 +1138,57 @@ def plan_route(
     prompt = plan_mod.planner_prompt(goal, depth, replan_facts=facts_md, intent=intent)
     replan = revision is not None
     if profile.driver.value == "host":
-        assignment = store.assignment_waiting(run.id)
-        if assignment is None:
-            # NOTE: a completed Run is NOT reopened here. Routing a replan
-            # only creates the planning assignment; the Goal/Run keep their
-            # recorded completion until a new revision actually lands in
-            # submit_plan (a failed replan must not lose the completion).
-            assignment = store.assignment_create(
-                run.id, profile.name, depth.value, prompt
-            )
+        # One transaction: the gate re-read plus every startup-placeholder
+        # write it guards (assignment row, prompt refresh, planner attempt,
+        # routing audit). BEGIN IMMEDIATE serializes against a concurrent
+        # `goal pause`, so either the assignment fully lands before the
+        # pause or it is refused — never half of each. The prompt FILE is
+        # written after the transaction: no file I/O waits on the write
+        # lock (and a refused park leaves no stale file behind).
+        write_prompt_file = False
+        with store.tx():
+            _assert_goal_not_paused(store, goal)
+            assignment = store.assignment_waiting(run.id)
+            if assignment is None:
+                # NOTE: a completed Run is NOT reopened here. Routing a replan
+                # only creates the planning assignment; the Goal/Run keep their
+                # recorded completion until a new revision actually lands in
+                # submit_plan (a failed replan must not lose the completion).
+                assignment = store.assignment_create(
+                    run.id, profile.name, depth.value, prompt
+                )
+                write_prompt_file = True
+            elif assignment.prompt != prompt:
+                # A waiting assignment predates this call: facts and/or intent have
+                # moved on. Refresh prompt row + file so what the planner receives
+                # is what ORX recorded, never a stale composition.
+                store.assignment_update_prompt(assignment.id, prompt)
+                assignment = store.assignment_get(assignment.id)
+                write_prompt_file = True
+            # Reuse the open planner attempt for this waiting assignment. A second
+            # plan_route must not open a duplicate span.
+            attempt = store.attempt_open_for_assignment(assignment.id)
+            if attempt is None:
+                attempt = store.attempt_create(
+                    revision_row_id=revision.id if revision else None,
+                    role=Role.PLANNER.value,
+                    profile=profile.name,
+                    driver=profile.driver.value,
+                    harness=profile.harness.value,
+                    model_id=profile.model,
+                    requested_effort=profile.effort.value,
+                    routing_reason=result.reason,
+                    fallback_used=result.fallback_used,
+                    assignment_id=assignment.id,
+                    isolation="prompt_only",
+                    session_ref=session_ref,
+                    run_id=run.id,
+                )
+            elif session_ref is not None:
+                store.attempt_update(attempt.id, session_ref=session_ref)
+            routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        if write_prompt_file:
             _write_assignment_file(project, run, assignment)
-        elif assignment.prompt != prompt:
-            # A waiting assignment predates this call: facts and/or intent have
-            # moved on. Refresh prompt row + file so what the planner receives
-            # is what ORX recorded, never a stale composition.
-            store.assignment_update_prompt(assignment.id, prompt)
-            assignment = store.assignment_get(assignment.id)
-            _write_assignment_file(project, run, assignment)
-        # Reuse the open planner attempt for this waiting assignment. A second
-        # plan_route must not open a duplicate span.
-        attempt = store.attempt_open_for_assignment(assignment.id)
-        if attempt is None:
-            attempt = store.attempt_create(
-                revision_row_id=revision.id if revision else None,
-                role=Role.PLANNER.value,
-                profile=profile.name,
-                driver=profile.driver.value,
-                harness=profile.harness.value,
-                model_id=profile.model,
-                requested_effort=profile.effort.value,
-                routing_reason=result.reason,
-                fallback_used=result.fallback_used,
-                assignment_id=assignment.id,
-                isolation="prompt_only",
-                session_ref=session_ref,
-                run_id=run.id,
-            )
-        elif session_ref is not None:
-            store.attempt_update(attempt.id, session_ref=session_ref)
-        routing.persist_decision(store, request, result, attempt_id=attempt.id)
         return {
             "mode": "host_required",
             "depth": depth.value,
@@ -1066,6 +1295,9 @@ def _run_cli_planner(project: Project, goal: Goal, run: Run, depth: PlanDepth,
     and submit it. Completion is real — never faked. The exact prompt handed
     to the planner is archived under the launch dir for later audit."""
     store = project.store
+    # Startup gate (G010 T002): no planner execution may launch while the
+    # Goal is paused.
+    _assert_goal_not_paused(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
     if not probe.ok:
@@ -1382,6 +1614,10 @@ def submit_plan(project: Project, ir_data: dict,
     # The replan guard runs before validation: a rejected replan should say
     # why it was rejected, not surface unrelated plan errors first.
     _check_replan_allowed(store, run)
+    # Startup gate (G010 T002): plan activation starts execution (every task
+    # in the revision becomes dispatchable), so a paused Goal refuses it.
+    # The clean read here; the activation transaction re-reads the gate.
+    _assert_goal_not_paused(store, goal)
     # A malformed explicit session fails before the revision is written and
     # before the open planner attempt is closed.
     session_ref = resolve_session_ref(session)
@@ -1412,6 +1648,10 @@ def submit_plan(project: Project, ir_data: dict,
     old = store.revision_active(run.id)
     cancelled_old: list[str] = []
     with store.tx():
+        # Gate inside the activation transaction: a pause that committed
+        # after the precheck still refuses the activation here, and the
+        # whole transaction rolls back (no partially effective revision).
+        _assert_goal_not_paused(store, goal)
         report_row = None
         if ir.replan is not None and old is not None:
             report_row = store.replan_report_add(
@@ -1763,6 +2003,13 @@ def run_slice(project: Project) -> dict:
     per invocation — `orx run` returns so the Controller stays in the loop."""
     store = project.store
     goal, run = _active_context(project)
+    # Startup gate (G010 T002): a paused Goal dispatches nothing. This one
+    # read gates every start this slice can make — worker parks, CLI worker
+    # launches, downgrade fallbacks — and each write path re-reads the gate
+    # inside its own transaction, so a pause committing mid-slice is still
+    # refused. Parked and in-flight work is untouched: it stays parked/owned
+    # and re-surfaces after `orx goal resume`.
+    _assert_goal_not_paused(store, goal)
     # G002/T004: best-effort registration in the user-level project index
     # (orx-analytics discovery contract). The note lands in the slice
     # output; a registration failure never gates routing.
@@ -2025,7 +2272,15 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
                task: TaskRow, result, request, profile, kind: str) -> dict:
     """Park a task for host/external execution and return the assignment
     payload. The prompt is the same composition a CLI launch would receive
-    (constraints, scope, preread, acceptance, prior failure included)."""
+    (constraints, scope, preread, acceptance, prior failure included).
+
+    The startup placeholder (the attempt row with its nonce) and the
+    waiting_host/waiting_external transition commit in ONE transaction that
+    re-reads the pause gate (G010 T002): a `goal pause` committing before
+    the transaction refuses the whole park; one committing after leaves a
+    complete, owned placeholder that simply is not claimable until resume.
+    The prompt file is written after the transaction — no file I/O inside
+    the write lock, and a refused park leaves no stale file."""
     store = project.store
     # Mint the identity token before composing the prompt so the exact nonce
     # stored on the attempt row is the one embedded in the prompt (and its
@@ -2052,36 +2307,38 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
             else "full"
         ),
     )
-    attempt = store.attempt_create(
-        revision_row_id=revision_row_id,
-        role=Role.WORKER.value,
-        profile=profile.name,
-        driver=profile.driver.value,
-        harness=profile.harness.value,
-        model_id=profile.model,
-        requested_effort=profile.effort.value,
-        routing_reason=result.reason,
-        fallback_used=result.fallback_used,
-        task_id=task.task_id,
-        started=False,
-        # The host enforces nothing — the prompt is discipline, not a sandbox.
-        isolation="prompt_only" if kind == "host" else None,
-        # Session identity is bound by the WORKER at claim/complete time
-        # (`--session` / `--discover-session`), never stamped here: the
-        # process parking the task is the Controller, and its env session
-        # (ORX_SESSION_REF) is a different session than the subagent that
-        # will execute. A NULL here is honest, not a gap.
-        session_ref=None,
-        run_id=run.id,
-        nonce=nonce,
-    )
-    routing.persist_decision(store, request, result, attempt_id=attempt.id)
-    machine.transition(
-        store, revision_row_id, task.task_id,
-        "route_host" if kind == "host" else "route_external",
-        TaskStatus.WAITING_HOST if kind == "host" else TaskStatus.WAITING_EXTERNAL,
-        reason=f"routed to {kind} profile '{profile.name}'",
-    )
+    with store.tx():
+        _assert_goal_not_paused(store, goal)
+        attempt = store.attempt_create(
+            revision_row_id=revision_row_id,
+            role=Role.WORKER.value,
+            profile=profile.name,
+            driver=profile.driver.value,
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+            task_id=task.task_id,
+            started=False,
+            # The host enforces nothing — the prompt is discipline, not a sandbox.
+            isolation="prompt_only" if kind == "host" else None,
+            # Session identity is bound by the WORKER at claim/complete time
+            # (`--session` / `--discover-session`), never stamped here: the
+            # process parking the task is the Controller, and its env session
+            # (ORX_SESSION_REF) is a different session than the subagent that
+            # will execute. A NULL here is honest, not a gap.
+            session_ref=None,
+            run_id=run.id,
+            nonce=nonce,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        machine.transition(
+            store, revision_row_id, task.task_id,
+            "route_host" if kind == "host" else "route_external",
+            TaskStatus.WAITING_HOST if kind == "host" else TaskStatus.WAITING_EXTERNAL,
+            reason=f"routed to {kind} profile '{profile.name}'",
+        )
     entry = {
         "task": task.task_id,
         "objective": task.objective,
@@ -2229,6 +2486,9 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     protocol_error — never a silent pass, never a clean completed attempt;
     usage and session are recorded from the envelope in every case."""
     store = project.store
+    # Startup gate (G010 T002): no CLI worker may launch while the Goal is
+    # paused; the in-tx re-read at the attempt creation closes the race.
+    _assert_goal_not_paused(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
 
@@ -2296,29 +2556,34 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
         return {"task": task.task_id, "profile": profile.name, "status": "failed",
                 "reason": reason, "error_kind": "model_resolution",
                 "prompt_file": prompt_file}
-    attempt = store.attempt_create(
-        revision_row_id=revision.id,
-        role=Role.WORKER.value,
-        profile=profile.name,
-        driver="cli",
-        harness=profile.harness.value,
-        model_id=profile.model,
-        requested_effort=profile.effort.value,
-        routing_reason=result.reason,
-        fallback_used=result.fallback_used,
-        task_id=task.task_id,
-        # Stamp the span at creation. started=False left completed CLI
-        # workers with a null started_at (the update path only writes ended_at).
-        started=True,
-        isolation=launch.sandbox,
-        run_id=run.id,
-        nonce=nonce,
-    )
-    routing.persist_decision(store, request, result, attempt_id=attempt.id)
-    machine.transition(
-        store, revision.id, task.task_id, "route_cli", TaskStatus.RUNNING,
-        reason=f"routed to cli profile '{profile.name}'",
-    )
+    with store.tx():
+        # Startup gate re-read inside the placeholder transaction (G010
+        # T002): the attempt row, the routing audit, and the route_cli
+        # transition commit together only when the Goal is still unpaused.
+        _assert_goal_not_paused(store, goal)
+        attempt = store.attempt_create(
+            revision_row_id=revision.id,
+            role=Role.WORKER.value,
+            profile=profile.name,
+            driver="cli",
+            harness=profile.harness.value,
+            model_id=profile.model,
+            requested_effort=profile.effort.value,
+            routing_reason=result.reason,
+            fallback_used=result.fallback_used,
+            task_id=task.task_id,
+            # Stamp the span at creation. started=False left completed CLI
+            # workers with a null started_at (the update path only writes ended_at).
+            started=True,
+            isolation=launch.sandbox,
+            run_id=run.id,
+            nonce=nonce,
+        )
+        routing.persist_decision(store, request, result, attempt_id=attempt.id)
+        machine.transition(
+            store, revision.id, task.task_id, "route_cli", TaskStatus.RUNNING,
+            reason=f"routed to cli profile '{profile.name}'",
+        )
     _record_model_resolution(
         project, run.id, f"{task.task_id}-{attempt.id}", launch, attempt)
 
@@ -4796,6 +5061,12 @@ def verify_dispatch(project: Project) -> dict:
         out["note"] = "no active plan revision"
         return out
 
+    # Startup gate (G010 T002): a paused Goal dispatches no verifier. Tasks
+    # already in verifying keep their dispatched verifiers, and verdict
+    # submissions (`orx verify submit`) stay legal — those are facts from a
+    # running executor, not new starts.
+    _assert_goal_not_paused(store, goal)
+
     quota.refresh(project)  # best-effort preflight before verifier routing
 
     for task in store.tasks_all(revision.id):
@@ -4851,26 +5122,34 @@ def verify_dispatch(project: Project) -> dict:
                 # structural zero-second span because both ends were stamped
                 # at verdict time) and the nonce rides in the prompt header
                 # so verifier sessions are discoverable like worker sessions.
-                attempt = store.attempt_open_verifier_for_entry(
-                    revision.id, task.task_id, item.raw
-                )
-                if attempt is None:
-                    attempt = store.attempt_create(
-                        revision_row_id=revision.id,
-                        role=Role.VERIFIER.value,
-                        profile=profile.name,
-                        driver=profile.driver.value,
-                        harness=profile.harness.value,
-                        model_id=profile.model,
-                        requested_effort=profile.effort.value,
-                        routing_reason=result.reason,
-                        fallback_used=result.fallback_used,
-                        task_id=task.task_id,
-                        started=True,
-                        isolation="prompt_only",
-                        run_id=run.id,
-                        verify_entry=item.raw,
+                #
+                # G010 T002: the open-attempt reuse plus the gate re-read run
+                # in one transaction, so a pause committing before it leaves
+                # the existing open verifier untouched and dispatches
+                # nothing new, and one committing after leaves a fully
+                # bound verifier whose verdict still closes it.
+                with store.tx():
+                    _assert_goal_not_paused(store, goal)
+                    attempt = store.attempt_open_verifier_for_entry(
+                        revision.id, task.task_id, item.raw
                     )
+                    if attempt is None:
+                        attempt = store.attempt_create(
+                            revision_row_id=revision.id,
+                            role=Role.VERIFIER.value,
+                            profile=profile.name,
+                            driver=profile.driver.value,
+                            harness=profile.harness.value,
+                            model_id=profile.model,
+                            requested_effort=profile.effort.value,
+                            routing_reason=result.reason,
+                            fallback_used=result.fallback_used,
+                            task_id=task.task_id,
+                            started=True,
+                            isolation="prompt_only",
+                            run_id=run.id,
+                            verify_entry=item.raw,
+                        )
                 prompt = verifier_prompt(
                     goal, task, item,
                     gate_summary=_gate_summary(store, revision.id, task),
@@ -4915,6 +5194,10 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     `ORX_VERDICT=pass` or `ORX_VERDICT=fail`; anything else is a failed
     verification (a broken verifier must not hang the run forever)."""
     store = project.store
+    # Startup gate (G010 T002): no CLI verifier may launch while the Goal
+    # is paused (verify_dispatch's read covers the entry; this re-read
+    # closes the launch race on this path).
+    _assert_goal_not_paused(store, goal)
     adapter = adapters.get_adapter(profile.harness.value)
     probe = adapter.probe()
     scratch = _launch_dir(project, run.id, f"verify-{task.task_id}")

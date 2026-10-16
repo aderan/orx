@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from orx import dispatch, machine, plan
-from orx.records import ConflictError, MigrationError, NotFoundError, ORXError, TaskStatus
+from orx.records import ConflictError, GoalStatus, MigrationError, NotFoundError, ORXError, TaskStatus
 from orx.state import Store
 import orx.state as state_mod
 
@@ -86,7 +86,7 @@ def test_schema_init_creates_tables_and_meta(tmp_path):
     db = tmp_path / "state.db"
     store = Store.open(db)
     try:
-        assert store.schema_version() == 12
+        assert store.schema_version() == 13
         names = {
             r["name"]
             for r in store.conn.execute(
@@ -337,7 +337,7 @@ INSERT INTO resource_status(profile, status, note, updated_at)
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         row = reopened.resource_row("legacy")
         assert (row.status, row.note) == ("exhausted", "weekly quota")
         assert row.override == 0 and row.failure_streak == 0
@@ -372,7 +372,7 @@ def test_v4_to_v5_migration_adds_attempts_isolation(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         columns = {
             r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")
         }
@@ -412,7 +412,7 @@ def test_v5_to_v6_migration_adds_tasks_preread(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         columns = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(tasks)")}
         assert "preread_json" in columns
         attempt_columns = {
@@ -516,7 +516,7 @@ def test_v6_upgrade_adds_observability_without_inventing_legacy_facts(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         assert reopened.goal_get(goal.id).objective == "legacy objective"
         upgraded = reopened.run_get(run.id)
         assert upgraded.status == "done"
@@ -602,7 +602,7 @@ def test_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 12
+            assert reopened.schema_version() == 13
             assert reopened.goal_get("G777").objective == "wal kept"
         finally:
             reopened.close()
@@ -721,7 +721,7 @@ def test_replan_mapping_persists_renumbered_correspondence(project, goal):
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         again = reopened.replan_mapping_for(rev2)
         assert again is not None
         assert {t.task_id: t.classification for t in again.tasks} == {
@@ -979,7 +979,7 @@ def test_v8_to_v9_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1064,7 +1064,7 @@ def test_v9_migration_failure_preserves_original_database(tmp_path, monkeypatch)
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1092,7 +1092,7 @@ def test_v8_to_v9_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 12
+            assert reopened.schema_version() == 13
             assert reopened.goal_get("G888").objective == "wal kept 9"
         finally:
             reopened.close()
@@ -1152,7 +1152,7 @@ def test_attempt_progress_append_latest_all_consistent_across_reopen(project, go
     project.close()
     reopened = Store.open(db_path)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         again_all = reopened.attempt_progress_all(attempt.id)
         assert [(r.id, r.sequence, r.phase, r.message, r.received_at) for r in again_all] == [
             (r.id, r.sequence, r.phase, r.message, r.received_at) for r in all_rows
@@ -1281,7 +1281,7 @@ def test_v9_to_v10_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         tables = {
             r["name"]
             for r in reopened.conn.execute(
@@ -1342,7 +1342,7 @@ def test_v10_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1369,7 +1369,7 @@ def test_v10_migration_keeps_wal_committed_rows(tmp_path):
     try:
         reopened = Store.open(db)
         try:
-            assert reopened.schema_version() == 12
+            assert reopened.schema_version() == 13
             assert reopened.goal_get("G999").objective == "wal kept 10"
         finally:
             reopened.close()
@@ -1403,7 +1403,7 @@ def test_v10_to_v11_migration_additive_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         cols = {r["name"] for r in reopened.conn.execute("PRAGMA table_info(attempts)")}
         assert "nonce" in cols
         # The legacy row is not rewritten: its nonce stays NULL and marker
@@ -1466,7 +1466,7 @@ def test_v11_migration_failure_preserves_original_database(tmp_path, monkeypatch
     monkeypatch.undo()
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         assert reopened.goal_get(goal.id).objective == "do not lose"
     finally:
         reopened.close()
@@ -1571,7 +1571,7 @@ def test_v11_to_v12_migration_widens_usage_source_without_backfill(tmp_path):
 
     reopened = Store.open(db)
     try:
-        assert reopened.schema_version() == 12
+        assert reopened.schema_version() == 13
         rows = reopened.conn.execute(
             "SELECT source, input_tokens, output_tokens, cached_input_tokens,"
             " accuracy FROM usage_observations").fetchall()
@@ -1687,7 +1687,7 @@ def test_v12_backup_copy_of_v11_database_still_migrates(tmp_path):
     shutil.copy2(db, backup)
     opened = Store.open(backup)
     try:
-        assert opened.schema_version() == 12
+        assert opened.schema_version() == 13
         rows = opened.conn.execute(
             "SELECT source, input_tokens FROM usage_observations").fetchall()
         assert [(r["source"], r["input_tokens"]) for r in rows] == \
@@ -1697,6 +1697,148 @@ def test_v12_backup_copy_of_v11_database_still_migrates(tmp_path):
     # the original v11 file is still a v11 file and still migrates itself
     original = Store.open(db)
     try:
-        assert original.schema_version() == 12
+        assert original.schema_version() == 13
+    finally:
+        original.close()
+
+
+# -- v13: goals status CHECK admits 'paused' (G010 T002) ----------------------
+
+
+def _narrow_goals_check_v12(conn) -> None:
+    """Restore the pre-v13 goals status CHECK (no 'paused'). goals is a
+    parent table (runs references it), so the swap runs with foreign keys
+    off — the same discipline the real v13 migration uses."""
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.executescript("""
+CREATE TABLE goals_v12 (
+  id TEXT PRIMARY KEY,
+  objective TEXT NOT NULL,
+  constraints_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_json TEXT NOT NULL DEFAULT '[]',
+  context TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('active','done','cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO goals_v12 (id, objective, constraints_json, acceptance_json, context,
+                       status, created_at, updated_at)
+  SELECT id, objective, constraints_json, acceptance_json, context,
+         status, created_at, updated_at FROM goals;
+DROP TABLE goals;
+ALTER TABLE goals_v12 RENAME TO goals;
+""")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_v12_to_v13_migration_admits_paused_without_backfill(tmp_path):
+    """A v12 database reopens at v13 with the widened goals CHECK: every
+    goal row keeps its exact identity and status, runs/tasks/attempts/usage
+    are untouched, and 'paused' becomes a storable status (nothing is
+    backfilled — the upgraded database simply has no paused goals)."""
+    db = tmp_path / "v12.db"
+    store = Store.open(db)
+    goal, run = store.goal_create("legacy lifecycle", ["a"], [], "")
+    store.conn.execute(
+        "UPDATE goals SET status = 'done', updated_at = '2098-01-01T00:00:00+00:00'"
+        " WHERE id = ?",
+        (goal.id,),
+    )
+    second, second_run = store.goal_create("second goal", ["b"], [], "")
+    rev1 = store.revision_create(second_run.id, "standard", "p", {"tasks": ["T001"]}).id
+    store.task_insert(rev1, "T001", "legacy task", {}, ["b"], ["true"], {}, "running")
+    host = store.attempt_create(
+        revision_row_id=rev1, role="worker", profile="zcode-worker",
+        driver="host", harness="zcode", model_id="m",
+        requested_effort="high", task_id="T001",
+    )
+    store.usage_add(host.id, "zcode-worker", second_run.id, "T001",
+                    100, 10, 90, "host_report", "estimated")
+    _narrow_goals_check_v12(store.conn)
+    store.conn.execute("UPDATE meta SET value = '12' WHERE key = 'schema_version'")
+    store.close()
+
+    reopened = Store.open(db)
+    try:
+        assert reopened.schema_version() == 13
+        statuses = {
+            row["id"]: row["status"]
+            for row in reopened.conn.execute("SELECT id, status FROM goals")
+        }
+        assert statuses == {goal.id: "done", second.id: "active"}
+        assert reopened.conn.execute(
+            "SELECT updated_at FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()["updated_at"] == "2098-01-01T00:00:00+00:00"
+        # the runs foreign key still resolves after the parent-table rebuild
+        assert reopened.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert reopened.run_for_goal(second.id).id == second_run.id
+        assert reopened.task_get(rev1, "T001").status == "running"
+        attempt = reopened.attempt_get(host.id)
+        assert attempt.run_id == second_run.id and attempt.nonce is not None
+        usage = reopened.usage_rows()
+        assert len(usage) == 1 and usage[0]["input_tokens"] == 100
+        # the widened CHECK admits the new status; nothing was backfilled
+        reopened.goal_set_status(second.id, GoalStatus.PAUSED)
+        assert reopened.goal_get(second.id).status == "paused"
+        assert reopened.goal_active() is None
+        assert reopened.goal_unfinished().id == second.id
+    finally:
+        reopened.close()
+    assert not list(tmp_path.glob("v12.db.migrate-*")), "stale migration backups"
+
+
+def test_v13_migration_failure_preserves_original_database(tmp_path, monkeypatch):
+    """A failing v13 migration leaves the v12 file untouched and usable."""
+    db = tmp_path / "keep13.db"
+    store = Store.open(db)
+    goal, _run = store.goal_create("do not lose", ["a"], [], "")
+    _narrow_goals_check_v12(store.conn)
+    store.conn.execute("UPDATE meta SET value = '12' WHERE key = 'schema_version'")
+    store.close()
+
+    def boom(_conn):
+        raise RuntimeError("v13 failed")
+
+    monkeypatch.setitem(state_mod.MIGRATIONS, 13, boom)
+    with pytest.raises(RuntimeError, match="v13 failed"):
+        Store.open(db)
+
+    conn = sqlite3.connect(db)
+    try:
+        version = conn.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        assert version == "12"
+        assert conn.execute(
+            "SELECT objective FROM goals WHERE id = ?", (goal.id,)
+        ).fetchone()[0] == "do not lose"
+    finally:
+        conn.close()
+    assert not list(tmp_path.glob("keep13.db.migrate-*"))
+
+
+def test_v12_backup_copy_of_database_still_migrates_to_v13(tmp_path):
+    """A copy of a v12 file opens on its own, migrates to v13, and keeps
+    every row — the original file is not modified by reading the copy."""
+    import shutil
+    db = tmp_path / "state.db"
+    store = Store.open(db)
+    goal, run = store.goal_create("copy me", ["a"], [], "")
+    _narrow_goals_check_v12(store.conn)
+    store.conn.execute("UPDATE meta SET value = '12' WHERE key = 'schema_version'")
+    store.close()
+
+    backup = tmp_path / "backup-copy.db"
+    shutil.copy2(db, backup)
+    opened = Store.open(backup)
+    try:
+        assert opened.schema_version() == 13
+        assert opened.goal_get(goal.id).status == "active"
+    finally:
+        opened.close()
+    # the original v12 file is still a v12 file and still migrates itself
+    original = Store.open(db)
+    try:
+        assert original.schema_version() == 13
     finally:
         original.close()

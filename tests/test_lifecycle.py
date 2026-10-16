@@ -131,7 +131,7 @@ def test_restart_recovery_mid_run(project, goal, tmp_path):
     reopened = dispatch.open_project()
     try:
         assert {t["id"]: t["status"] for t in dispatch.task_list(reopened)} == before
-        assert reopened.store.schema_version() == 12
+        assert reopened.store.schema_version() == 13
         result = dispatch.task_complete(reopened, "T001", str(write_evidence(tmp_path)))
         assert result["status"] == "passed"
         dispatch.run_slice(reopened)
@@ -968,3 +968,475 @@ def test_heartbeat_never_touches_session_identity_or_usage(project, goal, monkey
     assert store.conn.execute(
         "SELECT COUNT(*) AS c FROM usage_observations").fetchone()["c"] == 0
 
+
+
+# -- Goal pause / resume: startup gate, ownership, races (G010 T002) ----------
+
+
+def test_pause_gates_every_dispatch_entry_point_and_running_facts_still_land(
+        project, goal, tmp_path):
+    """The unified startup gate: planner/replan routing, plan activation,
+    worker dispatch, parked-assignment claim, verifier dispatch, and the
+    downgrade fallback all refuse while paused — while an already-running
+    executor keeps its attempt identity untouched and its fact submissions
+    (heartbeat, completion, verdict) still land."""
+    from orx.records import GoalPausedError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+    ]))
+    dispatch.run_slice(project)  # parks T001 and T002
+
+    paused = dispatch.goal_pause(project)
+    assert paused["status"] == "paused" and paused["changed"] is True
+
+    # -- the gate matrix (nothing running yet: the replan guards pass, so
+    #    the pause gate is what answers) ------------------------------------
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.plan_route(project)                       # planner / replan
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.submit_plan(project, ir_for(goal, [       # plan activation
+            task_spec("T001", acceptance=goal.acceptance)]))
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.run_slice(project)                        # worker dispatch
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.task_claim(project, "T002")               # parked claim
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.verify_dispatch(project)                  # verifier dispatch
+
+    # -- nothing moved while gated ------------------------------------------
+    revision = project.store.revision_active("R001")
+    assert project.store.task_get(revision.id, "T002").status == "waiting_host"
+    assert not [
+        e for e in project.store.task_events(revision.id, "T002")
+        if e.event == "claim"
+    ]
+
+    # -- an already-running executor keeps its identity through the pause --
+    dispatch.goal_resume(project)
+    dispatch.task_claim(project, "T001", session="sess-worker-1")
+    running_attempt = project.store.attempt_latest_for_task(revision.id, "T001")
+    dispatch.goal_pause(project)
+
+    # -- the pause did not preempt, kill, or rebind the running executor ----
+    after_pause = project.store.attempt_get(running_attempt.id)
+    assert after_pause.id == running_attempt.id
+    assert after_pause.session_ref == "sess-worker-1"
+    assert after_pause.nonce == running_attempt.nonce
+    assert after_pause.ended_at is None and after_pause.result is None
+
+    # -- fact submissions from the running executor still land --------------
+    beat = dispatch.task_heartbeat(project, "T001", running_attempt.id, "checking")
+    assert beat["sequence"] == 1
+    (project.root / "t1.marker").write_text("done")
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert result["status"] == "passed"
+    assert result["attempt"] == running_attempt.id
+
+    # T002's agent verdict rides a verifier dispatched BEFORE the pause:
+    # claim T002 before pausing was impossible here (parked), so dispatch
+    # the verifier first by resuming, then pause again with it in flight.
+    resumed = dispatch.goal_resume(project)
+    assert resumed["changed"] is True
+    dispatch.task_claim(project, "T002")
+    dispatch.task_complete(project, "T002", str(write_evidence(tmp_path, "e2.json")))
+    dispatch.verify_dispatch(project)
+    verifier = project.store.attempt_open_verifier_for_entry(
+        revision.id, "T002", "agent: honest work")
+    assert verifier is not None
+
+    dispatch.goal_pause(project)
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch.verify_dispatch(project)  # no SECOND verifier dispatch
+    verdict = dispatch.verify_submit(project, "T002", "pass", None, None)
+    assert verdict["status"] == "passed"
+    # the verdict closed exactly the dispatched attempt — not a rebind
+    assert project.store.attempt_get(verifier.id).ended_at is not None
+
+    data = dispatch.status_data(project)
+    assert data["goal"]["status"] == "paused"
+    assert {t["id"]: t["status"] for t in data["tasks"]} == {
+        "T001": "passed", "T002": "passed",
+    }
+
+
+def test_parked_work_survives_pause_and_resume_reuses_the_same_attempt(
+        project, goal, tmp_path):
+    """A park that landed before the pause stays parked and unclaimable;
+    resume claims through the SAME attempt (no second executor) with the
+    same nonce."""
+    from orx.records import GoalPausedError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+    parked_attempt = project.store.attempt_latest_for_task(revision.id, "T001")
+
+    dispatch.goal_pause(project)
+    with pytest.raises(GoalPausedError):
+        dispatch.task_claim(project, "T001")
+    assert project.store.task_get(revision.id, "T001").status == "waiting_host"
+    assert project.store.attempt_get(parked_attempt.id).ended_at is None
+
+    dispatch.goal_resume(project)
+    claim = dispatch.task_claim(project, "T001")
+    assert claim["attempt"] == parked_attempt.id  # no second executor
+    assert project.store.attempt_get(parked_attempt.id).nonce == parked_attempt.nonce
+    assert len(project.store.attempts_for_task(revision.id, "T001")) == 1
+
+    (project.root / "t1.marker").write_text("done")
+    assert dispatch.task_complete(
+        project, "T001", str(write_evidence(tmp_path)))["status"] == "passed"
+
+
+def test_all_tasks_completing_during_pause_converge_at_resume(
+        project, goal, tmp_path):
+    """Pause is not lifted by the completion refresh; the running executor's
+    late completion still records, and resume converges run and goal to done
+    through the existing invariant."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    dispatch.goal_pause(project)
+
+    (project.root / "t1.marker").write_text("done")
+    result = dispatch.task_complete(project, "T001", str(write_evidence(tmp_path)))
+    assert result["status"] == "passed"
+
+    # paused held through the completion's refresh
+    assert project.store.goal_get(goal.id).status == "paused"
+    assert project.store.run_get("R001").status == "done"
+
+    resumed = dispatch.goal_resume(project)
+    assert resumed["status"] == "done"  # converged, not just active
+    assert project.store.goal_get(goal.id).status == "done"
+    assert resumed["run"]["status"] == "done"
+    # done is terminal: a further resume is a domain error, never a loop
+    with pytest.raises(Exception, match="cannot resume from done"):
+        dispatch.goal_resume(project)
+
+
+def test_new_process_resume_preserves_all_identity_without_restarting(
+        project, goal, tmp_path):
+    """A brand-new process resumes: run, revision, planning assignment,
+    attempt, and nonce are exactly what they were; the running worker and
+    the dispatched verifier come back as ownership plus recovery guidance,
+    never as a restart."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+        task_spec("T002", acceptance=goal.acceptance,
+                  verification=["agent: honest work"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001", session="sess-running")
+    revision = project.store.revision_active("R001")
+    running = project.store.attempt_latest_for_task(revision.id, "T001")
+
+    # verifying task with a dispatched verifier, then pause with both live
+    dispatch.task_claim(project, "T002")
+    dispatch.task_complete(project, "T002", str(write_evidence(tmp_path, "e2.json")))
+    dispatch.verify_dispatch(project)
+    verifier = project.store.attempt_open_verifier_for_entry(
+        revision.id, "T002", "agent: honest work")
+
+    paused = dispatch.goal_pause(project)
+    attempts_before = sorted(a.id for a in project.store.attempts_all())
+    project.close()  # the "crash": everything below is a new process
+
+    reopened = dispatch.open_project()
+    try:
+        assert reopened.store.goal_get(goal.id).status == "paused"  # persisted
+        resumed = dispatch.goal_resume(reopened)
+        assert resumed["changed"] is True
+        assert resumed["run"]["id"] == "R001"
+        assert resumed["plan"] == {"revision": 1, "status": "active"}
+
+        # identity preserved exactly; nothing restarted
+        assert sorted(a.id for a in reopened.store.attempts_all()) == attempts_before
+        running_entry = resumed["in_flight"]["running"][0]
+        assert running_entry["task"] == "T001"
+        assert running_entry["attempt"] == running.id
+        assert running_entry["nonce"] == running.nonce
+        assert running_entry["session_ref"] == "sess-running"
+        assert "no second writer" in running_entry["contract"]
+        assert f"orx task complete T001 --attempt {running.id}" in running_entry["contract"]
+
+        verifying = resumed["in_flight"]["verifying"][0]
+        assert verifying["task"] == "T002"
+        assert verifying["verifiers"][0]["attempt"] == verifier.id
+        assert verifying["verifiers"][0]["nonce"] == verifier.nonce
+
+        # the guidance is real: the late facts close the original owners
+        (reopened.root / "t1.marker").write_text("done")
+        late = dispatch.task_complete(
+            reopened, "T001", str(write_evidence(tmp_path)),
+            attempt_id=running.id)
+        assert late["attempt"] == running.id
+        verdict = dispatch.verify_submit(reopened, "T002", "pass", None, None)
+        assert verdict["status"] == "passed"
+        assert reopened.store.attempt_get(verifier.id).ended_at is not None
+        assert reopened.store.goal_get(goal.id).status == "done"
+    finally:
+        reopened.close()
+
+
+def test_pause_and_resume_visible_across_real_subprocesses(
+        project, goal, tmp_path):
+    """Cross-process discipline with deterministic synchronization: the
+    subprocess's exit IS the barrier (nothing waits on a lock across the
+    process boundary). Pause in a subprocess -> gated in this process ->
+    resume in a subprocess -> dispatch works again here."""
+    from orx.records import GoalPausedError
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+
+    env = os.environ.copy()
+    env["ORX_PROJECT"] = str(project.root)
+    env["ORX_QUOTA_PREFLIGHT"] = "0"
+    # keep the subprocess away from this test run's isolated user layer
+    env["ORX_CONFIG_DIR"] = os.environ["ORX_CONFIG_DIR"]
+    env["ORX_DATA_DIR"] = os.environ["ORX_DATA_DIR"]
+
+    def run_orx(*args):
+        proc = subprocess.run(
+            [sys.executable, "-m", "orx", *args],
+            capture_output=True, text=True, cwd=str(project.root), env=env,
+        )
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+        return json.loads(proc.stdout)
+
+    out = run_orx("goal", "pause", "--json")
+    assert out["ok"] is True and out["changed"] is True and out["status"] == "paused"
+    with pytest.raises(GoalPausedError):
+        dispatch.run_slice(project)  # this process sees the subprocess pause
+    repeat = run_orx("goal", "pause", "--json")
+    assert repeat["changed"] is False  # idempotent across processes
+
+    out = run_orx("goal", "resume", "--json")
+    assert out["ok"] is True and out["changed"] is True
+    claim = dispatch.task_claim(project, "T001")  # dispatch works again here
+    assert claim["status"] == "running"
+
+
+def test_pause_racing_a_park_is_race_safe(project, goal):
+    """Independent connections and a deterministic barrier: the park thread
+    stops BEFORE opening its transaction (mint_nonce runs pre-transaction),
+    a second connection pauses, and the park's in-transaction gate then
+    refuses — no attempt row, no waiting_host, no prompt file. The pause
+    never waits on the park: no write transaction is held across the
+    barrier. (sqlite3 connections are thread-bound, so each thread opens
+    its own; the write transactions themselves never span the barrier.)"""
+    import threading
+
+    from orx.records import GoalPausedError
+    from orx.state import Store
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+
+    park_at_barrier = threading.Event()
+    pause_committed = threading.Event()
+    original_mint = dispatch.mint_nonce
+
+    def mint_at_barrier():
+        # Runs inside _park_task BEFORE `with store.tx():` — the park holds
+        # no write lock while it waits here.
+        park_at_barrier.set()
+        assert pause_committed.wait(timeout=10), "pauser never ran"
+        return original_mint()
+
+    outcome: dict = {}
+
+    def park_thread():
+        thread_project = dispatch.open_project()  # this thread's connection
+        try:
+            dispatch.run_slice(thread_project)
+            outcome["result"] = "parked"
+        except GoalPausedError as exc:
+            outcome["result"] = f"gated: {exc}"
+        finally:
+            thread_project.close()
+
+    dispatch.mint_nonce = mint_at_barrier
+    try:
+        thread = threading.Thread(target=park_thread)
+        thread.start()
+        assert park_at_barrier.wait(timeout=10), "park never reached the barrier"
+        # The pause commits on an independent connection while the park is
+        # parked BEFORE its transaction — it cannot block on the park.
+        store_b = Store.open(project.db_path)
+        try:
+            from orx import machine
+            assert machine.goal_pause(store_b, goal.id)["changed"] is True
+        finally:
+            store_b.close()
+        pause_committed.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    finally:
+        dispatch.mint_nonce = original_mint
+
+    assert outcome["result"].startswith("gated:")
+    revision = project.store.revision_active("R001")
+    assert project.store.task_get(revision.id, "T001").status == "runnable"
+    assert project.store.attempts_all() == []  # no startup placeholder at all
+    assert not (project.root / ".orx" / "runs" / "R001" / "assignments" / "T001.md").exists()
+    assert project.store.goal_get(goal.id).status == "paused"
+
+
+def test_park_lands_before_pause_and_stays_owned(project, goal):
+    """The other deterministic ordering: the park fully commits first, then
+    the pause records over a complete placeholder — which stays waiting_host,
+    keeps its attempt and nonce, and is claimable again after resume."""
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+    attempt = project.store.attempt_latest_for_task(revision.id, "T001")
+
+    dispatch.goal_pause(project)
+    assert project.store.task_get(revision.id, "T001").status == "waiting_host"
+    assert project.store.attempt_get(attempt.id).nonce == attempt.nonce
+    assert (project.root / ".orx" / "runs" / "R001" / "assignments" / "T001.md").exists()
+
+    dispatch.goal_resume(project)
+    assert dispatch.task_claim(project, "T001")["attempt"] == attempt.id
+
+
+def test_concurrent_claims_single_winner_and_concurrent_resumes_flip_once(
+        project, goal):
+    """Two independent connections released by one barrier: exactly one
+    waiting_host -> running claim wins (the loser gets a ConflictError, not
+    a double claim), and two simultaneous resumes flip paused -> active
+    exactly once (the second is the explicit idempotent no-op)."""
+    import threading
+
+    from orx import machine
+    from orx.records import ConflictError
+    from orx.state import Store
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    revision = project.store.revision_active("R001")
+
+    claims: dict[str, str] = {}
+    claim_barrier = threading.Barrier(2, timeout=10)
+
+    def claimer(key):
+        store = Store.open(project.db_path)  # this thread's own connection
+        try:
+            claim_barrier.wait()
+            machine.claim(store, revision.id, "T001")
+            claims[key] = "won"
+        except ConflictError:
+            claims[key] = "conflict"
+        finally:
+            store.close()
+
+    t1 = threading.Thread(target=claimer, args=("a",))
+    t2 = threading.Thread(target=claimer, args=("b",))
+    t1.start(); t2.start(); t1.join(timeout=10); t2.join(timeout=10)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert sorted(claims.values()) == ["conflict", "won"]
+    assert project.store.task_get(revision.id, "T001").status == "running"
+    claim_events = [
+        e for e in project.store.task_events(revision.id, "T001")
+        if e.event == "claim"
+    ]
+    assert len(claim_events) == 1
+
+    # pause, then two simultaneous resumes
+    machine.goal_pause(project.store, goal.id)
+    resumes: dict[str, dict] = {}
+    resume_barrier = threading.Barrier(2, timeout=10)
+
+    def resumer(key):
+        store = Store.open(project.db_path)  # this thread's own connection
+        try:
+            resume_barrier.wait()
+            resumes[key] = machine.goal_resume(store, goal.id)
+        finally:
+            store.close()
+
+    t1 = threading.Thread(target=resumer, args=("a",))
+    t2 = threading.Thread(target=resumer, args=("b",))
+    t1.start(); t2.start(); t1.join(timeout=10); t2.join(timeout=10)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert all(r["status"] == "active" for r in resumes.values())
+    assert sorted(r["changed"] for r in resumes.values()) == [False, True]
+    assert project.store.goal_get(goal.id).status == "active"
+
+
+def test_downgrade_fallback_startup_is_gated_while_paused(project, goal):
+    """The resource-failure reroute (the downgrade startup) refuses to start
+    its next rung while paused: the failed task is left runnable with its
+    recorded history intact, and the next dispatch happens after resume."""
+    from orx.records import GoalPausedError, ResourceStatus
+
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance,
+                  verification=["test -f t1.marker"]),
+    ]))
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    dispatch.task_fail(project, "T001", "quota_exhausted on the first rung")
+    revision = project.store.revision_active("R001")
+    run = project.store.run_get("R001")
+
+    # the failed rung is non-routable, exactly as health learning would
+    # have marked it — so the reroute's fresh route lands the next rung
+    project.store.resource_set(
+        "host-worker", ResourceStatus.EXHAUSTED, "test quota exhaustion")
+
+    dispatch.goal_pause(project)
+    with pytest.raises(GoalPausedError, match="paused"):
+        dispatch._reroute_resource_failure(
+            project, goal, run, revision, "T001",
+            caps=(), failed={"profile": "host-worker",
+                             "error_kind": "quota_exhausted"},
+        )
+    # the task was moved back to runnable by the reroute's own transition,
+    # but no new executor exists and none will start until resume
+    assert project.store.task_get(revision.id, "T001").status == "runnable"
+    workers = [
+        a for a in project.store.attempts_all() if a.role == "worker"
+        and a.ended_at is None
+    ]
+    assert workers == []
+
+    # after resume the same downgrade path parks the next rung normally
+    # (the first call consumed the failed state; re-fail to rerun the hop)
+    dispatch.goal_resume(project)
+    from orx.records import TaskStatus as _TaskStatus
+    project.store.task_update_status(revision.id, "T001", _TaskStatus.FAILED)
+    rerouted = dispatch._reroute_resource_failure(
+        project, goal, run, revision, "T001",
+        caps=(), failed={"profile": "host-worker",
+                         "error_kind": "quota_exhausted"},
+    )
+    assert rerouted is not None
+    bucket, entry = rerouted
+    assert bucket == "waiting_external"  # host-worker stays non-routable
+    assert entry["task"] == "T001"
+    assert entry["attempt"]
