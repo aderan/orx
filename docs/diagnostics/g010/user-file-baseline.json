@@ -1,0 +1,32 @@
+{
+  "recorded_at": "2026-10-16",
+  "task": "T001",
+  "goal": "G010",
+  "protected_user_file": {
+    "path": "docs/m1.2-report.md",
+    "tracked": true,
+    "sha256_worktree": "e112520155df815d9f210ed350834b59b022cfa73400b0dd26e75ba57ecdf5fd",
+    "staged": false,
+    "worktree_diff_numstat": {
+      "added_lines": 268,
+      "deleted_lines": 205
+    },
+    "commit_attribution": "user; T001 must not stage, commit, or revert this file"
+  },
+  "baseline_head": "c96ed8b9bf9388ccfc1071732befc27c6998d2cd",
+  "notes": "Recorded before any T001 work as the protection baseline. Acceptance requires this file's content, staging state, and commit attribution to remain unchanged through the task.",
+  "postscript": {
+    "recorded_at": "2026-10-16 (after the mid-task full-suite verification run)",
+    "incident": "The one full-suite verification run (.venv/bin/python -m pytest -q, 1061 passed) executed tests/test_m12_acceptance.py, which regenerates docs/m1.2-report.md from the live .orx/state.db (documented repository behavior: docs/recovery-hardening-report.md T011/T012 call it '被测试重写的纯生成差异'). The worktree bytes changed.",
+    "sha256_worktree_after_regeneration": "5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5",
+    "numstat_after_regeneration": {"added_lines": 363, "deleted_lines": 206},
+    "what_was_tried_for_byte_exact_restoration": [
+      "git fsck --lost-found: the drifted content was never staged, so no dangling blob holds it (all dangling-tree/commit m1.2-report blobs hash differently)",
+      "APFS local snapshots: none present for the volume",
+      "zcode session parts: every recorded Read of the file predates the baseline generation or is partial (oldest full-ish reads are from 2026-10-09/12; none matches sha256 e1125201...)",
+      ".orx/runs/R010 planner logs quote other documents, not this file's bytes",
+      "regeneration cannot rewind: the report embeds live state-db readings that now include this task's own rows"
+    ],
+    "disposition": "The regenerated content is left in place, unstaged and uncommitted, attributed to the user's pre-existing uncommitted change of the same generated kind. T001 stages, commits, and reverts nothing on this file, and does not run the full suite again (the prescribed check set runs only tests/test_session_identity.py, test_usage_autobill.py, test_subagent_contract.py, test_state.py, which exclude the m12 regeneration test). The staging state (unstaged) and commit attribution (no T001 commit contains it) are unchanged from baseline; the content is a newer generation of the same machine output, disclosed here rather than papered over."
+  }
+}

@@ -959,3 +959,62 @@ agent 审查与 Goal 验收以 ORX verification 记录为准，此处不预支�
   归档（五阶段 Done、临时状态图例行清理、其余 Goal 历史保留）；
   不含版本发布（版本号/tag/发布材料零改动）。证据见
   `.orx/runs/R008/check/T005/`。
+
+# G010：Goal 生命周期管理 —— T001 真实执行身份与用量关联（2026-10-16 起）
+
+主功能为 Goal 暂停与继续、取消与安全收尾；本任务是配套第一项：补齐真实执行
+身份与用量关联（诊断 Analytics G002/R002 断点并修复）。诊断全文见
+docs/diagnostics/g010/diagnosis.md；保护基线见
+docs/diagnostics/g010/user-file-baseline.json。
+
+## 五阶段实施计划（T001）
+
+### Stage 1：只读取证与保护基线 — Done
+
+项目索引只读定位 orx-analytics（R002）；逐段建立证据链（归档 assignment →
+nonce 转交 → 会话结构 → 目录 → 发现时机 → 子树读取 → ORX 侧结果）；
+记录 docs/m1.2-report.md 初始 sha256/暂存态/归属与起始 HEAD。产出：
+user-file-baseline.json、provenance 数据（诊断报告表）。
+
+### Stage 2：脱敏真实结构复现（红） — Done
+
+fixture：tests/fixtures/g010/（两份归档原始提示词逐字节副本 + provenance.json
+真实数值/来源/合成映射）。新增 7 例回归先红：跨目录 nonce 精确命中被目录
+谓词滤空（'none'≠'unique'）、跨目录双命中旧逻辑误判 'unique'、
+directory_filter 键缺失、worker/verifier 准真实闭环绑定 None、unsettled 被入账
+（'recorded'≠'missing'）、重复补录误标子树冲突。证据：
+docs/diagnostics/g010/red-green/01-red-run.txt（7 failed, 43 passed）。
+
+### Stage 3：修复实际断点（绿） — Done
+
+src/orx/zcode_sessions.py：nonce 权威发现（首 part nonce 命中即绑定，目录事实
+记入候选 directory_matched 而非过滤；根会话 parent NULL 结构性排除；双命中仍
+ambiguous；legacy marker 目录谓词保持必需；结果携带 directory_filter）；
+model_usage_aggregate 新增 settling_request_rows（终态词表
+completed/error/cancelled，真库全量观测）。src/orx/adapters/base.py：MISS 词表
+新增 zcode_usage_unsettled、zcode_duplicate_backfill。src/orx/dispatch.py：
+usage_zcode_record unsettled 分支（不写库）；_usage_autobill 区分重复补录
+（already_recorded，不标缺失、不覆盖存量行）与子树冲突；五个闭合点结果携带
+usage_backfill。绿证据：red-green/02-green-run.txt（门禁 4 文件 88 passed，含 CLI
+unsettled 陈述域错误一例）；全量 1061 passed（含一次 m12 再生的工作区影响，
+见基线 postscript）。
+
+### Stage 4：零付费准真实闭环（worker + verifier） — Done
+
+worker：park（归档 nonce 经 mint 替身注入）→ task claim --discover-session
+（实际发现函数 × 归档原始提示词首 part 的伪库会话）→ task_complete（实际
+闭合入口，delivery gate true）→ autobill 唯一 zcode_db 观测 = 真实数值 →
+任务 passed；链 run/revision/task/attempt/nonce/session/usage 全串
+（tests/test_session_identity.py）。verifier：verify_dispatch（归档 verifier
+nonce）→ verify_submit --discover-session 绑定并闭合 pass、autobill 入账
+真实数值（tests/test_subagent_contract.py）。覆盖矩阵：无匹配/歧义/库不可读
+或不存在/未稳定/子树冲突/重复补录（新增 2 + 既有用例族）；缺失有原因、未知
+不补零、controller 根会话拒绑有回归钉住。
+
+### Stage 5：契约文档与轮次收口 — Done
+
+docs/observability-contract.md 第七修正案（nonce 权威目录语义、
+settling_request_rows、zcode_usage_unsettled、zcode_duplicate_backfill 非缺失
+类、闭合结果携带 usage_backfill）+ 缺失原因表扩充。诊断报告（已证实根因/
+排除项/未知项/R002 样本 vs 规划背景 16+1→18 差异算术/外部零写入声明）。
+本文件 G010/T001 轮次记录。技能与 agent 定义未改动（身份锚点转交协议原样）。

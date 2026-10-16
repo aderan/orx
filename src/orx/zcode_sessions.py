@@ -59,6 +59,7 @@ class Candidate:
     created_ms: int
     matched_text: str | None = None
     first_part_preview: str = field(default="", repr=False)
+    directory_matched: bool = True
 
     def payload(self) -> dict:
         return {
@@ -68,6 +69,7 @@ class Candidate:
             "created_ms": self.created_ms,
             "matched_text": self.matched_text,
             "first_part_preview": self.first_part_preview[:160],
+            "directory_matched": self.directory_matched,
         }
 
 
@@ -101,6 +103,24 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
     dispatch prompt. Without one (legacy attempts), the marker fallback
     matches a first part naming "attempt <id>".
 
+    Directory semantics differ by anchor strength (G010, from the
+    orx-analytics G002/R002 evidence): a real subagent INHERITS the
+    controller window's ``session.directory`` — controlling project B from a
+    session rooted in project A left all 18 of that run's nonce-exact
+    sessions recorded under A's directory, and the old required-directory
+    predicate disqualified every one of them (session_ref NULL,
+    host_session_unbound, 1,222 unrecorded requests). So:
+
+    - **nonce**: the one-time token is the authority. A first-part nonce hit
+      binds wherever the session's directory points; the directory fact is
+      RECORDED per candidate (``directory_matched``) instead of filtered on.
+      The structural guards stay: a parent-less ROOT session is never a
+      candidate (the controller's own session, even if its first part
+      quotes the nonce, is not the executor), and two nonce-carrying
+      sessions are still ``ambiguous`` — no binding, no guess by proximity.
+    - **marker (legacy)**: a human-readable "attempt N" is weak evidence and
+      the directory stays REQUIRED, exactly as before.
+
     Directory matching resolves symlinks on both sides (G009 T009/T010):
     the project root arrives resolved (``/private/tmp/...`` on macOS) while
     the session records the spelling it was spawned with (``/tmp/...``).
@@ -108,8 +128,9 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
     never do.
 
     Returns {"candidates": [...], "decision": "unique"|"none"|"ambiguous",
-             "basis": str} — the caller decides what to store; this
-    function never writes anything anywhere.
+             "basis": str, "directory_filter": "not_required"|"required"} —
+    the caller decides what to store; this function never writes anything
+    anywhere.
     """
     path = zcode_db_path(db)
     root = str(project_root.resolve())
@@ -132,7 +153,6 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
                 return True
             return os.path.realpath(directory) == root_real
 
-        rows = [r for r in rows if directory_matches(r["directory"])]
         cands: list[Candidate] = []
         for r in rows:
             part = conn.execute(
@@ -146,32 +166,44 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
             except (json.JSONDecodeError, AttributeError):
                 continue
             if nonce is not None:
+                # Nonce authority (G010): match first, ask the directory
+                # afterward — the hit is recorded with its directory fact,
+                # never filtered on it.
                 hit = _NONCE.search(text)
                 if hit and hit.group(1) == nonce:
                     cands.append(Candidate(
                         session_id=r["id"], parent_id=r["parent_id"],
                         title=r["title"], created_ms=r["time_created"],
                         matched_text=hit.group(0),
-                        first_part_preview=text))
+                        first_part_preview=text,
+                        directory_matched=directory_matches(r["directory"])))
             else:
+                # Legacy marker: the directory stays a required predicate.
+                if not directory_matches(r["directory"]):
+                    continue
                 hit = _MARKER.search(text)
                 if hit and int(hit.group(1)) == attempt_id:
                     cands.append(Candidate(
                         session_id=r["id"], parent_id=r["parent_id"],
                         title=r["title"], created_ms=r["time_created"],
                         matched_text=hit.group(0),
-                        first_part_preview=text))
+                        first_part_preview=text,
+                        directory_matched=True))
         n = len(cands)
         decision = "unique" if n == 1 else ("none" if n == 0 else "ambiguous")
         if nonce is not None:
             basis = (
                 "zcode subagent session whose first text part carries the "
                 "attempt's one-time identity token "
-                f"ORX_ASSIGNMENT={nonce} with session.directory resolving to "
-                "the same directory as the project root (symlink spellings "
-                "match) and a non-null parent (subagent "
-                "structure); read-only lookup, no writes"
+                f"ORX_ASSIGNMENT={nonce} and a non-null parent (subagent "
+                "structure); the nonce is the authority, so the session's "
+                "directory is recorded per candidate (directory_matched) "
+                "and not required — real subagents inherit the controller "
+                "window's directory, which need not be this project's root "
+                "(G010, orx-analytics G002/R002); a parent-less root "
+                "session is never a candidate; read-only lookup, no writes"
             )
+            directory_filter = "not_required"
         else:
             basis = (
                 "zcode subagent session whose first text part names "
@@ -180,6 +212,7 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
                 "match) and a non-null parent (subagent structure); "
                 "read-only lookup, no writes"
             )
+            directory_filter = "required"
         return {
             "attempt_id": attempt_id,
             "project_root": root,
@@ -187,6 +220,7 @@ def discover_attempt_session(attempt_id: int, project_root: Path,
             "decision": decision,
             "candidates": [c.payload() for c in cands],
             "basis": basis,
+            "directory_filter": directory_filter,
         }
     finally:
         conn.close()
@@ -372,8 +406,17 @@ def _zero_aggregate(session_ids) -> dict:
         "mean_request_input_tokens": None,
         "duplicate_request_rows_dropped": 0,
         "error_rows_zero_tokens": 0,
+        "settling_request_rows": 0,
         "unreadable": [],
     }
+
+
+# G010: which model_usage statuses carry FINAL numbers. Read from the real
+# database on 2026-10-16 (read-only): the whole table holds exactly
+# completed / error / cancelled. A row with any other status (a request
+# still streaming when the reader ran) makes every sum provisional — the
+# caller states it instead of recording a partial book.
+TERMINAL_USAGE_STATUSES = frozenset({"completed", "error", "cancelled"})
 
 
 def model_usage_aggregate(session_ids, db: str | None = None) -> dict:
@@ -381,11 +424,13 @@ def model_usage_aggregate(session_ids, db: str | None = None) -> dict:
 
     Dedup: (session_id, logical_request_id, attempt_index) identifies one
     request; a repeated triple is dropped and counted in
-    ``duplicate_request_rows_dropped``. Token sums never add cache on top
-    of input (ZCode subset semantics): ``computed_total_tokens`` sums the
+    ``duplicate_request_rows_dropped``. Token sums never add cache on top of
+    input (ZCode subset semantics): ``computed_total_tokens`` sums the
     provider's own column and ``uncached_input_tokens`` is input minus
     cache read. Missing columns/tables land in ``unreadable`` and their
-    sums stay None — never zero.
+    sums stay None — never zero. Rows whose status is outside the terminal
+    vocabulary are counted in ``settling_request_rows``: their sums are
+    provisional, and honest callers refuse to record them (G010).
     """
     ids = list(dict.fromkeys(session_ids))
     if not ids:
@@ -428,6 +473,10 @@ def model_usage_aggregate(session_ids, db: str | None = None) -> dict:
         for row in counted:
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
         result["status_counts"] = status_counts
+        result["settling_request_rows"] = sum(
+            1 for row in counted
+            if row["status"] not in TERMINAL_USAGE_STATUSES
+        )
 
         def column_sum(name: str, alias: str) -> None:
             if name in columns:

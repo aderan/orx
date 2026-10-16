@@ -123,6 +123,19 @@ attribution), adds **v12**. v12 is additive and changes no column: the
 | `usage_missing_reason = 'host_session_unbound'` (new reason) | A host zcode attempt ended with no observation because no harness session is bound to it and nonce discovery found none. Missing is stated, never zero-filled. |
 | session discovery directory matching | The lookup now resolves symlinks on both sides: the project root arrives resolved (`/private/tmp/...` on macOS) while the session records the spelling it was spawned with (`/tmp/...`). Both spellings of one directory match; different directories never do. |
 
+The seventh amendment, dated 2026-10-16 (G010 T001, from the orx-analytics
+G002/R002 evidence), is additive in schema (no schema change) and closes the
+identity/usage association breakpoint that left all 18 attempts of that run
+unbound:
+
+| Change | Meaning |
+|---|---|
+| nonce-authority session discovery | For an attempt with a nonce, a first-text-part `ORX_ASSIGNMENT=<nonce>` hit binds wherever the session's `directory` points; the directory fact is recorded per candidate (`directory_matched`) instead of filtering on it. Real subagents inherit the CONTROLLER window's directory — controlling project B from a session rooted in project A recorded every nonce-exact session under A's directory and the old required-directory predicate disqualified all of them. The structural guards stay: a parent-less ROOT session is never a candidate (the controller's own session is not the executor), and two nonce-carrying sessions are `ambiguous` — no binding, no guess by time proximity. Legacy marker discovery keeps the REQUIRED directory predicate; the result carries `directory_filter: not_required|required` so a reader knows which rule ran. |
+| `settling_request_rows` (aggregate field) | `model_usage` rows whose status is outside the terminal vocabulary (`completed`/`error`/`cancelled`, read from the real database) are still mid-flight; every sum over them is provisional. The aggregate counts them instead of hiding them. |
+| `usage_missing_reason = 'zcode_usage_unsettled'` (new reason) | The closure-time auto-backfill found settling rows, so it recorded nothing — provisional sums must not occupy the per-attempt `(attempt, zcode_db)` singleton slot. A later re-run with every row terminal records the settled numbers and clears the reason. |
+| `zcode_duplicate_backfill` (stated conflict, NOT a missing reason) | The attempt already carries a `zcode_db` observation and a fresh read returned different numbers. The stored row stays authoritative, no second row is written, and the attempt is NOT marked missing (it is observed); the closure result states both numbers for a human to reconcile. |
+| closure results carry `usage_backfill` | `task complete`, `task fail`, `task recover`, and `verify submit` results now embed what the closure's auto-backfill did (`recorded`, or the stated reason it could not be), so the caller sees the book's state without a second query. |
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -755,6 +768,12 @@ reason of `harness_omitted`. Recorded reasons are only:
 | `host_session_unbound` | a host zcode attempt with no bound session and no discoverable one (G009 T010) |
 | `zcode_subtree_conflict` | the attempt's session subtree already belongs to another attempt's book at auto-backfill time — recording would double-count, so it is stated instead (G009 closeout) |
 | `zcode_unreadable` | the zcode-side aggregate could not be read back at auto-backfill time (G009 closeout) |
+| `zcode_usage_unsettled` | the closure-time auto-backfill found `model_usage` rows still mid-flight (status outside `completed`/`error`/`cancelled`); the sums are provisional, so nothing is recorded until a later read finds every row terminal (G010 T001) |
+
+`zcode_duplicate_backfill` (G010 T001) is deliberately NOT in this table: it
+is a stated conflict on an attempt that IS observed — the stored `zcode_db`
+row stays authoritative, no second row is written, and no missing reason may
+contradict an existing observation.
 
 A stored observation clears `usage_missing_reason`. Host attempts are
 not assessed by the CLI miss path unless something actually recorded a

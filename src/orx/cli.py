@@ -2491,6 +2491,16 @@ def usage_zcode(
             f" found none; usage_missing_reason={result['reason']}"
             " (nothing was recorded — missing is not zero)"
         )
+    if result["status"] == "unsettled":
+        # G010: provisional sums must not occupy the per-attempt singleton
+        # slot; state it and record nothing until every row is terminal.
+        raise ORXError(
+            f"zcode database still has {result['settling_request_rows']}"
+            f" mid-flight model_usage request row(s) for attempt {attempt}"
+            f" (session {result['session_ref']}); nothing was recorded —"
+            " re-run when every row has reached a terminal status"
+            " (completed/error/cancelled)"
+        )
     if result["status"] == "unreadable":
         raise ORXError(
             f"zcode database model_usage unreadable for attempt {attempt}"

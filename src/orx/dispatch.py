@@ -3838,6 +3838,10 @@ def task_complete(
         "verification": counts,
         "attempt": attempt.id,
         "delivery": {"status": "passed", "checks_run": gate["summary"]["total"]},
+        # What the closure's usage auto-backfill did (G010): recorded, or
+        # the stated reason it could not be — the caller sees the book's
+        # state without a second query.
+        "usage_backfill": usage_backfill,
     }
     if replan_delivery is not None:
         result["replan_delivery"] = replan_delivery
@@ -3880,6 +3884,7 @@ def _record_failed_delivery(project: Project, store: Store, goal: Goal, run: Run
         "delivery": {"status": status, "reason": reason},
         "attempt": attempt.id,
         "verification": _verification_counts(store, revision),
+        "usage_backfill": usage_backfill,
     }
     if mismatch is not None:
         result["model_mismatch"] = mismatch
@@ -3913,7 +3918,11 @@ def task_fail(project: Project, task_id: str, reason: str,
         failure_reason=reason,
     )
     refresh(store, goal, run)
-    return {"task": task.task_id, "status": "failed"}
+    out = {"task": task.task_id, "status": "failed"}
+    if attempt is not None:
+        out["attempt"] = attempt.id
+        out["usage_backfill"] = usage_backfill
+    return out
 
 
 def task_retry(project: Project, task_id: str) -> dict:
@@ -4668,6 +4677,7 @@ def task_recover(project: Project, task_id: str, termination_fact: str,
         "closed_attempt": attempt.id,
         "termination_fact": fact,
         "failure_reason": reason,
+        "usage_backfill": usage_backfill,
         "next": (
             "`orx run` routes a fresh attempt (new attempt id, new nonce);"
             " the recovered attempt's late deliveries and reports are"
@@ -5128,6 +5138,7 @@ def verify_submit(
         bound = None
 
     discovery: dict | None = None
+    usage_backfill: dict | None = None
     if bound is not None:
         if session_ref is not None:
             store.attempt_update(bound.id, session_ref=session_ref)
@@ -5232,6 +5243,7 @@ def verify_submit(
         "status": store.task_get(revision.id, task.task_id).status,
         "verdict": verdict,
         "attempt": bound.id,
+        "usage_backfill": usage_backfill,
     }
     if discovery is not None:
         result["session_discovery"] = discovery
@@ -6143,6 +6155,10 @@ def usage_zcode_record(project: Project, attempt_id: int,
       attempt is a conflict: the same tokens are never counted twice;
     - no session at all records ``host_session_unbound`` as the missing
       reason — missing is stated, never zero-filled;
+    - a request row still mid-flight (status outside the terminal
+      vocabulary completed/error/cancelled) returns ``unsettled`` and
+      writes nothing — provisional sums must not occupy the per-attempt
+      singleton slot (G010);
     - accuracy is ``estimated`` when the aggregate carries error rows
       whose zeros are placeholders or dropped duplicate rows, ``exact``
       otherwise;
@@ -6201,6 +6217,20 @@ def usage_zcode_record(project: Project, attempt_id: int,
                 f" (root {other.session_ref}); the same tokens would count twice"
             )
     aggregate = zcode_sessions.model_usage_aggregate(tree["sessions"])
+    if aggregate["settling_request_rows"]:
+        # 用量尚未稳定 (G010): a request row outside the terminal status
+        # vocabulary is still mid-flight; every sum is provisional and the
+        # per-attempt singleton would make the later true number
+        # unrecordable. State it, write nothing.
+        store.attempt_mark_usage_missing(
+            attempt.id, adapters.base.MISS_ZCODE_USAGE_UNSETTLED)
+        return {
+            "status": "unsettled",
+            "attempt": attempt.id,
+            "session_ref": session_ref,
+            "settling_request_rows": aggregate["settling_request_rows"],
+            "aggregate": aggregate,
+        }
     if aggregate["input_tokens"] is None or aggregate["output_tokens"] is None:
         return {
             "status": "unreadable",
@@ -6247,10 +6277,15 @@ def _usage_autobill(project: Project, attempt_id: int) -> dict:
 
     Never raises: a usage read must not fail the closure it follows.
     Non-recordable outcomes are STATED on the attempt as a missing
-    reason (subtree conflict / unreadable aggregate / unbound session) —
-    missing is stated, never zero — except an absent zcode database,
-    where ORX cannot know anything and the attempt stays unassessed for
-    the usage views to count honestly.
+    reason (subtree conflict / unreadable aggregate / unbound session /
+    usage not yet settled) — missing is stated, never zero — except:
+
+    - an absent zcode database, where ORX cannot know anything and the
+      attempt stays unassessed for the usage views to count honestly;
+    - a duplicate backfill (the attempt already carries a zcode_db
+      observation and the fresh read differs, G010): the stored row is
+      the book, so the attempt is NOT missing — the conflict is returned
+      with both numbers stated for a human to reconcile.
     """
     from . import zcode_sessions
 
@@ -6268,6 +6303,18 @@ def _usage_autobill(project: Project, attempt_id: int) -> dict:
     try:
         result = usage_zcode_record(project, attempt_id)
     except ConflictError as exc:
+        # WHICH conflict matters (G010): a fresh read that differs from an
+        # already-stored zcode_db observation is a duplicate backfill — the
+        # attempt is observed, the stored row stays authoritative, and no
+        # missing reason may contradict it. Only a subtree overlap is the
+        # double-count guard's own conflict.
+        existing = [row for row in store.usage_rows()
+                    if row["attempt_id"] == attempt_id
+                    and row["source"] == "zcode_db"]
+        if existing:
+            return {"status": "already_recorded", "attempt": attempt_id,
+                    "reason": adapters.base.MISS_ZCODE_DUPLICATE_BACKFILL,
+                    "detail": str(exc)}
         # The subtree already belongs to another attempt's book: recording
         # it here would count the same tokens twice. State it and stop.
         store.attempt_mark_usage_missing(
@@ -6281,6 +6328,12 @@ def _usage_autobill(project: Project, attempt_id: int) -> dict:
         return {"status": "missing", "attempt": attempt_id,
                 "reason": adapters.base.MISS_ZCODE_UNREADABLE,
                 "detail": str(exc)}
+    if result["status"] == "unsettled":
+        store.attempt_mark_usage_missing(
+            attempt_id, adapters.base.MISS_ZCODE_USAGE_UNSETTLED)
+        return {"status": "missing", "attempt": attempt_id,
+                "reason": adapters.base.MISS_ZCODE_USAGE_UNSETTLED,
+                "settling_request_rows": result["settling_request_rows"]}
     if result["status"] == "unreadable":
         store.attempt_mark_usage_missing(
             attempt_id, adapters.base.MISS_ZCODE_UNREADABLE)

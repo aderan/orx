@@ -240,3 +240,122 @@ def test_cli_complete_forwards_late_session_binding(tmp_path, monkeypatch):
     assert "session=session" in source, (
         "the CLI accepts --session but does not forward it to dispatch"
     )
+
+
+# ---------------------------------------------------------------------------
+# G010 T001: closure-time reads that must not write a wrong book.
+
+
+def _parked_host_attempt(project, goal):
+    revision = project.store.revision_active(
+        project.store.run_for_goal(goal.id).id)
+    return project.store.attempt_latest_for_task(revision.id, "T001")
+
+
+def test_unsettled_usage_states_missing_then_records_when_settled(
+        tmp_path, monkeypatch):
+    """用量尚未稳定: a closure-time read that catches a model_usage row still
+    mid-flight (status outside the terminal vocabulary) must NOT record its
+    provisional sums — the singleton guard would then make the later true
+    number unrecordable. It states zcode_usage_unsettled instead, and a later
+    re-run records the settled numbers and clears the reason."""
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None)],
+        usages=[("r1", "lr1", 0, "sess-worker", "streaming", 1000, 50, 980, 1050)],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        goal = _host_goal(project)
+        dispatch.run_slice(project)
+        attempt = _parked_host_attempt(project, goal)
+        project.store.attempt_update(attempt.id, session_ref="sess-worker")
+        result = dispatch._usage_autobill(project, attempt.id)
+        assert result["status"] == "missing"
+        assert result["reason"] == "zcode_usage_unsettled"
+        assert result["settling_request_rows"] == 1
+        assert _usage_rows(project, attempt.id) == []
+        assert project.store.attempt_get(attempt.id).usage_missing_reason == \
+            "zcode_usage_unsettled"
+        # the stream settles: the same rows now carry a terminal status
+        make_zcode_usage_db(
+            zdb, str(tmp_path),
+            sessions=[("sess-worker", None, None)],
+            usages=[("r1", "lr1", 0, "sess-worker", "completed", 1000, 50, 980, 1050)],
+        )
+        settled = dispatch._usage_autobill(project, attempt.id)
+        assert settled["status"] == "recorded"
+        rows = _usage_rows(project, attempt.id)
+        assert len(rows) == 1 and rows[0]["source"] == "zcode_db"
+        assert (rows[0]["input_tokens"], rows[0]["output_tokens"]) == (1000, 50)
+        assert project.store.attempt_get(attempt.id).usage_missing_reason is None
+    finally:
+        project.close()
+
+
+def test_duplicate_backfill_is_distinguished_from_subtree_conflict(
+        tmp_path, monkeypatch):
+    """重复补录: the attempt ALREADY has a zcode_db observation and a fresh
+    closure-time read returned different numbers. The stored row stays
+    authoritative (never overwritten, never inflated), no second row is
+    written, the attempt is NOT marked missing (it is observed), and the
+    stated reason names the duplicate backfill — not the subtree conflict
+    that the old undifferentiated ConflictError handler blamed."""
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None)],
+        usages=[("r1", "lr1", 0, "sess-worker", "completed", 150, 8, 140, 158)],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        goal = _host_goal(project)
+        dispatch.run_slice(project)
+        attempt = _parked_host_attempt(project, goal)
+        project.store.attempt_update(attempt.id, session_ref="sess-worker")
+        # an earlier closure recorded the then-current numbers
+        project.store.usage_record_zcode(attempt.id, 100, 5, 90, "exact")
+        result = dispatch._usage_autobill(project, attempt.id)
+        assert result["status"] == "already_recorded"
+        assert result["reason"] == "zcode_duplicate_backfill"
+        assert project.store.attempt_get(attempt.id).usage_missing_reason is None
+        rows = _usage_rows(project, attempt.id)
+        assert len(rows) == 1
+        assert (rows[0]["input_tokens"], rows[0]["output_tokens"]) == (100, 5)
+    finally:
+        project.close()
+
+
+def test_cli_usage_zcode_unsettled_is_a_stated_domain_error(tmp_path, monkeypatch):
+    """The manual re-sync path states unsettled the same way the auto-backfill
+    does: exit 1 with the mid-flight row count, nothing recorded, missing
+    reason stated on the attempt."""
+    from typer.testing import CliRunner
+    from orx.cli import app
+
+    runner = CliRunner()
+    zdb = tmp_path / "zcode.sqlite"
+    make_zcode_usage_db(
+        zdb, str(tmp_path),
+        sessions=[("sess-worker", None, None)],
+        usages=[("r1", "lr1", 0, "sess-worker", "pending", 1000, 50, 980, 1050)],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.chdir(tmp_path)
+    project = make_project(tmp_path)
+    try:
+        goal = _host_goal(project)
+        dispatch.run_slice(project)
+        attempt = _parked_host_attempt(project, goal)
+        project.store.attempt_update(attempt.id, session_ref="sess-worker")
+        project.close()
+        r = runner.invoke(app, ["usage", "zcode", "--attempt", str(attempt.id)])
+        assert r.exit_code == 1
+        assert "mid-flight model_usage request" in r.output
+    finally:
+        project.close()

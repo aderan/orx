@@ -1,0 +1,76 @@
+{
+  "recorded_at": "2026-10-16",
+  "task": "T001",
+  "goal": "G010",
+  "purpose": "Sanitized real-structure samples for the G010 identity/usage breakpoint tests. Every value below was read READ-ONLY (sqlite mode=ro, query_only) from the two external databases; nothing was written, migrated, or checkpointed there, and no row of either external database was modified by this task.",
+  "sources": {
+    "orx_project": {
+      "path": "/Users/flb/Sources/Tools/orx-analytics",
+      "located_via": "user-level project index ~/.local/share/orx/projects-index.json (orx-analytics, last_run_id R002)",
+      "state_db": ".orx/state.db (read-only)",
+      "archived_assignments": ".orx/runs/R002/assignments/"
+    },
+    "zcode_db": {
+      "path": "~/.zcode/cli/db/db.sqlite (read-only)",
+      "controller_root_session": "sess_97742628-0ce0-4c1c-b1f2-fe70a4ac53c5 (parent NULL, title 'ORX Analytics 菜单栏工具设计方案', directory /Users/flb/Sources/Products/ORX)"
+    }
+  },
+  "fixtures": {
+    "archived-worker-prompt.md": {
+      "copied_from": "/Users/flb/Sources/Tools/orx-analytics/.orx/runs/R002/assignments/T002.md (byte-identical copy)",
+      "sha256": "75c082166629a8fcc1b962d74880f7736acb41b6ca66bd3f62b3a4db23ea1461",
+      "bytes": 6292,
+      "attempt": "15 (role worker, task T002, profile zcode-worker, driver host, harness zcode)",
+      "nonce": "orx-assignment:520449c9-32b3-4f60-8cb7-9589bb29e539",
+      "real_session": {
+        "id": "sess_subagent_agent_1f18b027-7b75-4dee-81e6-2535f941650f",
+        "parent": "sess_97742628-0ce0-4c1c-b1f2-fe70a4ac53c5",
+        "directory": "/Users/flb/Sources/Products/ORX (NOT the orx-analytics project root — the inherited controller-window directory, the proven breakpoint)",
+        "created": "2026-10-16T07:44:35.241Z (epoch ms 1792136675241)",
+        "first_text_part_carries_nonce": true,
+        "model_usage": {
+          "requests": 47,
+          "input_tokens": 6854455,
+          "output_tokens": 59456,
+          "cache_read_input_tokens": 6668096
+        }
+      }
+    },
+    "archived-verifier-prompt.md": {
+      "copied_from": "/Users/flb/Sources/Tools/orx-analytics/.orx/runs/R002/assignments/verify-T009-01.md (byte-identical copy)",
+      "sha256": "495686f4e8cd7a1939a5ddc1ebad07c82f624f3019d903378bc3c6f8af847d65",
+      "bytes": 4586,
+      "attempt": "22 (role verifier, task T009, profile zcode-verifier-flash, driver host, harness zcode)",
+      "nonce": "orx-assignment:08a42551-b92a-4888-be05-f93c6b2ddfcb",
+      "real_session": {
+        "id": "sess_subagent_agent_2320a8c1-378a-4878-ab5f-83e34f9bc197",
+        "parent": "sess_97742628-0ce0-4c1c-b1f2-fe70a4ac53c5",
+        "directory": "/Users/flb/Sources/Products/ORX",
+        "created": "2026-10-16T12:33:15.926Z (epoch ms 1792153995926)",
+        "first_text_part_carries_nonce": true,
+        "model_usage": {
+          "requests": 100,
+          "input_tokens": 5200561,
+          "output_tokens": 39169,
+          "cache_read_input_tokens": 5030912
+        },
+        "later_part_nonce_quote_note": "a different session (sess_subagent_agent_97d1cd2b, the T010 worker) carries this nonce only in a LATER part, not its first part — evidence that discovery must read only the first text part, which it does"
+      }
+    }
+  },
+  "sanitization": "The fixtures keep the archived prompts byte-identical (they are ORX-generated assignment text). The test databases built from this manifest use the real structural facts (parent linked to a root session whose directory differs from the project root, nonce in the FIRST text part, model_usage rows) with synthetic session ids and synthetic directory spellings, so the tests are deterministic and machine-local while reproducing the exact failing shape.",
+  "population_facts": {
+    "R002_attempts_total": 18,
+    "R002_attempts_session_ref_null": 18,
+    "R002_usage_observations": 0,
+    "R002_missing_reason_distribution": {"host_session_unbound": 18},
+    "subagent_sessions_of_controller_root": 16,
+    "subagent_attempts": "16 of 18 (attempts 15-30); attempts 13-14 ran profile orx-host without host_mode (self execution by the controller session — no subagent session exists by design)",
+    "unrecorded_usage_across_16_sessions": {
+      "requests": 1222,
+      "input_tokens": 167384405,
+      "output_tokens": 829732,
+      "cache_read_input_tokens": 165131968
+    }
+  }
+}

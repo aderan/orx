@@ -177,6 +177,15 @@ MISS_HOST_SESSION_UNBOUND = "host_session_unbound"
 # or the aggregate could not be read back. Never zero-filled.
 MISS_ZCODE_SUBTREE_CONFLICT = "zcode_subtree_conflict"
 MISS_ZCODE_UNREADABLE = "zcode_unreadable"
+# G010 T001: closure-time reads that must not write a wrong book. A request
+# row still mid-flight (status outside the terminal vocabulary) makes every
+# sum provisional, so nothing is recorded and the unsettled state is stated
+# until a later read finds every row terminal.
+MISS_ZCODE_USAGE_UNSETTLED = "zcode_usage_unsettled"
+# G010 T001: the attempt already carries a zcode_db observation and a fresh
+# read returned different numbers — the stored row stays authoritative and
+# no second row is written; a human reconciles from both stated numbers.
+MISS_ZCODE_DUPLICATE_BACKFILL = "zcode_duplicate_backfill"
 
 
 # ---------------------------------------------------------------------------

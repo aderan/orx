@@ -616,3 +616,70 @@ def test_v7_to_v8_migration_adds_attempt_columns(tmp_path):
     finally:
         check.close()
     assert not list(tmp_path.glob("v7.db.migrate-*")), "stale migration backups"
+
+
+# ---------------------------------------------------------------------------
+# G010 T001: the verifier side of the zero-cost quasi-real closed loop.
+
+
+def test_quasi_real_verifier_loop_with_archived_prompt(sub_planned, tmp_path,
+                                                       monkeypatch):
+    """Zero-cost quasi-real closed loop (verifier side): the archived ORIGINAL
+    verifier prompt from orx-analytics R002 (attempt 22, verify-T009-01) is
+    the session's first text part in a controller-window directory (NOT the
+    project root — the proven R002 shape), the dispatch mints the archived
+    nonce, and the REAL verify_submit --discover-session binds the session and
+    the REAL closure autobill records the session's usage. Chain:
+    run/revision/task/attempt/nonce/session/usage."""
+    from pathlib import Path
+
+    from test_host_progress_e2e import make_zcode_usage_db
+
+    g010 = Path(__file__).resolve().parent / "fixtures" / "g010"
+    archived = (g010 / "archived-verifier-prompt.md").read_text()
+    nonce = "orx-assignment:08a42551-b92a-4888-be05-f93c6b2ddfcb"
+    controller_window = "/users/sample/controller-window"
+    vsession = "sess_subagent_verifier_replay"
+
+    # Real R002 numbers for this verifier session (provenance.json): 100
+    # requests, 5,200,561 input / 39,169 output / 5,030,912 cache-read.
+    zdb = tmp_path / "g010-verifier.sqlite"
+    make_zcode_usage_db(
+        zdb, controller_window,
+        sessions=[(vsession, None, archived)],
+        usages=[
+            ("r1", "lr1", 0, vsession, "completed", 5000000, 38000, 4830000, 5038000),
+            ("r2", "lr2", 0, vsession, "completed", 200561, 1169, 200912, 201730),
+        ],
+    )
+    monkeypatch.setenv("ORX_ZCODE_DB", str(zdb))
+    monkeypatch.delenv("ORX_SESSION_REF", raising=False)
+
+    # The worker task completes first (its own host attempt is unbound in
+    # this replay: only the verifier session exists in the database).
+    _finish_with_agent_pending(sub_planned, tmp_path)
+    # The verifier dispatch must carry the ARCHIVED nonce: patch the state
+    # module's minter (attempt_create's default) before verify_dispatch.
+    import orx.state as state_mod
+    monkeypatch.setattr(state_mod, "mint_nonce", lambda: nonce)
+    out = dispatch.verify_dispatch(sub_planned)
+    entry = [e for e in out["agent_required"] if e["task"] == "T002"][0]
+    vattempt = sub_planned.store.attempt_get(entry["attempt"])
+    assert vattempt.nonce == nonce
+    assert entry["prompt"].startswith("ASSIGNMENT IDENTITY")
+    assert f"ORX_ASSIGNMENT={nonce}" in entry["prompt"]
+
+    result = dispatch.verify_submit(
+        sub_planned, "T002", "pass", "agent: result reads well", None,
+        attempt_id=vattempt.id, discover_session=True,
+    )
+    assert result["session_discovery"]["decision"] == "unique"
+    closed = sub_planned.store.attempt_get(vattempt.id)
+    assert closed.session_ref == vsession
+    assert closed.result == "pass"
+    rows = [r for r in sub_planned.store.usage_rows()
+            if r["attempt_id"] == vattempt.id]
+    assert len(rows) == 1 and rows[0]["source"] == "zcode_db"
+    assert (rows[0]["input_tokens"], rows[0]["output_tokens"],
+            rows[0]["cached_input_tokens"]) == (5200561, 39169, 5030912)
+    assert closed.usage_missing_reason is None
