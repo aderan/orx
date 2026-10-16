@@ -306,6 +306,113 @@ The delivery gate itself is unchanged: every command entry still re-runs
 fresh on a first acceptance, and a green gate never replaces the
 independent verifier. The receipt is a replay surface, not a verdict.
 
+## Operation cookbook (G010 T006)
+
+Every operation below is a real CLI entry a human or Controller runs from
+the project root; `--json` forms exist for each. All of them are safe to
+repeat: pause/resume/cancel idempotence is explicit (`changed: false`,
+exit 0), and a retransmitted delivery replays its receipt and writes
+nothing. The end-to-end rehearsal of this exact cookbook — including both
+branches to completion and to an explicit cancel, driven entirely through
+independent `python -m orx` subprocesses — lives in
+`tests/test_host_progress_e2e.py` (G010 T006 section).
+
+### Pause — stop NEW dispatch, keep everything else
+
+```sh
+$ orx goal pause --json
+{"ok": true, "goal": "G001", "status": "paused", "changed": true, ...}
+
+$ orx run --json            # while paused: no new dispatch
+{"ok": false, "error": {"reason": "goal_paused", ...}}   # exit 1
+```
+
+Already-running executors keep working: their `orx task heartbeat`,
+`orx task complete`, `orx task fail`, `orx task recover`, and
+`orx verify submit` all still land while the Goal is paused.
+
+### Resume — a new session continues, never a second executor
+
+```sh
+$ orx goal resume --json
+{"ok": true, "goal": "G001", "status": "active", "changed": true,
+ "run": {"id": "R001", ...}, "plan": {"revision": 1, "status": "active"},
+ "in_flight": {"planning": [], "parked": [{"task": "T002", "attempt": 14,
+   "nonce": "orx-assignment:...", "resume_with": "orx task claim T002"}],
+   "running": [...], "verifying": [...]},
+ "next": "orx run"}
+```
+
+`resume` starts nothing. The next dispatch is your explicit `orx run`, and
+a task parked before the pause is claimed through the SAME attempt id and
+nonce — never a second executor for the same work.
+
+### Cancel — request, safe wrap-up, convergence
+
+```sh
+$ orx goal cancel --json
+{"ok": true, "goal": "G001", "status": "cancelling", "changed": true,
+ "cancelled": {"assignments": [...], "tasks": ["T002"], "attempts": [...]},
+ "unconfirmed": [{"task": "T001", "kind": "worker", "attempt": 13,
+   "session_ref": "sess-worker", "next": ["orx task observe T001", ...]}],
+ "converged": false, "next": "close the unconfirmed execution(s), or wait"}
+```
+
+Unstarted work is cancelled explicitly right there. A RUNNING execution is
+never concluded from silence — it stays listed (also under
+`cancellation` in `orx status --json`) until a real fact closes it, and
+each closing fact converges the Goal to `cancelled` when it is the last.
+
+### Confirm termination — the operator's explicit fact
+
+When you have CONFIRMED a still-listed execution is finished (checked the
+session, the process, the machine):
+
+```sh
+$ orx task recover T001 --termination-fact "session archived; operator confirmed dead" --json
+{"ok": true, "task": "T001", "status": "cancelled", "closed_attempt": 13, ...}
+```
+
+During a cancel this closes the execution WITHOUT re-dispatch (the task
+lands `cancelled`), and the Goal converges. Outside a cancel the same
+command reopens the task for the next dispatch — the recovery entry of
+the controller skill.
+
+### Re-verify after a permission fix — lift a suppression explicitly
+
+A profile suppressed after repeated same-condition permission blocks stays
+excluded even after you fix the real configuration; the fix itself changes
+no routing decision. After changing the effective conditions (for example
+the CLI permission config), lift the exclusion explicitly:
+
+```sh
+$ orx task reverify T001 --profile cursor-strong --reason "approval mode changed to unrestricted" --json
+{"ok": true, "decision": "lifted", "task": "T001", "profile": "cursor-strong", ...}
+
+$ orx run --json     # the NEXT run's normal dispatch relaunches the profile
+```
+
+A `refused` decision (same fingerprint, no baseline, host harness, already
+reopened-and-failed) is a recorded honest negative with steps — exit 0,
+not an error. A preflight pass is never a claim that execution succeeded.
+
+### Retransmit an accepted delivery — the receipt replays
+
+If the response to an accepted `orx task complete` was lost (worker died
+after the write, transport dropped, controller restarted), re-submitting
+the SAME delivery returns the persisted original receipt and writes
+nothing — no re-run gate, no new evidence, no second usage row:
+
+```sh
+$ orx task complete T001 --evidence evidence.json --attempt 14 --json
+{"ok": true, "status": "passed", "attempt": 14, ...}   # the original receipt, verbatim
+```
+
+The identity is the delivery's normalized content, so the re-submission
+may come from a different file. Different content under the same identity,
+a different session, or a replaced attempt is rejected by name — a late
+result never overwrites the new attempt.
+
 ## Known follow-ups (out of this round)
 
 - `orx sources fetch --auto-accept` while a Goal is paused leaves the

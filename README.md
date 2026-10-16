@@ -183,8 +183,12 @@ Out-of-repo analysis reads `.orx/state.db` through
 v8/v9/v10/v11/v12 tables — v8 established the observability schema; the
 v9, v10, v11, and v12 amendments were additive — plus join keys and the
 SQL for the six report dimensions (the gate accepts exactly the supported
-versions 8, 9, 10, 11, and 12). That contract is read-only. The analysis
-layer itself is not in this repository.
+versions 8, 9, 10, 11, and 12 in this README's packaging-era statement;
+G010's v13/v14/v15 amendments — `paused` and `cancelling` goal states,
+`completion_receipts`, and the goal-lifecycle reads — widened the same
+gate additively, and docs/observability-contract.md is authoritative).
+That contract is read-only. The analysis layer itself is not in this
+repository.
 
 ## Key invariants
 
@@ -203,7 +207,12 @@ layer itself is not in this repository.
   while already-running executors keep their attempt, span, nonce, and
   session, and their fact submissions still land. `orx goal resume`
   (idempotent) starts nothing either: it returns the in-flight ownership
-  and the next dispatch is your explicit `orx run`. See
+  and the next dispatch is your explicit `orx run`. `orx goal cancel`
+  (idempotent) requests the two-phase wrap-up: unstarted work is
+  cancelled explicitly, a running execution is NEVER concluded from
+  silence — it closes only on real facts (a late delivery, a verdict, or
+  `orx task recover --termination-fact`), the Goal converges to
+  `cancelled`, and the full history stays queryable. See
   [Goal lifecycle](docs/goal-lifecycle.md).
 - `unknown` resource status stays routable; only `unavailable`/`exhausted` are
   skipped; `constrained` is a last resort. Resource status never rewrites TOML
@@ -329,9 +338,10 @@ upgrade`.
   declaration form, the refreshable model catalog (`orx agent probe` /
   `orx agent info`), per-adapter resolution rules, evidence provenance, and
   diagnostics
-- [Goal lifecycle](docs/goal-lifecycle.md) — pause/resume semantics, the
-  unified startup gate matrix, in-flight ownership, and the concurrency
-  contract
+- [Goal lifecycle](docs/goal-lifecycle.md) — pause/resume/cancel semantics,
+  the unified startup gate matrix, in-flight ownership, the concurrency
+  contract, and the operation cookbook (including confirm-termination,
+  re-verification after a permission fix, and delivery retransmission)
 - `docs/m0-plan.md` — the frozen implementation baseline + amendment log
 - `docs/m0-phase2-checkpoint.md` — core kernel checkpoint + review gate
 - `docs/m0-report.md` — M0 acceptance log (commands and outputs)

@@ -123,6 +123,12 @@ run's next step from your report.
   - `summary` (required): a non-empty string.
   - The legacy `{ "summary", "commands", "artifacts" }` shape is REJECTED:
     `orx task complete` names every missing field and records nothing.
+  - **Retransmission is safe**: an accepted delivery persists its receipt.
+    If you never saw the response (your process died after the write, the
+    transport dropped), re-submitting the SAME delivery content — even
+    from a different file, in a new process — replays the original
+    receipt and writes nothing new. Do not change the content to "try
+    again": a different body under the same identity is a conflict.
 - **CLI-launched workers (no `orx` CLI in your environment)**: your final
   message IS the delivery channel — ORX parses it, not the process exit
   code (the harness controls the exit code; a blocked run may still exit

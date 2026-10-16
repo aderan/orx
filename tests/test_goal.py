@@ -276,3 +276,39 @@ def test_goal_cancel_cli_text_and_json_interfaces(project, goal):
     done = runner.invoke(app, ["goal", "cancel", "--json"], env=env)
     assert done.exit_code == 1
     assert "cannot cancel from done" in json.loads(done.stdout)["error"]
+
+
+# -- operation cookbook pins (G010 T006) ---------------------------------------
+
+
+def test_goal_lifecycle_doc_provides_the_operation_cookbook():
+    """docs/goal-lifecycle.md carries a worked example for every lifecycle
+    operation an operator needs: pause, resume, cancel, confirm-termination
+    (recover --termination-fact), re-verification after a permission fix,
+    and accepted-delivery retransmission — each as a real command with its
+    expected envelope shape, not prose only."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parent.parent
+            / "docs" / "goal-lifecycle.md").read_text()
+    assert "## Operation cookbook" in text
+    sections = {
+        "pause": ("### Pause", "orx goal pause --json"),
+        "resume": ("### Resume", "orx goal resume --json"),
+        "cancel": ("### Cancel", "orx goal cancel --json"),
+        "confirm termination": (
+            "### Confirm termination", "orx task recover T001"
+            " --termination-fact"),
+        "re-verify": ("### Re-verify", "orx task reverify T001"),
+        "retransmit": ("### Retransmit", "orx task complete T001"),
+    }
+    for label, (heading, command) in sections.items():
+        assert heading in text, label
+        assert command in text, label
+    # the honest semantics ride along with the examples
+    assert "changed: false" in text          # idempotent repeats
+    assert "never a second executor" in text
+    assert "never concluded from silence" in text
+    assert "writes\nnothing" in text or "writes nothing" in text  # replay
+    # the cookbook points at its cross-process rehearsal
+    assert "tests/test_host_progress_e2e.py" in text

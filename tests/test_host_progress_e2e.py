@@ -1006,3 +1006,604 @@ def test_usage_attribution_controller_missing_is_explicit(tmp_path, monkeypatch)
         assert attribution["controller"]["own"]["input_tokens"] is None
     finally:
         project.close()
+
+
+# ---------------------------------------------------------------------------
+# G010 T006: cross-process end-to-end acceptance of the Goal lifecycle.
+#
+# Everything below drives the REAL CLI (`python -m orx ...`) in independent
+# subprocesses against a temporary project — no in-process project object
+# carries the scenario, every stage transition is a process exit and a
+# reopen from SQLite. The host session database is a deterministic stand-in
+# behind ORX_ZCODE_DB (sessions whose first text part carries the parked
+# attempt's nonce, with fixed token numbers); the "permission-blocked" CLI
+# executor of the suppression story is a local `agent` stand-in reading its
+# result envelope from a file. Zero paid model calls anywhere.
+
+import os
+import subprocess
+import sys
+
+
+def _cli_env(tmp_path, proj, *, zcode_db=None, home=None, bindir=None):
+    """The environment every lifecycle subprocess runs under: the suite's
+    isolated user layer (inherited from conftest through os.environ), the
+    temp project as ORX_PROJECT, quota preflight off, and optionally the
+    deterministic zcode stand-in db / an isolated HOME + PATH."""
+    env = os.environ.copy()
+    env["ORX_PROJECT"] = str(proj)
+    env["ORX_QUOTA_PREFLIGHT"] = "0"
+    if zcode_db is not None:
+        env["ORX_ZCODE_DB"] = str(zcode_db)
+    if home is not None:
+        env["HOME"] = str(home)
+    if bindir is not None:
+        env["PATH"] = f"{bindir}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+def _orx(proj, env, *args, expect=0):
+    """Run one real CLI subprocess; assert the exit code and parse --json."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "orx", *args],
+        capture_output=True, text=True, cwd=str(proj), env=env,
+    )
+    assert proc.returncode == expect, (
+        f"orx {' '.join(args)} -> exit {proc.returncode}"
+        f" (expected {expect})\nstdout:\n{proc.stdout[-3000:]}"
+        f"\nstderr:\n{proc.stderr[-2000:]}"
+    )
+    if "--json" not in args:
+        return proc
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"orx {' '.join(args)} did not emit JSON:\n{proc.stdout[-2000:]}"
+        )
+
+
+def _lifecycle_facts(proj):
+    """The per-stage record the acceptance demands, read straight from the
+    project database (read-only): Goal/Run/revision state, execution
+    ownership (attempts with nonce/session/result), events, evidence,
+    usage, receipts. Never opened for write; never migrated."""
+    db = proj / ".orx" / "state.db"
+    conn = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        goal = dict(conn.execute(
+            "SELECT id, status FROM goals ORDER BY created_at, id"
+        ).fetchall()[-1])
+        runs = [dict(r) for r in conn.execute(
+            "SELECT id, status, started_at, completed_at FROM runs ORDER BY id")]
+        revision_row = conn.execute(
+            "SELECT id, revision, status FROM plan_revisions"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+        revision = dict(revision_row) if revision_row is not None else None
+        attempts = [dict(r) for r in conn.execute(
+            "SELECT id, role, task_id, profile, nonce, session_ref,"
+            " result, ended_at, usage_missing_reason"
+            " FROM attempts ORDER BY id")]
+        events = [(r["task_id"] or "-", r["event"]) for r in conn.execute(
+            "SELECT task_id, event FROM task_events ORDER BY id")]
+        evidence = [dict(r) for r in conn.execute(
+            "SELECT attempt_id, kind FROM evidence ORDER BY id")]
+        usage = [dict(r) for r in conn.execute(
+            "SELECT attempt_id, source, input_tokens, output_tokens,"
+            " cached_input_tokens FROM usage_observations ORDER BY id")]
+        receipts = [dict(r) for r in conn.execute(
+            "SELECT attempt_id, delivery_status FROM completion_receipts"
+            " ORDER BY id")]
+        return {
+            "goal": goal, "runs": runs, "revision": revision,
+            "attempts": attempts, "events": events, "evidence": evidence,
+            "usage": usage, "receipts": receipts,
+        }
+    finally:
+        conn.close()
+
+
+def _write_plan(proj, goal_id, tasks):
+    path = proj / f"plan-{goal_id}.json"
+    path.write_text(json.dumps({
+        "goal": goal_id,
+        "exploration": {"summary": "e2e stand-in exploration",
+                        "relevant_components": ["src/"], "unknowns": [],
+                        "assumptions": [], "risks": []},
+        "approach": {"summary": "stand-in plan", "decisions": []},
+        "tasks": tasks,
+    }))
+    return path
+
+
+def _task_ir(tid, objective, acceptance, verification, deps=(),
+             complexity="medium"):
+    return {
+        "id": tid, "objective": objective, "dependencies": list(deps),
+        "scope": {"allowed": ["src/"]}, "acceptance": list(acceptance),
+        "verification": list(verification),
+        "routing": {"complexity": complexity,
+                    "required_capabilities": ["coding"]},
+        "preread": [],
+    }
+
+
+def _evidence_file(proj, name, summary):
+    path = proj / name
+    path.write_text(json.dumps({
+        "status": "passed", "summary": summary,
+        "checks": [], "artifacts": [],
+    }))
+    return path
+
+
+HOST_LADDER_CONFIG = HOST_CONFIG_TOML  # host-worker parks; nothing launches
+
+
+def _init_host_project(tmp_path, name="proj"):
+    proj = tmp_path / name
+    proj.mkdir()
+    dispatch.init_project(proj)
+    (proj / ".orx" / "config.toml").write_text(HOST_LADDER_CONFIG)
+    (proj / ".orx" / "profiles.toml").write_text(HOST_PROFILES_TOML)
+    return proj
+
+
+def _worker_nonce(proj, attempt_id):
+    db = proj / ".orx" / "state.db"
+    conn = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return conn.execute(
+            "SELECT nonce FROM attempts WHERE id = ?",
+            (attempt_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_g010_e2e_completion_branch_full_lifecycle_cross_process(tmp_path):
+    """完整场景走通 (completion branch), entirely across independent host
+    processes: start -> partial work (claim + explicit fail of round one)
+    -> pause (no new dispatch) -> the host session ENDS (every subprocess
+    has exited) -> a NEW session resumes -> blocked at the delivery gate,
+    fixed, continued on the SAME attempt -> independent verdict -> done.
+    Per stage the Goal/Run/revision state, execution ownership, events,
+    evidence, and usage are recorded and asserted. The stale-attempt,
+    retransmission, and unattributable-usage matrix items ride the same
+    story."""
+    proj = _init_host_project(tmp_path)
+    zdb = tmp_path / "zcode-standin.sqlite"
+    env = _cli_env(tmp_path, proj, zcode_db=zdb)
+
+    # -- stage: start ------------------------------------------------------
+    started = _orx(proj, env, "goal", "new", "--json",
+                   "--objective", "lifecycle e2e completion branch",
+                   "--acceptance", "marker one exists",
+                   "--acceptance", "markers two and three exist")
+    goal_id = started["goal"]["id"]
+    run_id = started["run"]["id"]
+    facts_start = _lifecycle_facts(proj)
+    assert facts_start["goal"]["status"] == "active"
+    assert facts_start["runs"][-1]["status"] == "planning"
+
+    plan_path = _write_plan(proj, goal_id, [
+        _task_ir("T001", "marker one", ["marker one exists"],
+                 ["test -f t1.marker"]),
+        _task_ir("T002", "marker two with an independent verdict",
+                 ["markers two and three exist"],
+                 ["test -f t2.marker", "agent: the summary is honest"],
+                 deps=["T001"]),
+        _task_ir("T003", "marker three", ["markers two and three exist"],
+                 ["test -f t3.marker"], deps=["T001"]),
+    ])
+    planned = _orx(proj, env, "plan", "submit", "--file",
+                   plan_path.name, "--json")
+    assert planned["revision"] == 1
+    parked = _orx(proj, env, "run", "--json")
+    [t1_entry] = [e for e in parked["host_required"] if e["task"] == "T001"]
+    a1 = t1_entry["attempt"]
+
+    # -- stage: partial work — round one claims, reports, and fails --------
+    make_zcode_usage_db(
+        zdb, str(proj),
+        sessions=[("sess-round-one", None,
+                   f"ORX_ASSIGNMENT={_worker_nonce(proj, a1)}\nstand-in")],
+        usages=[("r1", "lr1", 0, "sess-round-one", "completed", 100, 10, 90, 110)],
+    )
+    claim1 = _orx(proj, env, "task", "claim", "T001",
+                  "--discover-session", "--json")
+    assert claim1["attempt"] == a1
+    assert claim1["session_ref"] == "sess-round-one"
+    beat = _orx(proj, env, "task", "heartbeat", "T001", "--attempt", str(a1),
+                "--phase", "implementing", "--message", "round one", "--json")
+    assert beat["sequence"] == 1
+    _orx(proj, env, "task", "fail", "T001", "--json",
+         "--reason", "worker hit a defect in round one")
+    facts_partial = _lifecycle_facts(proj)
+    assert facts_partial["goal"]["status"] == "active"
+    assert facts_partial["revision"]["revision"] == 1
+    assert facts_partial["attempts"][-1]["result"] == "failed"
+    assert facts_partial["usage"] == [  # the fail closed the usage book
+        {"attempt_id": a1, "source": "zcode_db", "input_tokens": 100,
+         "output_tokens": 10, "cached_input_tokens": 90},
+    ]
+
+    # -- stage: retry parks round two; the OLD attempt delivers late -------
+    _orx(proj, env, "task", "retry", "T001", "--json")
+    parked2 = _orx(proj, env, "run", "--json")
+    [t1_again] = [e for e in parked2["host_required"] if e["task"] == "T001"]
+    a2 = t1_again["attempt"]
+    assert a2 != a1
+    late = _orx(proj, env, "task", "complete", "T001",
+                "--evidence", str(_evidence_file(
+                    proj, "late.json", "late delivery from round one")),
+                "--attempt", str(a1), "--json", expect=1)
+    assert "stale" in str(late["error"])
+    facts_after_late = _lifecycle_facts(proj)  # nothing moved
+    assert [a["id"] for a in facts_after_late["attempts"]] == [a1, a2]
+    assert facts_after_late["attempts"][1]["ended_at"] is None
+    assert facts_after_late["receipts"] == []
+
+    # -- stage: pause; the host session ENDS; no new dispatch --------------
+    paused = _orx(proj, env, "goal", "pause", "--json")
+    assert paused["status"] == "paused" and paused["changed"] is True
+    gated = _orx(proj, env, "run", "--json", expect=1)
+    assert "paused" in gated["error"]
+    status_paused = _orx(proj, env, "status", "--json")
+    assert status_paused["goal"]["status"] == "paused"
+    assert {t["id"]: t["status"] for t in status_paused["tasks"]}["T001"] \
+        == "waiting_host"
+    facts_paused = _lifecycle_facts(proj)
+    assert facts_paused["goal"]["status"] == "paused"
+    assert len(facts_paused["attempts"]) == 2  # no new executor started
+
+    # -- stage: a NEW session resumes — same ownership, no second executor -
+    resumed = _orx(proj, env, "goal", "resume", "--json")
+    assert resumed["changed"] is True
+    [parked_entry] = [e for e in resumed["in_flight"]["parked"]
+                      if e["task"] == "T001"]
+    assert parked_entry["attempt"] == a2
+    _orx(proj, env, "run", "--json")  # re-surface parked work only
+    make_zcode_usage_db(
+        zdb, str(proj),
+        sessions=[
+            ("sess-round-one", None,
+             f"ORX_ASSIGNMENT={_worker_nonce(proj, a1)}\nstand-in"),
+            ("sess-round-two", None,
+             f"ORX_ASSIGNMENT={_worker_nonce(proj, a2)}\nstand-in"),
+        ],
+        usages=[
+            ("r1", "lr1", 0, "sess-round-one", "completed", 100, 10, 90, 110),
+            ("r2", "lr2", 0, "sess-round-two", "completed",
+             1000, 50, 980, 1050),
+        ],
+    )
+    claim2 = _orx(proj, env, "task", "claim", "T001",
+                  "--discover-session", "--json")
+    assert claim2["attempt"] == a2  # 继续时没有第二个执行者
+    assert claim2["session_ref"] == "sess-round-two"
+    assert len(_lifecycle_facts(proj)["attempts"]) == 2
+
+    # -- stage: delivery accepted, then RETRANSMITTED from a new process ---
+    (proj / "t1.marker").write_text("one\n")
+    ev1 = _evidence_file(proj, "evidence-t001.json", "marker one written")
+    first = _orx(proj, env, "task", "complete", "T001", "--evidence",
+                 ev1.name, "--attempt", str(a2), "--json")
+    assert first["status"] == "passed"
+    assert first["usage_backfill"]["source"] == "zcode_db"
+    assert first["usage_backfill"]["input_tokens"] == 1000
+    facts_accepted = _lifecycle_facts(proj)
+    replay = _orx(proj, env, "task", "complete", "T001", "--evidence",
+                  ev1.name, "--attempt", str(a2), "--json")
+    assert replay == first  # the persisted original receipt, verbatim
+    assert _lifecycle_facts(proj) == facts_accepted  # nothing moved
+
+    # -- stage: blocked at the gate, fixed, continued on the SAME attempt --
+    parked3 = _orx(proj, env, "run", "--json")
+    t2_entry = next(e for e in parked3["host_required"] if e["task"] == "T002")
+    t3_entry = next(e for e in parked3["host_required"] if e["task"] == "T003")
+    a_t2, a_t3 = t2_entry["attempt"], t3_entry["attempt"]
+    claim_t2 = _orx(proj, env, "task", "claim", "T002",
+                    "--session", "sess-unbound-t2", "--json")
+    assert claim_t2["attempt"] == a_t2
+    ev2 = _evidence_file(proj, "evidence-t002.json", "marker two written")
+    blocked = _orx(proj, env, "task", "complete", "T002", "--evidence",
+                   ev2.name, "--attempt", str(a_t2), "--json", expect=1)
+    assert "gate" in str(blocked["error"]).lower()
+    status_blocked = _orx(proj, env, "status", "--json")
+    assert next(t for t in status_blocked["tasks"]
+                if t["id"] == "T002")["status"] == "running"
+    (proj / "t2.marker").write_text("two\n")  # the fix
+    fixed = _orx(proj, env, "task", "complete", "T002", "--evidence",
+                 ev2.name, "--attempt", str(a_t2), "--json")
+    assert fixed["status"] == "verifying"  # same attempt, agent verdict due
+    assert fixed["attempt"] == a_t2
+    # 无法关联用量的原因 (bound to a session the stand-in db does not
+    # carry): an explicit named reason, never a zero.
+    assert fixed["usage_backfill"]["status"] == "missing"
+    assert fixed["usage_backfill"]["reason"] == "zcode_unreadable"
+
+    # -- stage: independent verdict, the last task, DONE --------------------
+    verify = _orx(proj, env, "verify", "--json")
+    [agent_entry] = [e for e in verify["agent_required"] if e["task"] == "T002"]
+    verdict = _orx(proj, env, "verify", "submit", "T002", "--result", "pass",
+                   "--entry", agent_entry["entry"], "--json")
+    assert verdict["status"] == "passed"
+    # T003 is claimed with NO session at all: the pure unbound case.
+    _orx(proj, env, "task", "claim", "T003", "--json")
+    (proj / "t3.marker").write_text("three\n")
+    done_t3 = _orx(proj, env, "task", "complete", "T003", "--evidence",
+                   str(_evidence_file(proj, "evidence-t003.json",
+                                      "marker three written")),
+                   "--attempt", str(a_t3), "--json")
+    assert done_t3["status"] == "passed"
+    assert done_t3["usage_backfill"]["reason"] == "host_session_unbound"
+
+    final = _orx(proj, env, "status", "--json")
+    assert final["goal"]["status"] == "done"
+    assert final["run"]["status"] == "done"
+    assert final["run"]["completed_at"] is not None
+
+    # -- the recorded books: attributable usage exact, unattributable named -
+    facts_done = _lifecycle_facts(proj)
+    zcode_rows = [u for u in facts_done["usage"] if u["source"] == "zcode_db"]
+    assert [(u["input_tokens"], u["output_tokens"]) for u in zcode_rows] \
+        == [(100, 10), (1000, 50)]
+    unbound = {a["id"]: a["usage_missing_reason"]
+               for a in facts_done["attempts"]}
+    assert unbound[a_t2] == "zcode_unreadable"  # named, per-cause
+    assert unbound[a_t3] == "host_session_unbound"
+    assert unbound[a2] is None  # observed, not missing
+    usage = _orx(proj, env, "usage", "--json")
+    assert any(o["input_tokens"] == 1000 and o["output_tokens"] == 50
+               for o in usage["observations"])
+    # one receipt per accepted delivery — T001's is the one the
+    # retransmission replayed above.
+    assert [(r["attempt_id"], r["delivery_status"])
+            for r in facts_done["receipts"]] == [
+        (a2, "passed"), (a_t2, "passed"), (a_t3, "passed"),
+    ]
+
+
+def test_g010_e2e_cancel_branch_live_executor_safe_wrapup(tmp_path):
+    """取消分支 through independent host processes: a live, claimed executor
+    at cancel time is listed unconfirmed (never concluded from silence),
+    the parked dependent is cancelled explicitly, the operator's confirmed
+    termination fact converges the Goal, late writes are refused, and the
+    full history stays queryable afterwards."""
+    proj = _init_host_project(tmp_path)
+    zdb = tmp_path / "zcode-standin-cancel.sqlite"
+    env = _cli_env(tmp_path, proj, zcode_db=zdb)
+
+    # A first Goal runs to done so the one unfinished-Goal slot is free.
+    first = _orx(proj, env, "goal", "new", "--json",
+                 "--objective", "cancel branch warmup",
+                 "--acceptance", "warmup marker exists")
+    plan_a = _write_plan(proj, first["goal"]["id"], [
+        _task_ir("T001", "warmup", ["warmup marker exists"], ["true"],
+                 complexity="low"),
+    ])
+    _orx(proj, env, "plan", "submit", "--file", plan_a.name, "--json")
+    warm_parked = _orx(proj, env, "run", "--json")
+    warm_attempt = warm_parked["host_required"][0]["attempt"]
+    _orx(proj, env, "task", "claim", "T001", "--json")
+    _orx(proj, env, "task", "complete", "T001", "--evidence",
+         str(_evidence_file(proj, "evidence-warmup.json", "warmup done")),
+         "--attempt", str(warm_attempt), "--json")
+    assert _orx(proj, env, "status", "--json")["goal"]["status"] == "done"
+
+    # -- the cancel story --------------------------------------------------
+    second = _orx(proj, env, "goal", "new", "--json",
+                  "--objective", "cancel branch e2e",
+                  "--acceptance", "the wrap-up is safe")
+    goal_id, run_id = second["goal"]["id"], second["run"]["id"]
+    plan_b = _write_plan(proj, goal_id, [
+        _task_ir("T001", "long work", ["the wrap-up is safe"], ["true"]),
+        _task_ir("T002", "dependent work", ["the wrap-up is safe"], ["true"],
+                 deps=["T001"]),
+    ])
+    _orx(proj, env, "plan", "submit", "--file", plan_b.name, "--json")
+    parked = _orx(proj, env, "run", "--json")
+    live_attempt = next(e["attempt"] for e in parked["host_required"]
+                        if e["task"] == "T001")
+
+    # 取消时仍存活的执行者：claimed and RUNNING when the cancel lands.
+    claim = _orx(proj, env, "task", "claim", "T001",
+                 "--session", "sess-live-at-cancel", "--json")
+    assert claim["attempt"] == live_attempt
+
+    cancel = _orx(proj, env, "goal", "cancel", "--json")
+    assert cancel["status"] == "cancelling" and cancel["converged"] is False
+    assert cancel["cancelled"]["tasks"] == ["T002"]  # unstarted, swept now
+    [unconfirmed] = cancel["unconfirmed"]
+    assert unconfirmed["task"] == "T001" and unconfirmed["kind"] == "worker"
+    assert unconfirmed["attempt"] == live_attempt
+    assert unconfirmed["session_ref"] == "sess-live-at-cancel"
+    assert any("orx task observe T001" in step for step in unconfirmed["next"])
+
+    # No new dispatch while cancelling; the live executor still reports.
+    gated = _orx(proj, env, "run", "--json", expect=1)
+    assert "cancelling" in gated["error"]
+    beat = _orx(proj, env, "task", "heartbeat", "T001",
+                "--attempt", str(live_attempt),
+                "--phase", "working", "--message", "still alive", "--json")
+    assert beat["sequence"] == 1
+    cancelling_status = _orx(proj, env, "status", "--json")
+    assert cancelling_status["goal"]["status"] == "cancelling"
+    assert [e["task"] for e in
+            cancelling_status["cancellation"]["unconfirmed"]] == ["T001"]
+
+    # 确认终止：the operator's explicit fact closes the live execution.
+    recovered = _orx(proj, env, "task", "recover", "T001",
+                     "--termination-fact",
+                     "operator confirmed the executor session is finished",
+                     "--json")
+    assert recovered["status"] == "cancelled"
+    assert recovered["closed_attempt"] == live_attempt
+    cancelled_status = _orx(proj, env, "status", "--json")
+    assert cancelled_status["goal"]["status"] == "cancelled"
+    assert {t["id"]: t["status"] for t in cancelled_status["tasks"]} == {
+        "T001": "cancelled", "T002": "cancelled",
+    }
+
+    # Late writes never revive anything; repeats re-run nothing.
+    late = _orx(proj, env, "task", "complete", "T001", "--evidence",
+                str(_evidence_file(proj, "evidence-late-cancel.json",
+                                   "too late")),
+                "--attempt", str(live_attempt), "--json", expect=1)
+    assert "stale" in str(late["error"])
+    repeat = _orx(proj, env, "goal", "cancel", "--json")
+    assert repeat["changed"] is False and repeat["status"] == "cancelled"
+
+    # 取消后历史记录完整：every read surface still answers with the facts.
+    facts = _lifecycle_facts(proj)
+    assert facts["goal"]["id"] == goal_id and facts["goal"]["status"] \
+        == "cancelled"
+    live_row = next(a for a in facts["attempts"] if a["id"] == live_attempt)
+    assert live_row["result"] == "cancelled" and live_row["ended_at"]
+    assert ("T002", "goal_cancel") in facts["events"]
+    timeline = _orx(proj, env, "timeline", "--run", run_id, "--json")
+    assert any("goal_cancel" in e["event"] for e in timeline["entries"])
+    usage = _orx(proj, env, "usage", "--json")
+    assert usage["ok"] is True
+    assert _orx(proj, env, "goal", "show", "--json")["goal"]["status"] \
+        == "cancelled"
+    # the live executor's identity and its recorded heartbeat survive the
+    # terminal cancel as queryable history.
+    assert live_row["session_ref"] == "sess-live-at-cancel"
+    db = proj / ".orx" / "state.db"
+    hist = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        assert hist.execute(
+            "SELECT COUNT(*) FROM attempt_progress WHERE attempt_id = ?",
+            (live_attempt,)).fetchone()[0] == 1
+    finally:
+        hist.close()
+
+
+def test_g010_e2e_suppression_fix_continuation_through_the_cli(tmp_path):
+    """权限抑制后的修复接续, entirely through the installed-entry CLI with a
+    local stand-in executor: three same-condition permission blocks suppress
+    the profile, the REAL permission config fix alone changes no routing
+    decision, the explicit re-verification lifts the exclusion, and the
+    next run's normal dispatch relaunches the profile to a green delivery —
+    the continuation is real work recorded end to end (native_cli usage
+    rows for every round)."""
+    home = tmp_path / "sup-home"
+    (home / ".cursor").mkdir(parents=True)
+    config = home / ".cursor" / "cli-config.json"
+    config.write_text(json.dumps({
+        "approvalMode": "allowlist",
+        "permissions": {"allow": ["Shell(ls)"], "deny": []},
+        "sandbox": {"mode": "disabled"},
+    }))
+    bindir = tmp_path / "sup-bin"
+    bindir.mkdir()
+    blocked_envelope = tmp_path / "blocked-envelope.json"
+    passed_envelope = tmp_path / "passed-envelope.json"
+
+    def cursor_result(text):
+        return json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "session_id": "sup-e2e-session", "result": text,
+            "usage": {"inputTokens": 10, "outputTokens": 4,
+                      "cacheReadTokens": 50},
+        })
+
+    blocked_envelope.write_text(cursor_result(
+        "blocked: the start gate cannot run in this environment.\n\n"
+        '```json\n{"status":"blocked","summary":"internal shell approval'
+        ' denied: every shell invocation was rejected",'
+        '"checks":[],"artifacts":[]}\n```'))
+    passed_envelope.write_text(cursor_result(
+        '```json\n{"status":"passed","summary":"permission fix verified'
+        ' by real execution","checks":[],"artifacts":[]}\n```'))
+    agent = bindir / "agent"
+    agent.write_text(
+        '#!/bin/sh\n'
+        'case "$1" in\n'
+        '  --version) echo "agent 2026.10.01"; exit 0;;\n'
+        '  --help) echo "--print --output-format --workspace --trust'
+        ' --model"; exit 0;;\n'
+        'esac\n'
+        'cat "$E2E_AGENT_ENVELOPE"\n'
+        'exit 0\n')
+    agent.chmod(0o755)
+
+    proj = tmp_path / "sup-proj"
+    proj.mkdir()
+    dispatch.init_project(proj)
+    (proj / ".orx" / "config.toml").write_text(HOST_CONFIG_TOML.replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["cursor-e2e"]'))
+    (proj / ".orx" / "profiles.toml").write_text(HOST_PROFILES_TOML.replace(
+        '[profiles.cli-fake]\ndriver = "cli"\nharness = "shell"\n'
+        'executable = "true"',
+        '[profiles.cursor-e2e]\ndriver = "cli"\nharness = "cursor"'))
+    env = _cli_env(tmp_path, proj, home=home, bindir=bindir)
+    env["E2E_AGENT_ENVELOPE"] = str(blocked_envelope)
+
+    goal = _orx(proj, env, "goal", "new", "--json",
+                "--objective", "suppression fix continuation",
+                "--acceptance", "work completes after the permission fix")
+    plan = _write_plan(proj, goal["goal"]["id"], [
+        _task_ir("T001", "runs under fixed permissions",
+                 ["work completes after the permission fix"], ["true"],
+                 complexity="low"),
+    ])
+    _orx(proj, env, "plan", "submit", "--file", plan.name, "--json")
+
+    # Three blocked rounds engage the bounded suppression.
+    for round_index in range(3):
+        outcome = _orx(proj, env, "run", "--json")
+        [failure] = outcome["failed"]
+        assert failure["task"] == "T001"
+        if round_index < 2:
+            _orx(proj, env, "task", "retry", "T001", "--json")
+    status_after = _orx(proj, env, "status", "--json")
+    assert next(t for t in status_after["tasks"]
+                if t["id"] == "T001")["status"] == "failed"
+    _orx(proj, env, "task", "retry", "T001", "--json")
+    suppressed = _orx(proj, env, "run", "--json")
+    [error] = suppressed["routing_errors"]
+    assert "suppressed" in error["error"]
+    assert error["suppressed"][0]["profile"] == "cursor-e2e"
+    baseline = sqlite3.connect(
+        f"{(proj / '.orx' / 'state.db').resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        assert baseline.execute(
+            "SELECT COUNT(*) FROM task_events"
+            " WHERE event = 'suppression_baseline'").fetchone()[0] >= 1
+    finally:
+        baseline.close()
+
+    # The REAL permission fix alone changes no routing decision.
+    config.write_text(json.dumps({
+        "approvalMode": "unrestricted",
+        "permissions": {"allow": ["Shell(ls)"], "deny": []},
+        "sandbox": {"mode": "disabled"},
+    }))
+    unfixed = _orx(proj, env, "run", "--json")
+    assert any("suppressed" in e["error"] for e in unfixed["routing_errors"])
+
+    # The explicit re-verification lifts it; the relaunch is normal dispatch.
+    reverified = _orx(proj, env, "task", "reverify", "T001",
+                      "--profile", "cursor-e2e", "--reason",
+                      "approval mode changed from allowlist to unrestricted",
+                      "--json")
+    assert reverified["decision"] == "lifted"
+    env["E2E_AGENT_ENVELOPE"] = str(passed_envelope)
+    relaunched = _orx(proj, env, "run", "--json")
+    [started] = relaunched["started"]
+    assert started["task"] == "T001" and started["status"] == "passed"
+
+    final = _orx(proj, env, "status", "--json")
+    assert final["goal"]["status"] == "done"
+    assert final["run"]["status"] == "done"
+    facts = _lifecycle_facts(proj)
+    rounds = [a for a in facts["attempts"] if a["profile"] == "cursor-e2e"]
+    assert len(rounds) == 4  # three blocked + one green relaunch
+    assert rounds[-1]["result"] == "completed"
+    assert ("T001", "suppression_reopen") in facts["events"]
+    usage = _orx(proj, env, "usage", "--json")
+    assert len(usage["observations"]) == 4  # every round accounted for

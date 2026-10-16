@@ -301,6 +301,36 @@ structured delivery statuses and the reason prefixes in steps 6–8.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
     Not when output "looks finished".
 
+## Long-task lifecycle control (pause, resume, cancel)
+
+A long Goal can be paused, resumed, and cancelled — by the user, or by you
+on their instruction. The operating contract (state machine, startup gate
+matrix, concurrency rules, command examples for every operation) is
+docs/goal-lifecycle.md; the boundaries that bind you:
+
+- `orx goal pause` stops NEW dispatch only. In-flight executors keep their
+  attempt/nonce/session and their fact submissions still land; `orx run`
+  or a claim while paused exits 1 — that is the startup gate working, not
+  a failure to fix.
+- `orx goal resume` starts NOTHING. Read its `in_flight` ownership (same
+  attempt ids and nonces), surface parked work with `orx run`, and never
+  start a second executor for an attempt that is already running.
+- `orx goal cancel` requests the two-phase wrap-up: unstarted work is
+  cancelled explicitly; a running execution is NEVER concluded from
+  silence. Close each unconfirmed execution with a real fact only — its
+  late delivery, its verifier verdict, or `orx task recover
+  --termination-fact` once the termination is confirmed. The Goal then
+  converges to `cancelled` and the full history stays queryable
+  (`orx status`, `orx timeline --run`, `orx usage`).
+- `orx task reverify <task> --profile <p> --reason <what changed>` lifts
+  a permission suppression after the real conditions changed (a `refused`
+  decision is a recorded negative with next steps, not an error); the
+  relaunch is the next `orx run`'s normal dispatch.
+- A worker whose accepted `orx task complete` response was lost may
+  retransmit the same delivery — the persisted receipt replays verbatim
+  and nothing re-runs. Route lost-response reports to retransmission, not
+  to a retry.
+
 ## Resuming (new session, no chat history)
 
 `orx status --json` is the state; `orx run` re-surfaces every parked

@@ -191,6 +191,36 @@ counting completions should count acceptances via receipts only when they
 want the submission fact; task outcomes remain `tasks.status` plus
 `verifications`.
 
+The eleventh amendment, dated 2026-10-16 (G010 T006 lifecycle acceptance),
+adds no schema version. It adds the read surface for everything the v13,
+v14, and v15 amendments introduced — the new goal states, the new task
+event families, and their times — so an external reader never has to
+derive lifecycle state from anything but these rows:
+
+| Change | Meaning |
+|---|---|
+| `goal_lifecycle` (new query) | One row per goal with run facts: `goal_status` (now including `paused` / `cancelling` / `cancelled`), goal `created_at` / `updated_at`, the run's id/status/`started_at`/`completed_at`, the count of `goal_cancel` transitions recorded for that run, and the count of still-open attempts (executions the cancel wrap-up is waiting on). The state is read from `goals.status` verbatim — never derived from `runs.status`, which keeps its task-derived meaning through a pause and a cancel. |
+| `goal_lifecycle_events` (new query) | Every G010 lifecycle event row with full identity and its `created_at`: the `goal_cancel` / `goal_cancel_stop` task transitions of the cancel sweep and the manageable-CLI stop, and the `suppression_baseline` / `suppression_reopen` / `suppression_reverify_refused` rows of the explicit re-verification seam (G010 T004). These are additive `task_events` rows; `reason` is JSON where the seam recorded structured facts and must be tolerated unparseable by readers. |
+| Times | Every lifecycle fact carries a stored time: goal `created_at`/`updated_at` (the pause, resume, and cancel commits move `updated_at`), run `started_at`/`completed_at`, event `created_at`, attempt `started_at`/`ended_at`, receipt `created_at`, progress `received_at`. No synthesized or backfilled times exist; a v12→v15 upgrade adds none. |
+
+**Independent Analytics compatibility (recorded 2026-10-16).** The
+separate `orx-analytics` repository, at its last commit observed this
+round (`3f1b66c`), pins `SUPPORTED_ORX_SCHEMA = {"8", "9", "10", "11",
+"12"}` in `src/orxanalytics/probe.py`; a v13, v14, or v15 database is not
+yet accepted there and its snapshots are isolated with a warning, never a
+crash. That is a compatibility status, not an ORX defect: ORX's own gate
+(`schema_gate` above) accepts 8 through 15 additively. The adaptations
+`orx-analytics` needs when it adopts v13+ are: extend the allowlist with
+`13`, `14`, `15`; treat `paused` and `cancelling` as UNFINISHED goal
+states in any active-goal derivation (both occupy the one unfinished-Goal
+slot); read goal state from `goals.status`, not from run aggregates; and,
+if it reads `completion_receipts`, treat them as replay surfaces keyed by
+the `UNIQUE` `attempt_id` (one receipt per accepted delivery, never a
+re-run instruction). This contract grants `orx-analytics` no scheduling
+authority (it cannot pause, resume, cancel, dispatch, or reverify) and no
+migration authority (it never calls `Store.open`, never writes, and never
+checkpoints); those are ORX-application rights only.
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -1551,3 +1581,72 @@ consumer's own read clock; they are deliberately not stored columns. When
 honest result is "reported, age unknown" — never a zero age, a negative
 age, or an overdue verdict from an anomalous clock
 (docs/host-progress-contract.md §8).
+
+## Goal lifecycle reads (v13/v14/v15, eleventh amendment)
+
+Goal state is `goals.status` — `active`, `paused`, `cancelling`,
+`cancelled`, `done` — read verbatim. It is never derived from
+`runs.status` (task-derived, unchanged by a pause or a cancel) and never
+from task aggregates. `paused` and `cancelling` are UNFINISHED states:
+each still occupies the one unfinished-Goal slot of its project.
+
+One row per goal with its run facts, the run's `goal_cancel` transition
+count, and the open attempts a cancel wrap-up would still wait on:
+
+```sql
+-- query: goal_lifecycle
+SELECT
+  :project_id AS project_id,
+  g.id AS goal_id,
+  g.status AS goal_status,
+  g.created_at AS goal_created_at,
+  g.updated_at AS goal_updated_at,
+  r.id AS run_id,
+  r.status AS run_status,
+  r.started_at AS run_started_at,
+  r.completed_at AS run_completed_at,
+  (SELECT COUNT(*)
+     FROM task_events e
+     JOIN plan_revisions pr ON pr.id = e.revision_id
+    WHERE pr.run_id = r.id AND e.event LIKE 'goal_cancel%') AS goal_cancel_events,
+  (SELECT COUNT(*)
+     FROM attempts a
+    WHERE a.run_id = r.id
+      AND a.ended_at IS NULL
+      AND a.role IN ('planner', 'worker', 'verifier')) AS open_attempts
+FROM goals g
+LEFT JOIN runs r ON r.goal_id = g.id
+ORDER BY g.created_at, g.id;
+```
+
+Every lifecycle event row of the G010 seams with full identity and time —
+the cancel sweep's explicit task transitions, the manageable-CLI stop
+fact, and the suppression re-verification records. `reason` is JSON where
+structured facts were recorded; tolerate it unparseable and never rewrite
+it:
+
+```sql
+-- query: goal_lifecycle_events
+SELECT
+  :project_id AS project_id,
+  pr.run_id,
+  pr.revision,
+  e.id AS event_row_id,
+  e.task_id,
+  e.from_status,
+  e.to_status,
+  e.event,
+  e.reason,
+  e.created_at
+FROM task_events e
+JOIN plan_revisions pr ON pr.id = e.revision_id
+WHERE e.event LIKE 'goal_cancel%'
+   OR e.event LIKE 'suppression_%'
+ORDER BY e.id;
+```
+
+Boundaries: these queries read state others wrote — a pause writes only
+`goals.status`, so there is no pause event anywhere; `completion_receipts`
+are replay surfaces (see the tenth amendment), not verdicts; and nothing
+here grants a reader the right to move any of it. Writes stay rejected on
+this contract's connections.

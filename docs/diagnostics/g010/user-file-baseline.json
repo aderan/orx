@@ -2,6 +2,8 @@
   "recorded_at": "2026-10-16",
   "task": "T001",
   "goal": "G010",
+  "sha256": "5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5",
+  "sha256_semantics": "T006 top-level digest for the prescribed unchanged-content check. It names the FINAL T001 disposition recorded in the postscript below (sha256_worktree_after_regeneration): the regenerated generation T001 left in place, disclosed, unstaged, and uncommitted. The original pre-regeneration worktree digest stays recorded verbatim in protected_user_file.sha256_worktree and is superseded only in the sense the postscript documents. A mismatch against this value means the file changed after T001's disposition.",
   "protected_user_file": {
     "path": "docs/m1.2-report.md",
     "tracked": true,

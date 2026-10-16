@@ -11,6 +11,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 CONTRACT = ROOT / "docs" / "observability-contract.md"
 SEED = ROOT / "tests" / "fixtures" / "observability" / "seed.sql"
@@ -35,6 +37,8 @@ QUERIES = (
     "replan_artifact_provenance",
     "progress_history",
     "progress_current",
+    "goal_lifecycle",
+    "goal_lifecycle_events",
 )
 
 _FENCE = re.compile(r"```sql\n(.*?)```", re.S)
@@ -517,3 +521,187 @@ def test_progress_current_reports_only_the_current_attempts_report():
         ]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# G010 T006 (eleventh amendment): goal lifecycle reads — the new goal states
+# (paused / cancelling), the new event families (goal_cancel* and the
+# suppression re-verification seam), and their times. The committed fixture
+# predates v13 (its goals CHECK has the pre-v13 vocabulary), so this test
+# widens the CHECK on its private in-memory copy exactly the way the real
+# v13/v14 migrations do (backup-replace, rows preserved verbatim) before
+# inserting the lifecycle rows.
+
+
+def _seed_with_v14_goals() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SEED.read_text())
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE goals RENAME TO goals_seed")
+    conn.execute(
+        "CREATE TABLE goals ("
+        " id TEXT PRIMARY KEY,"
+        " objective TEXT NOT NULL,"
+        " constraints_json TEXT NOT NULL DEFAULT '[]',"
+        " acceptance_json TEXT NOT NULL DEFAULT '[]',"
+        " context TEXT NOT NULL DEFAULT '',"
+        " status TEXT NOT NULL CHECK (status IN"
+        "   ('active','paused','cancelling','done','cancelled')),"
+        " created_at TEXT NOT NULL,"
+        " updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO goals SELECT id, objective, constraints_json,"
+        " acceptance_json, context, status, created_at, updated_at"
+        " FROM goals_seed"
+    )
+    conn.execute("DROP TABLE goals_seed")
+    conn.commit()
+    return conn
+
+
+def test_goal_lifecycle_reads_states_times_and_open_executions():
+    queries = load_queries()
+    conn = _seed_with_v14_goals()
+    try:
+        # The pre-existing seed goal survived the CHECK widening verbatim.
+        # (The fixture gives G001 three runs; real databases have one run
+        # per goal — the row for R001 is the completed one.)
+        seed_rows = run(conn, queries["goal_lifecycle"])
+        assert {r["goal_id"] for r in seed_rows} == {"G001"}
+        g001 = next(r for r in seed_rows if r["run_id"] == "R001")
+        assert g001["goal_status"] == "done"
+        assert g001["goal_cancel_events"] == 0
+        assert g001["open_attempts"] == 0
+        assert g001["run_completed_at"] == "2026-10-04T03:00:00.000000+00:00"
+
+        # A paused goal whose run is still running (the honest combination:
+        # pause writes one row — goals.status — and leaves in-flight work
+        # alone), and a cancelling goal mid-wrap-up with one unconfirmed
+        # execution and recorded goal_cancel transitions.
+        conn.executescript("""
+        INSERT INTO goals(id, objective, status, created_at, updated_at) VALUES
+          ('G002', 'paused round', 'paused',
+           '2026-10-16T01:00:00.000000+00:00',
+           '2026-10-16T02:00:00.000000+00:00'),
+          ('G003', 'cancel wrap-up', 'cancelling',
+           '2026-10-16T03:00:00.000000+00:00',
+           '2026-10-16T04:00:00.000000+00:00');
+        INSERT INTO runs(id, goal_id, status, created_at, updated_at, started_at)
+        VALUES
+          ('R004', 'G002', 'running',
+           '2026-10-16T01:00:00.000000+00:00',
+           '2026-10-16T02:00:00.000000+00:00',
+           '2026-10-16T01:30:00.000000+00:00'),
+          ('R005', 'G003', 'running',
+           '2026-10-16T03:00:00.000000+00:00',
+           '2026-10-16T04:00:00.000000+00:00',
+           '2026-10-16T03:30:00.000000+00:00');
+        INSERT INTO plan_revisions(run_id, revision, depth, planner_profile,
+                                   ir_json, status, created_at)
+        VALUES ('R005', 1, 'light', 'host-planner', '{}', 'active',
+                '2026-10-16T03:05:00.000000+00:00');
+        INSERT INTO tasks(revision_id, task_id, objective, scope_json,
+                          acceptance_json, verification_json, routing_json,
+                          status, created_at, updated_at)
+        VALUES (3, 'T009', 'swept work', '{}', '[]', '[]', '{}',
+                'cancelled', '2026-10-16T03:10:00.000000+00:00',
+                '2026-10-16T03:40:00.000000+00:00');
+        INSERT INTO attempts(revision_id, task_id, role, profile, driver,
+                             harness, model, requested_effort, started_at,
+                             run_id)
+        VALUES (3, 'T010', 'worker', 'host-worker', 'host', 'zcode',
+                'm-worker', 'medium', '2026-10-16T03:20:00.000000+00:00',
+                'R005');
+        """)
+        events = [
+            ("T009", "waiting_host", "cancelled", "goal_cancel", None,
+             "2026-10-16T03:40:00.000000+00:00"),
+            ("T009", "cancelled", "cancelled", "suppression_baseline",
+             '{"fingerprint": "v1"}', "2026-10-16T03:41:00.000000+00:00"),
+        ]
+        for task_id, from_s, to_s, event, reason, created in events:
+            conn.execute(
+                "INSERT INTO task_events(revision_id, task_id, from_status,"
+                " to_status, event, reason, created_at)"
+                " VALUES(3, ?, ?, ?, ?, ?, ?)",
+                (task_id, from_s, to_s, event, reason, created),
+            )
+        conn.commit()
+
+        rows = {r["goal_id"]: r for r in run(conn, queries["goal_lifecycle"])}
+        # The state is goals.status verbatim, never derived from runs.status:
+        # both new states sit beside a 'running' run and stay distinguishable.
+        assert rows["G002"]["goal_status"] == "paused"
+        assert rows["G002"]["run_status"] == "running"
+        assert rows["G002"]["goal_updated_at"] > rows["G002"]["goal_created_at"]
+        assert rows["G003"]["goal_status"] == "cancelling"
+        assert rows["G003"]["goal_cancel_events"] == 1
+        assert rows["G003"]["open_attempts"] == 1  # the unconfirmed execution
+        assert rows["G002"]["open_attempts"] == 0
+
+        # The event read: full identity, both families, reason verbatim.
+        lifecycle = run(conn, queries["goal_lifecycle_events"])
+        assert [(r["run_id"], r["revision"], r["task_id"], r["event"],
+                 r["created_at"]) for r in lifecycle] == [
+            ("R005", 1, "T009", "goal_cancel",
+             "2026-10-16T03:40:00.000000+00:00"),
+            ("R005", 1, "T009", "suppression_baseline",
+             "2026-10-16T03:41:00.000000+00:00"),
+        ]
+        assert lifecycle[0]["from_status"] == "waiting_host"
+        assert lifecycle[0]["to_status"] == "cancelled"
+        assert lifecycle[1]["reason"] == '{"fingerprint": "v1"}'
+
+        # On the plain pre-v13 fixture the reads stay honest: no fabricated
+        # lifecycle rows, G001 reads exactly what it always read.
+        plain = sqlite3.connect(":memory:")
+        plain.row_factory = sqlite3.Row
+        plain.executescript(SEED.read_text())
+        try:
+            assert [r["event"] for r in
+                    run(plain, queries["goal_lifecycle_events"])] == []
+        finally:
+            plain.close()
+    finally:
+        conn.close()
+
+
+def test_goal_lifecycle_reads_reject_writes_like_every_contract_query(tmp_path):
+    """The lifecycle queries ride the same read-only discipline: on a
+    query_only connection every documented query runs and a write is
+    rejected (the global no-modify test covers the file digest; this pins
+    the lifecycle pair specifically)."""
+    queries = load_queries()
+    db = tmp_path / "state.db"
+    build_db(db)
+    conn = open_readonly(db)
+    try:
+        rows = run(conn, queries["goal_lifecycle"])
+        assert rows and rows[0]["goal_id"] == "G001"
+        assert run(conn, queries["goal_lifecycle_events"]) == []
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute(
+                "UPDATE goals SET status = 'cancelling' WHERE id = 'G001'")
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute(
+                "INSERT INTO task_events(revision_id, task_id, to_status,"
+                " event, created_at) VALUES(1, 'T001', 'cancelled',"
+                " 'goal_cancel', '2026-10-16T00:00:00.000000+00:00')")
+    finally:
+        conn.close()
+
+
+def test_contract_records_analytics_compatibility_without_granting_rights():
+    """The eleventh amendment records the independent Analytics status
+    (allowlist 8-12 observed, adaptations needed for 13/14/15) and keeps
+    the authority boundary explicit: no scheduling, no migration."""
+    flat = " ".join(CONTRACT.read_text().split())
+    assert 'SUPPORTED_ORX_SCHEMA = {"8", "9", "10", "11", "12"}' in flat
+    for version in ("13", "14", "15"):
+        assert version in flat
+    assert "no scheduling authority" in flat
+    assert "no migration authority" in flat
+    assert "UNFINISHED goal states" in flat
+    assert "never calls `Store.open`" in flat
