@@ -1139,7 +1139,7 @@ G008 归档收口钉住的临时标记混同）。
   docs/diagnostics/g011/joint-acceptance-runbook.md（package-
   acceptance.md §7 摘要）随附。T005（渠道身份/签名/公证）未启动。
 
-### 阶段 5：冻结、联合受验与发布收口 — 进行中（T006 已交付；T007–T008 未启动）
+### 阶段 5：冻结、联合受验与发布收口 — 进行中（T006/T007 已交付；T008 未启动）
 - **Goal**：提交已验证的发布源码，冻结两仓完整提交，从干净检出运行
   全量和包级检查，构建绑定清单的最终 wheel、源码包及 App 归档
   （T006）；使用冻结归档安装后的最终 App 和 ORX wheel，从旧库升级
@@ -1154,11 +1154,35 @@ G008 归档收口钉住的临时标记混同）。
   报告自始至终未暂存未提交，发布物中该文件取自提交态。
 - **测试**：干净检出全量 + 包级链；冻结归档安装后端到端联合验收；
   发布后远端 ls-remote 对应关系核对（提交、标签、产物字节）。
-- **状态**：进行中——T006 交付（2026-10-17，R11）见下；T007（操作者
-  GUI/生命周期联合验收）、T008（推送冻结提交与标签、发布产物、远端
-  对应核对）未启动。
+- **状态**：进行中——T006、T007 交付（2026-10-17，R11/R12）见下；T008（推送
+  冻结提交与标签、发布产物、远端对应核对）未启动。T007 操作者验收另发现
+  运行时封条缺陷（见轮次记录），是否重冻结由下一轮决定。
 
 ## G011 轮次记录
+- 2026-10-17 R12 T007（attempt 207）：阶段 5 联合生命周期验收——从冻结
+  归档安装最终 App（sha 5187029c… 复核一致、ditto 安装、安装时验签
+  exit 0、自包含启动：进程全指向 App 内置 3.12.8 运行时与内置引擎
+  入口），控制操作全部来自冻结 wheel 已安装 CLI（0.4.0）；App 级真实
+  升级链实测（真实旧代码 store v2 样本 → 迁移前备份 analytics-pre-
+  0.4.2-…db → 原地 v3 行数全保留 → 重启不重复备份 → 真实 0.4.1 拒读
+  v3（store_version 3 != 2 原文）→ 备份可回退打开）；两条生命周期链
+  全走真实暂停/拒派发/关重开 App/原 attempt 继续/取消（unconfirmed
+  保留）/真实交付收敛、暂停期 Run done 而 Goal paused→resume 才 done，
+  已取消 Goal（原 Run blocked/failed）不进活跃与失败通知而历史可查
+  （引擎 overview 逐态实测）；通知默认关闭＋真实失败零投递（usernoted
+  统一日志 0 行）＋取消后关注 2→0；回执恰 1、跨文件重传原回执零新
+  增、未知用量 null 不补零、静止窗口采集前后源库逐字节不变；
+  exercise/verify 规定检查绿（manifest stages 全 passed）。**真实发现
+  缺陷：安装后 App 首次拉起内置引擎即向包内写 73 个 __pycache__ pyc
+  （另改 3 个已封存 stdlib pyc），codesign --verify 由 0 变 1——运行时
+  引擎子进程未设 PYTHONDONTWRITEBYTECODE/-B（构建期防护不覆盖运行时）；
+  属 Analytics 源码缺陷，修复将使冻结候选失效，如实记录未修复**。
+  边界如实：隔离 macOS 用户（无免密 sudo）、正式渠道 quarantine/
+  Gatekeeper/公证链（凭据缺失 blocked）、通知授权态切换（需人工）；
+  操作者会话锁定窗口内面板像素截图受限，截得部分见
+  docs/diagnostics/g011/screenshots/。报告
+  docs/diagnostics/g011/joint-acceptance-report.md；证据
+  dist/g011/gui-acceptance/＋gui-evidence.json＋logs/01-exercise.log。
 - 2026-10-17 R11 T006（attempt 192）：阶段 5 前半交付——发布源码冻结与
   候选构建：两仓冻结提交（ORX v0.4.0 @ `f1cc7757…`、Analytics v0.4.2 @
   `2461a260…`，均含冻结前全量验证），一次性干净 git 检出上五项必需检查
