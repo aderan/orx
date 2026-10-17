@@ -1,0 +1,211 @@
+{
+  "goal": "G011",
+  "task": "T001",
+  "attempt": 182,
+  "run": "R011",
+  "recorded_at": "2026-10-17",
+  "purpose": "G011 release baseline: two-repository git facts, the isolated in-project Analytics clone, remote and tool-environment verification, the protected user-report disposition, and the release-exclusion decisions. Everything below was measured in this session; items that could not be verified are listed under unknown_or_unverified or marked blocked, never presented as verified.",
+
+  "compatible_release_combo": {
+    "orx": "v0.4.0",
+    "orx_analytics": "v0.4.2",
+    "rule": "the two repositories do not need to match version numbers; ORX v0.4.0 + Analytics v0.4.2 is the compatible combination that closes 0.4.x",
+    "historical_tags": "all existing tags in both repositories stay exactly as they are; G011 only adds new tags at the frozen commits (phase 5), never rewrites or moves history",
+    "current_state": "ORX tree version is 0.3.1 (src/orx/__init__.py, single source of truth read by hatchling at build time); Analytics tree version is already 0.4.2 (src/orxanalytics/__init__.py)"
+  },
+
+  "repositories": {
+    "orx": {
+      "path": "/Users/flb/Sources/Products/ORX",
+      "origin": "https://github.com/aderan/orx.git",
+      "branch": "main",
+      "head_commit": "e460314c6ca3296740611a752e0006395c090f79",
+      "head_commit_date": "2026-10-17 04:17:11 +0800",
+      "head_subject": "G010/T006: 跨进程端到端验收、兼容验证与操作文档——…（首行截断；完整原文见 git log -1 e460314）",
+      "tree_version": "0.3.1",
+      "installed_orx_cli_on_path": {
+        "path": "/Users/flb/.local/bin/orx",
+        "kind": "uv tool install",
+        "package": "orx-agent",
+        "version": "0.2.1",
+        "note": "older than the 0.3.1 repo tree; recorded as-is, not upgraded by this task. The repo's own .venv imports orx 0.3.1. Install-acceptance phases must state which orx they invoke."
+      },
+      "worktree": {
+        "status_porcelain": [" M docs/m1.2-report.md"],
+        "note": "the only worktree change in the ORX repository is the protected user report described under protected_report; no other file is modified or staged"
+      },
+      "tags": {
+        "count": 5,
+        "snapshot": ["v0.1.0", "v0.2.0", "v0.2.1", "v0.3.0", "v0.3.1"],
+        "latest": "v0.3.1",
+        "v0_3_1": {
+          "kind": "lightweight tag (tag ref resolves directly to the commit)",
+          "commit": "4a450cf8fc16a3ec79a8e1b1a3a1a5754b0cbeb3"
+        }
+      },
+      "remote_verification": {
+        "command": "git ls-remote https://github.com/aderan/orx.git refs/heads/main refs/tags/v0.3.1",
+        "status": "verified",
+        "checked_at": "2026-10-17",
+        "remote_main": "9638d267756ab458c697c985baadd752185c30d6",
+        "remote_tag_v0_3_1": "4a450cf8fc16a3ec79a8e1b1a3a1a5754b0cbeb3",
+        "findings": [
+          "remote main 9638d26 is an ancestor of local HEAD e460314: local is strictly ahead by 27 commits and 0 behind (no divergence, no force anything needed for a future push)",
+          "local tag v0.3.1 and remote tag v0.3.1 resolve to the identical commit 4a450cf"
+        ]
+      }
+    },
+
+    "orx_analytics_source": {
+      "path": "/Users/flb/Sources/Tools/orx-analytics",
+      "origin": "https://github.com/aderan/orx-analytics.git",
+      "branch": "main",
+      "head_commit": "07ab676e3f6499f8b636354c670de7b11ac15e69",
+      "head_commit_date": "2026-10-17 09:49:00 +0800",
+      "head_author": "aderan",
+      "head_subject": "0.4.2: 接受 ORX schema v13/v14/v15（G010 生命周期修订）——白名单 {8..15}…（首行截断；完整原文见 git log -1 07ab676）",
+      "tree_version": "0.4.2",
+      "worktree": {
+        "status_porcelain": [],
+        "note": "clean; no uncommitted changes existed, so nothing uncommitted had to be (or was) carried into the clone"
+      },
+      "tags": {
+        "count": 0,
+        "snapshot": [],
+        "note": "no git tags exist anywhere in this repository (verified: git tag --list is empty)"
+      },
+      "ahead_of_remote": "21 commits ahead, 0 behind",
+      "remote_verification": {
+        "command": "git ls-remote https://github.com/aderan/orx-analytics.git refs/heads/main",
+        "status": "verified",
+        "checked_at": "2026-10-17",
+        "remote_main": "bd06d70023f5cbb09aac3e259568823da7e89698",
+        "findings": [
+          "remote main bd06d70 is an ancestor of local HEAD 07ab676 (verified with git merge-base --is-ancestor after fetch): local is strictly ahead by 21 commits, 0 behind, no divergence",
+          "remote tag state was not enumerated (only refs/heads/main was queried); see unknown_or_unverified"
+        ]
+      },
+      "integrity_note": "read-only treatment: this task ran no mutating git command inside the source checkout (no fetch, pull, checkout, reset, commit, or tag). The clone was produced with git clone, which writes nothing to the source; remote checks used ls-remote against the URL and a fetch inside the CLONE only."
+    },
+
+    "orx_analytics_release_clone": {
+      "path": ".release-workspaces/orx-analytics",
+      "cloned_from": "/Users/flb/Sources/Tools/orx-analytics",
+      "method": [
+        "git clone /Users/flb/Sources/Tools/orx-analytics .release-workspaces/orx-analytics (local clone of the verified full commit 07ab676; copies tracked files and the full object database only)",
+        "git remote set-url origin https://github.com/aderan/orx-analytics.git (origin now points at the original GitHub repository, not the local path)",
+        "git fetch origin (aligns the clone's remote-tracking refs with the ls-remote-verified GitHub state; forced update 07ab676->bd06d70 on refs/remotes/origin/main, as expected for a local-path clone)"
+      ],
+      "head_commit": "07ab676e3f6499f8b636354c670de7b11ac15e69",
+      "head_matches_source": true,
+      "origin": "https://github.com/aderan/orx-analytics.git",
+      "branch": "main",
+      "tags": {
+        "count": 0,
+        "snapshot": [],
+        "note": "the source repository has no tags; the clone preserves that state exactly (nothing dropped, nothing invented)"
+      },
+      "history_independence": "full independent git history: .git/objects/info/alternates is absent (no shared object store); log shows the complete history back to the initial commit",
+      "post_setup_git_state": {
+        "worktree_clean": true,
+        "git_diff_exit_code": 0,
+        "git_diff_cached_exit_code": 0,
+        "ahead_of_origin_main": 21,
+        "origin_main_after_fetch": "bd06d70023f5cbb09aac3e259568823da7e89698 (matches the ls-remote verification)"
+      },
+      "exclusions_honored": {
+        "virtualenv": "not copied. A fresh .venv was created inside the clone by this task (python3 -m venv; Python 3.12.9; pytest 9.1.1; editable install of orx-analytics 0.4.2). The source's own virtual environment, if any, never entered the clone; .venv/ is covered by the Analytics repository's own .gitignore.",
+        "run_databases": "not copied. git clone materializes tracked files only; no data/, var/, or .orx/ runtime databases or generated state came over (those paths are untracked in the source and were never read).",
+        "uncommitted_source_files": "none existed: the source worktree was clean at clone time, so there was nothing uncommitted to exclude or include."
+      },
+      "additions_by_this_task": [
+        ".venv/ (fresh dev environment; gitignored by the Analytics repo's own .gitignore)",
+        "apps/macos/.build/ (SwiftPM build cache produced by the toolchain probe below; untracked, never committed)"
+      ]
+    }
+  },
+
+  "protected_report": {
+    "path": "docs/m1.2-report.md",
+    "sha256": "5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5",
+    "sha256_semantics": "sha256 of the bytes currently in the ORX worktree, recomputed by this task with shasum -a 256. It is byte-identical to the top-level digest pinned by docs/diagnostics/g010/user-file-baseline.json, i.e. the G010 final disposition (the regenerated generation left in place, disclosed, unstaged, uncommitted). This task did not modify the file.",
+    "g010_baseline_match": true,
+    "tracked": true,
+    "staged": false,
+    "staging_status": "modified in the worktree, unstaged: git status --porcelain shows ' M docs/m1.2-report.md'; git diff --cached is empty (0 staged files). G010 recorded numstat_after_regeneration {added 363, deleted 206}; the current numstat is identical (363/206), so the content has not drifted since the G010 disposition.",
+    "numstat": {"added_lines": 363, "deleted_lines": 206},
+    "commit_attribution": "user. G011 tasks must not stage, overwrite, revert, rewrite, or commit this file, and must not run test suites that regenerate it (the m12 acceptance test) against the live state without restoring the recorded disposition.",
+    "release_decision": "EXCLUDED from the G011 release. The uncommitted report content is not part of any freeze, tag, archive, or distribution artifact: release snapshots and frozen checkouts must take this file from its last committed state (git show HEAD:docs/m1.2-report.md), never from the worktree bytes. The disposition recorded here (path, sha256, staging state) is the baseline later phases re-verify before freezing."
+  },
+
+  "tools": {
+    "verified_runnable": {
+      "git": "git version 2.54.0 (Apple Git-157)",
+      "python3": "Python 3.12.9 (pyenv)",
+      "orx_repo_venv": {
+        "interpreter": ".venv/bin/python -> 3.12.9",
+        "orx": "0.3.1 (import orx)",
+        "pytest": "9.1.1"
+      },
+      "uv": "uv 0.8.2 (Homebrew)",
+      "orx_package_acceptance": "the ORX package acceptance chain is runnable: scripts/check_release.py present (65342 bytes), uv build available, repo venv carries orx 0.3.1 + pytest 9.1.1. (Not executed in this task; full runs belong to later phases.)",
+      "swift": "swift-driver 1.168.6, Apple Swift 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1), target arm64-apple-macosx26.0",
+      "swiftpm": "apps/macos (ORXAnalytics, swift-tools 5.9, macOS 13+, zero external dependencies): 'swift package describe' exit 0; 'swift build' completed 'Build complete!' exit 0 in ~8s inside the isolated clone",
+      "xcodebuild": "Xcode 27.0 (Build 27A266a)",
+      "codesign_binary": "present and executes (usage output; no --version flag on this variant)",
+      "productbuild_binary": "present and executes (option parsing responds)",
+      "analytics_clone_venv": {
+        "python": "3.12.9",
+        "pytest": "9.1.1",
+        "orx_analytics": "0.4.2 (editable install)",
+        "pytest_collect_only": "exit 0; 208 tests collected across 14 test files"
+      },
+      "github_network": "git ls-remote succeeded against both origins (read access verified; see repositories.*.remote_verification)"
+    },
+
+    "missing_for_install_level_verification": [
+      {
+        "item": "Developer ID Application certificate",
+        "status": "blocked",
+        "evidence": "security find-identity -v -p codesigning lists exactly two identities: 'Apple Development: libin feng (QCKV9T523J)' (F99C0848...) and 'Apple Distribution: libin feng (CJK4RPXHR4)' (3C224E0C...). No 'Developer ID Application' identity exists on this machine.",
+        "impact": "formal-distribution signing of the Analytics app is impossible until the user provisions a Developer ID Application certificate. Internal-preview artifacts can at most carry ad-hoc or Apple Development signing; they must be labeled as internal preview and must not be presented as distribution-signed."
+      },
+      {
+        "item": "notarytool stored credentials",
+        "status": "blocked",
+        "evidence": "the notarytool binary itself runs, but no stored credential profile exists: 'xcrun notarytool history --keychain-profile <probe>' returns 'No Keychain password item found for profile', and the keychain holds no com.apple.gke.notary.tool generic-password items.",
+        "impact": "notarization (and stapling) of distribution artifacts cannot run. Required for formal distribution; not required for internal preview."
+      },
+      {
+        "item": "passwordless sudo",
+        "status": "blocked",
+        "evidence": "sudo -n true exits 1 with 'sudo: a password is required'.",
+        "impact": "a dedicated isolated local macOS user for clean-room install verification cannot be created non-interactively. Phase 4/7 install-level acceptance must either ask the user to run the one-time setup step interactively, or use a non-sudo isolation strategy (e.g. per-artifact HOME/temp directories), and must document which one it used."
+      }
+    ],
+
+    "environment_notes": [
+      "ORX_ANALYTICS_BIN is unset in this session: external analytics supervision is unavailable and out of this cycle's scope (recorded from goal context; re-observed live as unset).",
+      "The PATH-resident orx CLI is a uv tool install of orx-agent 0.2.1, older than the 0.3.1 repo tree; later install-acceptance phases must pin and state which orx binary they exercise.",
+      "SwiftPM build inside the isolated clone leaves apps/macos/.build/ as an untracked cache; it is not part of any git state and can be deleted or rebuilt at any time."
+    ]
+  },
+
+  "unknown_or_unverified": [
+    "GitHub remote tag lists beyond the refs explicitly queried (ORX: refs/heads/main and refs/tags/v0.3.1; Analytics: refs/heads/main) were not enumerated. Remote tag state for other refs is UNKNOWN.",
+    "Push/write permission on either GitHub remote is UNKNOWN and untested: ls-remote proves read access only. No push is attempted before phase 5, and phase 5 must re-verify write access as its own step.",
+    "Whether the Analytics GitHub remote carries tags is unknown (the local repository has none; only refs/heads/main was queried remotely)."
+  ],
+
+  "decisions": [
+    "Release combination: ORX v0.4.0 + Analytics v0.4.2; repositories keep independent version numbers; all historical tags stay untouched; new tags are created only at the phase-5 frozen commits.",
+    "The protected user report docs/m1.2-report.md (path, sha256, unstaged state recorded above) is excluded from the release; releases materialize it from its committed state only. G011 never stages, overwrites, reverts, or commits it.",
+    "Lifecycle presentation is layered: Goal-controlled status and Run execution facts are expressed as separate layers in Analytics; raw Run states are never rewritten to make the presentation agree (goal constraint, binding for T002).",
+    "Analytics stays a read-only analysis layer: it reads and displays state and never gains scheduling, recovery, or replay authority (goal constraint, binding for all phases).",
+    "Distribution split: internal preview artifacts are feasible now (ad-hoc/Apple Development signing at most, clearly labeled); formal distribution is blocked on the two credentials gaps recorded above and proceeds only after the user provisions them."
+  ],
+
+  "gitignore_decision": "The ORX repository .gitignore gained a '.release-workspaces/' rule in this task, so the isolated release workspace (a full foreign git clone) is ignored by git on this machine (git check-ignore verifies it). Honesty note: this repository's .gitignore is itself a local, untracked file — the user's global excludesfile /Users/flb/.gitignore_global lists '.gitignore', and the path exists on disk but not in HEAD — a pre-existing convention this task preserves. The ignore guarantee therefore protects this machine's worktree; a fresh clone of aderan/orx would not carry the rule, and phase 5 must not rely on the rule being present in any clean checkout.",
+
+  "implementation_plan_pointer": "IMPLEMENTATION_PLAN.md carries the five G011 phases (goals, success criteria, tests, status) appended as the G011 section; earlier Goal history in that file is unchanged."
+}

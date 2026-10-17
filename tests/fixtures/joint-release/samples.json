@@ -1,0 +1,13 @@
+{
+  "analytics_store_v2": {
+    "path": "tests/fixtures/joint-release/analytics-store-v2",
+    "produced_by": "real analytics commit 3f1b66c0234db3cf84d6c2957e34d00bab1b5cee (version 0.4.1, store v2)",
+    "see": "tests/fixtures/joint-release/analytics-store-v2/PROVENANCE.md",
+    "sha256": "2a7d987324d00d8886699a4affa0eefe90f36c0edde3500c8ccd55301db9aaaf"
+  },
+  "orx_old": {
+    "path": "tests/fixtures/release-0.3.0",
+    "produced_by": "real v0.3.0 code (commit 0f2629e6988ba5082a876257c910d78457bd1338)",
+    "see": "tests/fixtures/release-0.3.0/PROVENANCE.md"
+  }
+}

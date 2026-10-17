@@ -1,0 +1,99 @@
+{
+  "channels": {
+    "internal-preview": {
+      "app_name": "ORX Analytics (Internal Preview)",
+      "archive_kind": "zip",
+      "audience": "internal testing only (内部测试)",
+      "basis": [
+        "no Developer ID Application identity in the keychain (probed live 2026-10-17; see credential_facts_probed_live)",
+        "no stored notarytool credentials (probed live 2026-10-17; see credential_facts_probed_live)",
+        "G011 ships the compatible combination ORX v0.4.0 + Analytics v0.4.2 and closes 0.4.x with an honestly-labeled internal preview rather than fabricated signing evidence"
+      ],
+      "bundle_id": "org.orxanalytics.macos.dev",
+      "decision": "allowed",
+      "decision_reason": "the only channel this machine's credentials can produce honestly; explicitly labeled, never presented as a formal installer",
+      "fail_closed": false,
+      "gatekeeper_limit": "Ad-hoc signed, NOT notarized: Gatekeeper blocks first launch and needs the documented manual confirmation. Internal preview — not a formal installer, do not distribute outside the internal audience.",
+      "labeling_required_in": [
+        "app-visible Info.plist (ORXAnalyticsChannel/Audience/GatekeeperNotice/SourceCommit)",
+        "in-app manifest Contents/Resources/distribution.json",
+        "archive name (channel token) and per-archive build record",
+        "install documentation (docs/app-installation.md)"
+      ],
+      "mode": "dev",
+      "signing": "ad-hoc"
+    },
+    "official": {
+      "app_name": "ORX Analytics",
+      "archive_kind": "dmg",
+      "audience": "general users (正式分发)",
+      "basis": [
+        "no Developer ID Application identity in the keychain (probed live 2026-10-17; see credential_facts_probed_live)",
+        "no stored notarytool credentials (probed live 2026-10-17; see credential_facts_probed_live)"
+      ],
+      "bundle_id": "org.orxanalytics.macos",
+      "decision": "blocked",
+      "fail_closed": true,
+      "mode": "dist",
+      "requirements": [
+        "valid Developer ID Application identity (Apple Development/Distribution do not qualify)",
+        "Developer ID signature on the outer app AND every nested Mach-O under the bundled python runtime, with secure timestamps",
+        "hardened runtime (--options runtime) with the pinned entitlements set for CPython (allow-unsigned-executable-memory, allow-jit)",
+        "notarytool submit --wait returns status Accepted",
+        "stapler staple + validate succeed on the .app",
+        "install evaluation: spctl --assess --type execute ACCEPTS a copied install; quarantine removal is never used as a method"
+      ],
+      "signing": "Developer ID Application + hardened runtime",
+      "user_steps_to_unblock": [
+        "obtain and import a Developer ID Application certificate into the login keychain (Apple Developer account -> Certificates)",
+        "store notarytool credentials once: xcrun notarytool store-credentials orx-analytics-notary (App Store Connect API key)",
+        "re-run the live probes, flip this channel's decision to 'allowed' with a NEW basis entry recording the re-probe, then build: scripts/build_app.sh dist --decision <this file>"
+      ]
+    }
+  },
+  "credential_facts_probed_live": {
+    "commands": [
+      "security find-identity -v -p codesigning",
+      "xcrun notarytool history --keychain-profile orx-analytics-notary"
+    ],
+    "developer_id_application": {
+      "consistent_with_baseline": "docs/diagnostics/g011/baseline.json tools.missing_for_install_level_verification",
+      "evidence": "exactly two codesigning identities exist: 'Apple Development: libin feng (QCKV9T523J)' (F99C0848...) and 'Apple Distribution: libin feng (CJK4RPXHR4)' (3C224E0C...); neither is a Developer ID Application identity",
+      "present": false
+    },
+    "notarytool_stored_credentials": {
+      "evidence": "notarytool 1.1.3 runs, but 'No Keychain password item found for profile: orx-analytics-notary'; no com.apple.gke.notary.tool generic-password items exist",
+      "present": false
+    },
+    "probed_at": "2026-10-17",
+    "tools_available": [
+      "codesign",
+      "stapler",
+      "spctl",
+      "xcrun notarytool 1.1.3",
+      "hdiutil",
+      "ditto"
+    ]
+  },
+  "decision_file_schema": 1,
+  "downgrade_policy": "official failure (missing credentials, failed signing/notarization/staple/assessment) exits non-zero with a machine-readable JSON reason and produces no archive; it never becomes an internal-preview artifact. Channel outcomes are recorded in separate results slots; a channel switch requires an explicit new decision entry in this file.",
+  "goal": "G011",
+  "purpose": "Distribution-channel decision for the ORX Analytics macOS app, fixed BEFORE any G011 build. The channel, its basis and its requirements live here; build_app.sh validates this file (validate-decision) before building and refuses mismatches. An official failure NEVER silently downgrades to internal-preview: the two channels record outcomes in separate results slots below, and switching channels requires an explicit new decision entry.",
+  "recorded_at": "2026-10-17",
+  "results": {
+    "internal-preview": {
+      "evidence": ".release-workspaces/orx-analytics/var/dist/ORXAnalytics-0.4.2-internal-preview-dev-macos13-arm64.zip.json",
+      "recorded_at": "2026-10-17T21:29:24+0800",
+      "status": "passed",
+      "summary": "labeled internal-preview build produced and recorded: ad-hoc zip ORXAnalytics-0.4.2-internal-preview-dev-macos13-arm64.zip (sha256 dee6ba6151f41c866879769a1ab3ebb9d5f7bafcf16be23c44871da73af0687c), channel/audience/Gatekeeper notice/full commit 07ab676e3f6499f8b636354c670de7b11ac15e69 in Info.plist, Resources/distribution.json, archive name and build record; engine self-test passed; decision bound by sha256"
+    },
+    "official": {
+      "evidence": "docs/diagnostics/g011/distribution.json credential_facts_probed_live; refusal transcripts in the G011 T005 delivery evidence",
+      "recorded_at": "2026-10-17T21:29:34+0800",
+      "status": "blocked",
+      "summary": "official channel implemented for real (Developer ID nested+outer codesign with hardened runtime and pinned entitlements, notarytool submit --wait, stapler staple+validate, spctl install assessment, hash only after all gates) and FAILS CLOSED on this machine: live refusals proven 2026-10-17 — decision-missing without a decision file, channel-not-allowed while the decision records blocked, and no-developer-id-identity (with an allowing decision) from the real keychain; no archive produced, no downgrade to internal-preview"
+    }
+  },
+  "run": "R011",
+  "task": "T005"
+}

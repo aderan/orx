@@ -19,7 +19,7 @@ against `tests/fixtures/observability/seed.sql`.
 
 `meta.schema_version` is the integer version of the file, stored as text.
 The gate accepts **exactly the explicitly supported versions — `8`, `9`,
-`10`, `11`, `12`, `13`, and `14`** and refuses every other value: never a range, never "at
+`10`, `11`, `12`, `13`, `14`, and `15`** and refuses every other value: never a range, never "at
 least X".
 
 | File value | Reader action |
@@ -34,7 +34,7 @@ least X".
 | `13` | read everything; `goals.status` admits `paused` (see the eighth amendment) |
 | `14` | read everything; `goals.status` admits `cancelling` (see the ninth amendment) |
 | `15` | read everything; adds the `completion_receipts` table (see the tenth amendment) |
-| integer greater than 14 | refuse; do not rewrite the file |
+| integer greater than 15 | refuse; do not rewrite the file |
 
 ORX itself migrates only when application code opens the database through
 `Store.open`. Migrations are additive functions keyed by the integer
@@ -221,6 +221,26 @@ authority (it cannot pause, resume, cancel, dispatch, or reverify) and no
 migration authority (it never calls `Store.open`, never writes, and never
 checkpoints); those are ORX-application rights only.
 
+**Independent Analytics compatibility — current status (recorded
+2026-10-17, orx-analytics 0.4.2).** The pairing verified with ORX 0.4.0
+is `orx-analytics` **0.4.2** (software version) with analytics store
+**v3**: its allowlist is now `SUPPORTED_ORX_SCHEMA = {"8", "9", "10",
+"11", "12", "13", "14", "15"}` — it accepts exactly schema 8 through 15
+and still refuses every unknown future version, isolating that source
+with a warning instead of a crash. Its own storage upgrades a v1 or v2
+analytics store to v3 in place (additive, inside its own data directory
+only — never an ORX database). It treats `paused` and `cancelling` as
+UNFINISHED goal states read verbatim from `goals.status`, and it mirrors
+`completion_receipts` facts only — digest, identity, delivery status,
+and time — never the `receipt_json` replay payload: a receipt is a
+replay surface for the delivering caller, and the read-only analysis
+layer reads it, it never replays it. The recorded 2026-10-16 observation
+above is history and stays verbatim. Every authority boundary is
+unchanged: no scheduling authority, no migration authority (it never
+calls `Store.open`, never writes, never checkpoints), and an unset
+`ORX_ANALYTICS_BIN` on the ORX side only means external analytics
+supervision is unavailable — it blocks nothing in ORX itself.
+
 **Normalized presentation (G009 T010).** The stored token columns keep
 the runner's own meaning — the rules above ("do not compute
 `input_tokens - cached_input_tokens`", "do not rescale one harness onto
@@ -392,7 +412,7 @@ integers 0 and 1 (`verifications.passed`, `attempts.fallback_used`).
 | Column | Null | Role in this contract |
 |---|---|---|
 | `key` | no | `schema_version` is the only key readers need |
-| `value` | no | text; current files store one of the supported versions `8` through `13` |
+| `value` | no | text; current files store one of the supported versions `8` through `15` |
 
 ### `runs`
 

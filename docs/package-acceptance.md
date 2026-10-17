@@ -1,11 +1,19 @@
-# 安装包级验收（0.3.1，G007 T004）
+# 安装包级验收（运行手册）
 
-状态：随 G007 T004 建立。本文是安装包级验收的运行手册：入口、依赖、
+状态：随 G007 T004 建立（0.3.1），G011 起随当前发布前行（0.4.0，
+`CODE_SCHEMA_VERSION` = 15；升级链期望值始终锚定代码常量，不随本文
+改写）。本文是安装包级验收的运行手册：入口、依赖、
 fixture 来源、链路内容、隔离保证与失败退出行为。实现全部在
 `scripts/check_release.py`（链路各段是可导入的普通函数），测试固化在
 `tests/test_package_acceptance.py`；两者共用同一次
 wheel 构建 + 临时 venv 安装，验收对象永远是**构建出的 wheel**，不是源码
 检出，也没有任何 skip 路径（每一段在每次运行时都会执行）。
+
+G011 T004 起本文 §1–§6 之上叠加**两仓联合验收层**（ORX v0.4.0 +
+Analytics v0.4.2 兼容组合的冻结构建与联合受验）：实现
+`scripts/joint_release.py`，测试 `tests/test_joint_release.py`，运行
+手册与样本来源细则见 `docs/diagnostics/g011/joint-acceptance-runbook.md`
+（§7 摘要见文末）。
 
 ## 1. 入口
 
@@ -58,17 +66,21 @@ wheel 构建 + 临时 venv 安装，验收对象永远是**构建出的 wheel**�
    记录的 sha256 与文件一致），再做再生核对（用真实 v0.3.0 代码重跑
    生成，归一化逻辑 dump——屏蔽生成式 uuid/时间戳与生成根路径——必须
    与已提交 fixture 完全一致）；
-8. **升级链**（`check_upgrade_chain`，docs/upgrade-0.3.1.md §6 的机器
-   执行）：复制 fixture（源样例只读）→ `VACUUM INTO` 一致性备份 →
-   已安装新版以 `orx status` 打开副本触发 v8→当前版本自动迁移
-   （期望随代码 `orx.state.CODE_SCHEMA_VERSION` 锚定，G009 T010 起
-   为 v12——v12 相对 v11 仅放宽 `usage_observations.source` CHECK 以
-   收 `zcode_db` 行，无新表新列）→ 对全部既有表的全部既有列逐行核对
-   身份与数据（`meta` 仅 `schema_version` 8→当前版本）→ 新增面默认值
-   检查（新增表精确等于 replan 六表 + `attempt_progress` 且为空；
-   `attempts` 仅增 `nonce` 列且旧行全 NULL）→ **真实 v0.3.0 读取入口**
-   （其自身 CLI，经 `git archive` 源码在 wheel venv 解释器上运行）拒读
-   升级后（v12）库（exit 1，`schema version 12 is newer than supported
+8. **升级链**（`check_upgrade_chain`，docs/upgrade-0.4.0.md §5 的机器
+   执行，方法论承自 docs/upgrade-0.3.1.md §6）：复制 fixture（源样例
+   只读）→ `VACUUM INTO` 一致性备份 → 已安装新版以 `orx status` 打开
+   副本触发 v8→当前版本自动迁移（期望随代码
+   `orx.state.CODE_SCHEMA_VERSION` 锚定，0.4.0 为 v15——v8→v15 全链
+   纯增量：v12 放宽 `usage_observations.source` CHECK 以收
+   `zcode_db` 行；v13/v14 放宽 `goals.status` CHECK 以收
+   `paused`/`cancelling`（经备份-替换重建 goals 表，既有行逐字
+   保留）；v15 新增 `completion_receipts` 表）→ 对全部既有表的全部
+   既有列逐行核对身份与数据（`meta` 仅 `schema_version` 8→当前版本）
+   → 新增面默认值检查（新增表精确等于 replan 六表 +
+   `attempt_progress` + `completion_receipts` 且为空；`attempts` 仅增
+   `nonce` 列且旧行全 NULL）→ **真实 v0.3.0 读取入口**（其自身 CLI，
+   经 `git archive` 源码在 wheel venv 解释器上运行）拒读升级后
+   （v15）库（exit 1，`schema version 15 is newer than supported
    version 8; upgrade orx`——脚本断言其稳定子串 `newer than supported
    version 8`，随 `CODE_SCHEMA_VERSION` 前行）且文件字节不变 → 备份
    恢复到新目录后由真实 v0.3.0 读回样例 Goal → 源样例 sha256 前后一致。
@@ -117,3 +129,28 @@ scratch HOME 下；真实用户配置、数据、角色目录、技能目录与�
 - 命令行参数错误（argparse）为 **exit 2**；
 - 测试入口（pytest）以断言失败呈现，没有 skip：fixture 缺失、tag 缺失、
   结构不符、升级差异、拒读缺失、备份不可恢复都会让对应测试失败。
+
+## 7. 联合验收层（G011 T004，摘要）
+
+两仓（本仓库 + `.release-workspaces/orx-analytics` 隔离克隆）的冻结构
+建与联合验收由 `scripts/joint_release.py` 驱动，阶段为 self-test /
+freeze / build / exercise / verify / verify-remote；完整运行手册见
+`docs/diagnostics/g011/joint-acceptance-runbook.md`。与本文件 §1–§6 的
+关系与边界：
+
+- **构建来源**：联合层只从**冻结提交**的一次性 `git archive` 检出构建
+  （工作区未提交内容——含受保护报告——绝不进入）；本文件的链路仍从当
+  前源码树构建 wheel。历史标签（§2 的 v0.3.0 等）保持原样，两边共用。
+- **样本**：本文件的 `tests/fixtures/release-0.3.0` 继续是旧 ORX 样本；
+  联合层新增 Analytics store v2 样本
+  （`tests/fixtures/joint-release/analytics-store-v2`，由真实旧版
+  analytics 提交 3f1b66c… 产生，PROVENANCE 记提交/命令/sha256，
+  freeze/verify 每次以旧代码再生比对）。ORX v8→v15 升级链仍在 §3 第
+  8 步；store v2→v3 升级与旧代码拒读新 schema 在联合层。
+- **隔离与失败语义**：同 §5/§6 的原则（重构最小环境、无网络、无 skip
+  后通过）；联合层额外要求 GUI/签名证据缺失即失败（内部预览至少可验
+  ad-hoc 签名、正式渠道 Developer ID + 公证），App 归档缺失 fail-closed
+  （T006 交付）。运行材料入 `dist/g011/`，提交侧只留脱敏证据索引。
+- **入口**：
+  `uv run pytest -q tests/test_joint_release.py`；
+  `uv run python scripts/joint_release.py self-test --work-dir dist/g011/harness-selftest`。
