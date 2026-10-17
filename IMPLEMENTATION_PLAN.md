@@ -962,7 +962,7 @@ agent 审查与 Goal 验收以 ORX verification 记录为准，此处不预支�
 
 ---
 
-# G011：0.4.x 收尾（2026-10-17 起）
+# G011：0.4.x 收尾（2026-10-17 起；2026-10-17 归档）
 
 目标：Analytics 按 Goal 控制状态与 Run 执行事实分层展示生命周期；
 统一两仓版本和兼容文档；完成安装包联合验收；冻结受验提交并发布产物；
@@ -986,179 +986,48 @@ agent 审查与 Goal 验收以 ORX verification 记录为准，此处不预支�
 notarytool 存储凭据、无免密 sudo（隔离 macOS 用户无法非交互创建）；
 内部预览可先行（至多 ad-hoc/Apple Development 签名并明确标注）。
 
-## 五阶段实施记录
+## 归档状态（T008 收口时记录）
 
-状态图例（本节）：未启动 / 进行中 / Done（以证据为准，不以文件存在为
-准；与更早 Goal 历史使用的英文图例同义，本节改用中文措辞，避免与
-G008 归档收口钉住的临时标记混同）。
+五阶段全部交付并自本文件移除（Goal 验收要求完成后移除实施计划中的
+G011 阶段；各阶段交付细节保留于下方轮次记录与
+docs/diagnostics/g011/ 各报告——baseline.json／distribution.json／
+joint-acceptance-runbook.md／lifecycle-matrix.md／freeze-report.md／
+joint-acceptance-report.md／release-record.md）。
 
-### 阶段 1：发布基线、隔离工作区与五阶段计划 — Done（T001，R011）
-- **Goal**：建立两仓发布基线（完整提交、origin、分支与标签快照、
-  远端核对、工具与凭据探测、未知/阻塞项如实标注）；在项目内建立
-  Analytics 隔离克隆（保留独立 Git 历史与标签，origin 指向原 GitHub
-  仓库，不复制虚拟环境/运行数据库/未提交文件）；记录用户报告保护与
-  发布排除决定；写入本五阶段计划；隔离工作目录进 .gitignore。
-- **成功标准**：基线与两仓 Git 事实、工具探测和用户报告处置一致；
-  未修改原 Analytics checkout；未把任何未知远端或凭据状态写成已验证；
-  克隆工作树干净（diff 与 staged diff 均空）；克隆 venv 能收集现有
-  Python 测试；SwiftPM 与 ORX 包验收工具可运行；安装级验证所缺环境
-  有具体说明。
-- **测试**：`git check-ignore .release-workspaces/orx-analytics`；
-  `git -C .release-workspaces/orx-analytics diff --exit-code` 与
-  `diff --cached --exit-code`；
-  `cd .release-workspaces/orx-analytics && .venv/bin/python -m pytest
-  --collect-only -q`（实测 exit 0，14 个测试文件 208 项）；
-  `.venv/bin/python` 校验 baseline.json 的 protected_report.path
-  sha256 与工作区字节一致；独立 agent 审查基线诚实性。
-- **状态**：Done——交付物：.gitignore 新增 `.release-workspaces/`、
-  克隆（HEAD 07ab676，与源同完整提交，fetch 后 origin/main 对齐
-  ls-remote 实测 bd06d70，领先 21）、克隆内新 venv（3.12.9 +
-  pytest 9.1.1 + orx-analytics 0.4.2 editable）、SwiftPM describe +
-  build exit 0、docs/diagnostics/g011/baseline.json、本计划节。
-  ORX verification 与独立 verifier 以各自记录为准。
-
-### 阶段 2：Analytics 生命周期分层展示 — Done（T002，R011）
-- **Goal**：修复 Analytics 的生命周期查询、分组、计数、告警和 Swift
-  展示，以 Goal 控制状态与 Run/attempt 执行事实分层表达全部生命周期。
-- **成功标准**：Goal 控制状态（active/paused/cancelling/cancelled/
-  done，读 goals.status 原文）与 Run 执行事实（run/attempt/task 的
-  原始状态与时间线）是两个显式层，交叉呈现（如 paused Goal 下仍
-  running 的 Run）而不互相改写；Analytics 全程只读（无调度/恢复/
-  重放权）；渲染、计数、告警与 G010 契约（schema v13/v14/v15、
-  回执镜像表只读）一致。
-- **测试**：隔离克隆内 Python 全量测试 + SwiftPM swift test；对真实
-  ORX 库只读快照副本的活体呈现核对；只读边界断言（零写入）。
-- **状态**：Done——权威矩阵 `docs/diagnostics/g011/lifecycle-matrix.md`
-  （先失败用例固定：active/blocked、paused/running、paused/done、
-  cancelling/未关闭执行、cancelled/blocked、cancelled/done、done/done
-  与未知状态矩阵）。交付（全部在隔离克隆内）：`display.py` 新增唯一
-  分类点 `lifecycle_view`（Run blocked 改标 受阻，Goal paused 保持
-  已暂停，两维度词汇不混用）；`query_model.overview` 按矩阵三桶分组
-  （已取消=仅历史，不进活跃/关注/通知；取消中保留未关闭执行；暂停期
-  Run done 进最近完成但徽标保持 已暂停 不冒充 Goal done）+ 新增
-  `unknown-goal-status` 警告；`engine._count_active_runs` 同规则分层
-  计数（已取消不再维持 active 刷新档）；Swift 侧 `PanelRunCard.
-  controlStatus/controlBadgeText`、`PanelModel.activeControlCounts`、
-  `HistoryRunRow.goalControlText`、`RunDimensions.goalControl` 与
-  快速面板/历史/详情视图徽标，通知类型集合钉死为
-  {failed_task, blocked_run}（控制态永不成为告警）；线形状（协议 v1）
-  不变，旧缓存/无 goal 块负载解码兼容有测试。原始 Goal/Run/task/
-  attempt 状态零改写（测试断言 runs.status 原文保持）。未新增 ORX
-  控制命令、恢复动作或 receipt_json 能力。证据：克隆内 Python 指定
-  六文件门禁与全量套件 exit 0；`swift test` 133 项 0 失败（5 项
-  ORX_WIRE_FIXTURES 未设按设计跳过）。
-
-### 阶段 3：版本统一与兼容文档 — Done（T003，R011）
-- **Goal**：将 ORX 版本确定为 0.4.0，Analytics 收口为 0.4.2，统一
-  两仓现行兼容、安装升级、回退和发布文档。
-- **成功标准**：ORX 版本单一来源（src/orx/__init__.py __version__，
-  hatchling 构建读取）升至 0.4.0；Analytics 保持/确认 0.4.2；两仓
-  文档声明兼容组合（ORX v0.4.0 + Analytics v0.4.2）、schema 支持
-  边界（Analytics {8..15}）、安装升级与回退路径；历史标签原样。
-- **测试**：ORX 文档钉住回归（test_delivery_gate_e2e 等）+ 全量
-  pytest；Analytics 文档/版本一致性测试；两仓版本号出现处一致性
-  核对。
-- **状态**：Done（T003，R011）——交付：ORX `__version__` 升至 0.4.0
-  （单一来源，pyproject 动态读取，uv.lock editable 条目无静态版本、
-  `uv lock --check` 通过）；Analytics 确认 0.4.2 不变；新增
-  `docs/upgrade-0.4.0.md`（写作者停止、迁移前一致性备份、ORX 旧库
-  v8/v11/v12 到 v15 自动迁移、Analytics store v1/v2 到 v3、失败恢复、
-  旧版拒读、从备份回退、兼容组合声明）与 `docs/release-0.4.0.md`；
-  `docs/upgrade-0.3.1.md` 加历史提示并链接新指南；README 现行支持
-  表述对齐 schema 8–15 与兼容组合（0.3.1 打包期表述保留为历史）；
-  observability-contract 修正 gate 行文（8–15、大于 15 拒绝）并补记
-  Analytics 0.4.2 现行兼容状态（store v3、回执只镜像事实不镜像
-  receipt_json）；package-acceptance 手册与测试说明对齐 v15 增量面；
-  Analytics 仓 README/compatibility/installation/CHANGELOG 的现行版本
-  声明统一为 0.4.2、schema {8..15}、store v3 与兼容组合；历史标签、
-  旧版发布文档与历史测量报告零改动。
-
-### 阶段 4：联合验收基建与渠道边界 — 未启动（T004–T005）
-- **Goal**：建立可重复的两仓冻结构建和联合验收驱动，准备有真实旧版
-  来源的样本、安装隔离及产物证据校验（T004）；修正 Analytics 安装
-  包的渠道身份和发布门禁，明确内部预览限制，并为正式分发实现真实
-  签名、公证和安装验证流程（T005）。
-- **成功标准**：验收驱动确定性可重跑（干净检出、绑定清单、sha256
-  证据）；样本来自真实旧版数据库；安装隔离策略明确且可执行（免密
-  sudo 不可用——按基线记录采用非 sudo 隔离或用户交互式一次性设置，
-  如实记录所用策略）；渠道身份区分内部预览与正式分发；正式分发的
-  签名/公证流程就绪——若 Developer ID Application 证书与 notarytool
-  凭据仍未由用户配置，则如实保持 blocked 并给出需要用户完成的具体
-  步骤，不伪造签名/公证结果。
-- **测试**：验收驱动自检（产物校验和、旧样本升级链）；渠道身份与
-  发布门禁测试；签名/公证流程的干跑或（凭据就绪时）真实运行记录。
-- **状态**：进行中——T004 交付（2026-10-17，R11）见下；T005 交付
-  （2026-10-17，R11）——渠道身份与发布门禁收口：分发渠道二分为
-  内部预览（dev/zip/ad-hoc，App 名 `ORX Analytics (Internal Preview)`）
-  与正式分发（dist/DMG，Developer ID＋hardened runtime＋公证＋装订＋
-  安装评估）；渠道/受众/Gatekeeper 限制与完整来源提交写入 App 可见
-  Info.plist（`ORXAnalyticsChannel/Audience/GatekeeperNotice/SourceCommit`）、
-  包内 `Contents/Resources/distribution.json` 清单、归档名（含渠道
-  token，兼容 joint_release 的 `ORXAnalytics-*-<mode>-macos13-arm64`
-  glob 契约）与逐归档构建记录；App「诊断」页新增构建渠道区（Swift
-  `AppChannelInfo`，未知渠道保守呈现，缺失即如实未标注）；渠道与
-  依据构建前固定在 `docs/diagnostics/g011/distribution.json`
-  （decision_file_schema 1，live 凭据探测为据），正式构建强制先过
-  决定门＋凭据预检（`scripts/app_distribution.py`：validate-decision/
-  preflight-official/entitlements/channel-info/record/apply-outcome，
-  机器可读拒绝码 exit 3），失败关闭、无静默降级、两渠道结果分槽；
-  归档 sha256 仅在全部门禁证据齐备后由 record 计算（预览冒充公证/
-  评估声明直接拒绝；凭据/私钥类键永不入记录）；正式通道真实调用
-  codesign（嵌套 Mach-O 逐个＋外层，--options runtime＋固定
-  entitlements＋--timestamp）、`xcrun notarytool submit --wait`、
-  `xcrun stapler staple/validate`、`spctl --assess`（清除 quarantine
-  不属于正式渠道任何步骤）；实测：内部预览构建全绿（0.4.2@07ab676
-  完整提交入记录、决策文件按 sha256 绑定、引擎自测过、zip+
-  record 产出），正式通道三重失败关闭实测（无决定文件→
-  decision-missing；决定 blocked→channel-not-allowed；模拟放行决定→
-  no-developer-id-identity 按真实 keychain 拒绝）。测试：
-  `tests/test_app_distribution.py` 30 项（替身仅测门禁逻辑，不冒充
-  正式通过证据）＋ Swift `AppChannelInfoTests`（swift test 140 项
-  0 失败）。文档：app-installation.md 渠道分节（预览绕过步骤明确
-  不得作为正式渠道证据）、README 渠道节、release-0.4.0.md §5。
-  T004 交付（2026-10-17，R11）：联合验收驱动
-  `scripts/joint_release.py`（self-test/freeze/build/exercise/verify/
-  verify-remote 六阶段；manifest 绑定两仓完整提交、版本、渠道、依赖
-  运行时、产物 SHA256 与日志引用；构建/验证一律从冻结提交的一次性
-  git archive 检出，工作区未提交内容不进构建，历史标签原样保留并与
-  check_release 锁步）；真实旧版样本：旧 ORX 样本沿用
-  release-0.3.0 fixture，Analytics store v2 样本由真实旧提交 3f1b66c…
-  （0.4.1，store v2 时代最后一提交）产生并记录提交/生成命令/SHA256，
-  freeze/verify 每次旧代码再生比对，绝不以改版本号冒充；当前 0.4.2
-  将其副本原地升 v3、未来版本拒绝、旧代码按闸门拒读 schema v15；
-  exercise 覆盖暂停/继续/取消/暂停期完成/回执重传（零库变更）并连接
-  App 自带引擎 serve 入口（socket v1，两次采集、源只读、真实会话零
-  镜像）；拒绝路径全部行为化测试（错误产物/提交不符/哈希变化/源码
-  回退导入/缺步骤证据/缺 App、GUI、签名证据不得 skip 后通过）；
-  self-test 以替身 App 交付全链绿且明确不主张产品验收；build/
-  exercise/verify/verify-remote 在最终 App 归档（T006）存在前按设计
-  fail-closed。实测兼容性事实：SQLite ≥3.52 关闭清理 WAL sidecar 会让
-  静止 ORX 项目无法被 analytics mode=ro 读取，驱动将演练 venv 钉在
-  harness 解释器并把版本记入 manifest。测试
-  `tests/test_joint_release.py`（18 项）与手册
-  docs/diagnostics/g011/joint-acceptance-runbook.md（package-
-  acceptance.md §7 摘要）随附。T005（渠道身份/签名/公证）未启动。
-
-### 阶段 5：冻结、联合受验与发布收口 — 进行中（T006/T007 已交付；T008 未启动）
-- **Goal**：提交已验证的发布源码，冻结两仓完整提交，从干净检出运行
-  全量和包级检查，构建绑定清单的最终 wheel、源码包及 App 归档
-  （T006）；使用冻结归档安装后的最终 App 和 ORX wheel，从旧库升级
-  完成联合生命周期验收，核对真实渲染、计数、通知、用量、回执及
-  只读边界（T007）；发布已联合受验的兼容组合——推送冻结提交和准确
-  标签（ORX v0.4.0、Analytics v0.4.2），上传相同字节的产物及校验
-  清单，核对远端对应关系并完成阶段收口（T008）。
-- **成功标准**：冻结提交即受验提交（两仓完整 sha 记录在案）；干净
-  检出上全量测试 + 包级检查 + check_release 全绿；产物与清单逐字节
-  对应；安装后联合验收覆盖生命周期分层展示与只读边界；发布前重新
-  验证远端写权限（基线仅验证读）；推送不强推不覆盖；受保护用户
-  报告自始至终未暂存未提交，发布物中该文件取自提交态。
-- **测试**：干净检出全量 + 包级链；冻结归档安装后端到端联合验收；
-  发布后远端 ls-remote 对应关系核对（提交、标签、产物字节）。
-- **状态**：进行中——T006、T007 交付（2026-10-17，R11/R12）见下；T008（推送
-  冻结提交与标签、发布产物、远端对应核对）未启动。T007 操作者验收另发现
-  运行时封条缺陷（见轮次记录），是否重冻结由下一轮决定。
+收口事实（2026-10-17，详见 docs/diagnostics/g011/release-record.md）：
+兼容组合 ORX v0.4.0（tag `v0.4.0` → `f1cc7757…`，Release
+https://github.com/aderan/orx/releases/tag/v0.4.0 ）＋ Analytics
+v0.4.2（tag `v0.4.2` → `2461a260…`，Release
+https://github.com/aderan/orx-analytics/releases/tag/v0.4.2 ，App 归档
+为内部预览渠道、Release 标记 prerelease）已发布；发布资产字节取自
+联合受验冻结候选（未重建未重签未修改），消费者侧 verify-remote
+（下载远端资产复算哈希、绑定与渠道隔离核对）绿；历史标签原样、
+全程无强推；正式分发渠道保持受阻（Developer ID／notarytool 凭据
+缺失）。受保护用户报告 docs/m1.2-report.md 全程未暂存未提交，
+发布物取其提交态。
 
 ## G011 轮次记录
+- 2026-10-17 R12 T008（attempt 225）：阶段 5 收口——发布已联合受验的
+  兼容组合并完成远端对应核对：轻量标签 `v0.4.0` → ORX 冻结提交
+  `f1cc7757…`、`v0.4.2` → Analytics 冻结提交 `2461a260…`（推送前
+  ls-remote 重核两仓远端引用与历史标签：v0.1.0–v0.3.1 原样、远端无
+  同名新标签、main 零分叉；全程无强推）；main 连同证据提交推送
+  （ORX：5c4247b/56af38c/本提交；Analytics：f8c81b5 发布对账记录，
+  均为冻结后独立证据提交、零源码变更、不移动受验标签）。GitHub
+  Release [orx v0.4.0](https://github.com/aderan/orx/releases/tag/v0.4.0)
+  与 [orx-analytics v0.4.2](https://github.com/aderan/orx-analytics/releases/tag/v0.4.2)
+  （App 归档为内部预览渠道，标记 prerelease）上传联合受验原始字节
+  （orx wheel / App zip 5187029c… / analytics wheel+sdist）＋
+  SHA256SUMS ＋ manifest.json ＋ 兼容组合说明，发布阶段未重建未重签
+  未修改；发布后从两 Release 下载全部资产重算哈希与 candidate.json
+  逐项一致、两处元数据资产字节相同，规定检查 verify ＋ verify-remote
+  绿（渠道根由已发布 Release 资产填充，绑定/字节/渠道隔离核对过）。
+  Release 说明含兼容组合表、内部预览四维标注、73 个 `__pycache__`
+  运行时封条已知缺陷披露（修复落下一 Analytics 发布）、解锁后约
+  10 秒像素复核移交（§9.1）、正式渠道凭据受阻声明；用户报告排除
+  决定随 Release 披露。最终发布记录
+  docs/diagnostics/g011/release-record.md；本计划 G011 五阶段按
+  Goal 验收要求移除（历史保留于轮次记录与 g011 诊断文档）。
 - 2026-10-17 R12 T007（attempt 207）：阶段 5 联合生命周期验收——从冻结
   归档安装最终 App（sha 5187029c… 复核一致、ditto 安装、安装时验签
   exit 0、自包含启动：进程全指向 App 内置 3.12.8 运行时与内置引擎
