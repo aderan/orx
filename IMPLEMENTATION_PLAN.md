@@ -1139,7 +1139,7 @@ G008 归档收口钉住的临时标记混同）。
   docs/diagnostics/g011/joint-acceptance-runbook.md（package-
   acceptance.md §7 摘要）随附。T005（渠道身份/签名/公证）未启动。
 
-### 阶段 5：冻结、联合受验与发布收口 — 未启动（T006–T008）
+### 阶段 5：冻结、联合受验与发布收口 — 进行中（T006 已交付；T007–T008 未启动）
 - **Goal**：提交已验证的发布源码，冻结两仓完整提交，从干净检出运行
   全量和包级检查，构建绑定清单的最终 wheel、源码包及 App 归档
   （T006）；使用冻结归档安装后的最终 App 和 ORX wheel，从旧库升级
@@ -1154,9 +1154,33 @@ G008 归档收口钉住的临时标记混同）。
   报告自始至终未暂存未提交，发布物中该文件取自提交态。
 - **测试**：干净检出全量 + 包级链；冻结归档安装后端到端联合验收；
   发布后远端 ls-remote 对应关系核对（提交、标签、产物字节）。
-- **状态**：未启动。
+- **状态**：进行中——T006 交付（2026-10-17，R11）见下；T007（操作者
+  GUI/生命周期联合验收）、T008（推送冻结提交与标签、发布产物、远端
+  对应核对）未启动。
 
 ## G011 轮次记录
+- 2026-10-17 R11 T006（attempt 192）：阶段 5 前半交付——发布源码冻结与
+  候选构建：两仓冻结提交（ORX v0.4.0 @ `f1cc7757…`、Analytics v0.4.2 @
+  `2461a260…`，均含冻结前全量验证），一次性干净 git 检出上五项必需检查
+  全过（ORX 全量 1162 passed＋check_release problems=[]；Analytics 全量
+  256 项＋swift test 140 项 0 失败＋check_install sdist→wheel→离线安装
+  全过），最终 wheel/sdist/App 归档全部构建自冻结提交并绑定
+  `dist/g011/candidate.json`（两仓冻结提交/渠道/历史标签快照/电池证据/
+  门禁后冻结的 SHA256/包元数据-App 版本-来源提交-内置运行时-签名渠道
+  一致性/决定按 sha256 绑定；`verify --manifest … --phase candidate`
+  只读复验绿）；渠道按分发决定走 internal-preview（ad-hoc zip，官方渠道
+  凭据缺失如实 blocked 不降级）。冻结验收中发现并修复 App 构建封条缺陷
+  （引擎自测在签名后向包内写 `__pycache__` 破坏密封、unzip 解 ditto 归档
+  落 `._*` 杂散文件）：自测移至签名前＋禁写字节码＋签名前后封条基线比
+  对＋归档前 `bundle-mutated-after-signing` 守卫（入 Analytics 冻结提交），
+  驱动配套 ditto 解压/禁写字节码/换绑定重置下游阶段记录（入 ORX 冻结提
+  交）；harness 新增 battery/candidate 阶段与候选复验（tests/
+  test_joint_release.py 21 项）。受保护用户报告全程未暂存未提交（冻结时
+  工作区脏文件恰且仅为其工作区改动，sha256 与基线逐字节一致），发布物取
+  提交态；历史标签原样；不推送不打标签（T008）。报告
+  docs/diagnostics/g011/freeze-report.md；运行材料 dist/g011/（含
+  EVIDENCE-INDEX.md 与逐阶段日志）。本报告与计划记录为冻结后文档提交，
+  发布源码自冻结提交起未再变化。
 - 2026-10-17 R11 T005（attempt 190）：阶段 4 后半交付——Analytics
   安装包渠道身份与发布门禁：内部预览（ad-hoc zip，全维标注）与正式
   分发（Developer ID＋公证＋装订＋安装评估，真实工具链、失败关闭、
