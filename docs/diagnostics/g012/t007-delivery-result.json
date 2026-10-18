@@ -1,0 +1,53 @@
+{
+  "status": "passed",
+  "summary": "Closed out Analytics 0.4.3 (T007): version/docs alignment to 0.4.3 (store v4, controller native preview, new cadence defaults, seal-fix disclosure) landed as the analytics freeze commit d0867103 (pre-freeze suites green: Python 279 passed, swift 163 executed / 0 failures); ORX-side acceptance driver committed (7cec66c) with the store-v4 upgrade-chain realignment. First battery run exposed a genuine T001 design gap (the pinned v0.4.0 ORX suite's own joint tests pin their G011 release pair analytics 0.4.2/store v3, while the joint layout carried the 0.4.3 freeze commit): fixed honestly in driver commit 043eecb (joint layout pins the published analytics v0.4.2 pair, fail-closed analytics-v042-pin-moved; the 0.4.3 freeze commit runs its own three checks from its own clean checkout; nothing skipped or substituted; tests 29/29 incl. the new pin test), then the FULL chain was re-run from freeze: freeze -> battery 5/5 exit 0 -> build --build-app -> candidate (goal G012, published false, artifact shas frozen) -> verify --manifest --phase candidate -> exercise (no stand-in app; bundled engine 0.4.3; read-only) -> verify all green. The frozen archive (sha 461a2f03... == candidate) was installed via ditto to dist/g012/installed/ORXAnalytics.app; check_runtime_seal.py against THAT installed copy: verdict pass over two real rounds (first-launch + engine-restart, engine child of the app via makeChild on the bundled runtime, bundle 2000 entries byte-identical before/after, zero new __pycache__, codesign --verify --deep --strict 0 before and after, hostile PYTHONDONTWRITEBYTECODE=0) - the disclosed v0.4.2 seal defect is closed on the real artifact. GUI evidence recorded (dist/g012/gui-evidence.json): session unlocked per CGSession probe; real UI facts = live menu-bar badge readings (2->1), AXPress opens the real quick panel (window-server onscreen facts), installed-binary --smoke-test PASS incl. fixed 3-digit grouping, engine-level facts for all five feedback items (token magnitudes 82,573,883/184,766,456/109,266,766 through the same formatter; terminal done goals R011/R010/R009/R005/R003 for plain-text rendering; live 95s cadence measurement ~30.3s/round vs ~19 rounds under the old 5s default; controller_for_run attributed (R005/R003, own_usage 281 req input 66,837,410 / 59 req 8,403,221) and unattributed-with-reason (R012/R011 shared session, cumulative display, never split)); pixel screenshots are permission-blocked (Screen Recording TCC denied - all-black frames measured; SwiftUI status panel exposes no AX content, verified on both 0.4.3 and the user's 0.4.2 instance) - boundary recorded with a post-grant manual re-check handover (G011 9.1 style). All real data was touched read-only; user's /Applications preview, ~/.orx-analytics and ~/.zcode untouched (isolated scratch dirs under dist/g012). Acceptance reports: docs/diagnostics/g012/joint-acceptance-report.md + clone reports/release-v0.4.3-acceptance.md (post-freeze docs-only evidence commits 0eea576 / 253dd93, zero product source); IMPLEMENTATION_PLAN stage 4 Delivered + T007 round record. All six prescribed command checks green (round 2/3); no push, no tag anywhere.",
+  "checks": [
+    {
+      "command": "uv run python scripts/joint_release.py verify --manifest dist/g012/candidate.json --phase candidate",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/01-0006-command.log"
+    },
+    {
+      "command": ".release-workspaces/orx-analytics/.venv/bin/python .release-workspaces/orx-analytics/scripts/check_runtime_seal.py --app dist/g012/installed/ORXAnalytics.app --evidence-dir dist/g012/runtime-seal",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/02-0007-command.log"
+    },
+    {
+      "command": "codesign --verify --deep --strict dist/g012/installed/ORXAnalytics.app",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/03-0008-command.log"
+    },
+    {
+      "command": "uv run python scripts/joint_release.py verify --work-dir dist/g012",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/04-0009-command.log"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/05-0010-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T007/06-0011-command.log"
+    }
+  ],
+  "artifacts": [
+    "docs/diagnostics/g012/joint-acceptance-report.md",
+    "docs/diagnostics/g012/t007-delivery-result.json",
+    ".release-workspaces/orx-analytics/reports/release-v0.4.3-acceptance.md",
+    "dist/g012/candidate.json",
+    "dist/g012/manifest.json",
+    "dist/g012/installed/ORXAnalytics.app",
+    "dist/g012/runtime-seal/seal-check-report.json",
+    "dist/g012/gui-evidence.json",
+    "dist/g012/gui-acceptance/engine-five-feedback-facts.json",
+    "dist/g012/gui-acceptance/refresh-cadence-95s.txt",
+    "dist/g012/gui-acceptance/panel-window-facts.json",
+    "dist/g012/gui-acceptance/smoke-test-installed.log",
+    "dist/g012/gui-acceptance/screencapture-boundary.txt",
+    "dist/g012/gui-acceptance/menubar-badge-reading.txt",
+    "dist/g012/gui-acceptance/operator-session-probe.txt"
+  ]
+}
