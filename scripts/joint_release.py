@@ -191,6 +191,14 @@ PROTECTED_REPORT_ENTRY = " M docs/m1.2-report.md"
 ORX_V040_TAG = "v0.4.0"
 ORX_V040_COMMIT = "f1cc7757c953d3fee5bff5630613a6d2fb380a74"
 
+# G012 battery: the v0.4.0 ORX suite's own joint tests pin their release
+# environment (analytics 0.4.2 / store v3), so the joint layout beside the
+# pinned ORX clone must carry the PUBLISHED analytics v0.4.2 pair — never
+# the 0.4.3 freeze commit, and never a moved tag. The 0.4.3 freeze commit
+# runs its own three checks from its own clean checkout.
+ANALYTICS_V042_TAG = "v0.4.2"
+ANALYTICS_V042_COMMIT = "2461a260387caf0e6acb63446d4be3b8d1a43b46"
+
 # Goal profiles. The default stays g011 so every existing G011 invocation
 # reproduces unchanged; g012 is selected explicitly with --goal-id g012
 # (or inferred from an existing work-dir manifest at freeze time).
@@ -1311,6 +1319,35 @@ def provision_analytics_venv(an_clone: Path, log: StageLog) -> Path:
     return venv_python
 
 
+def joint_layout_analytics_commit(goal_id: str, an_commit: str) -> str:
+    """The analytics commit the JOINT LAYOUT (beside the frozen ORX
+    clone, at ``<orx clone>/.release-workspaces/orx-analytics``) must
+    carry so the frozen ORX suite's joint tests see the environment they
+    pin.
+
+    g011: the freeze commit itself — the G011 pair is version-consistent,
+    the joint layout IS the analytics under test. g012: the ORX product
+    input is the published v0.4.0 whose joint tests pin the G011 release
+    pair analytics v0.4.2; the tag must resolve to the published commit
+    or the battery stops (analytics-v042-pin-moved — never a re-pin).
+    The G012 analytics freeze commit is NOT shortchanged: its own full
+    checks run from its own clean checkout (stage_battery provisions it
+    separately whenever this returns a different commit)."""
+    if goal_id != "g012":
+        return an_commit
+    resolved = _git(ANALYTICS_REPO, "rev-parse",
+                    f"{ANALYTICS_V042_TAG}^{{commit}}")
+    if resolved != ANALYTICS_V042_COMMIT:
+        raise StageFailure(
+            "battery", "analytics-v042-pin-moved",
+            f"analytics tag {ANALYTICS_V042_TAG} no longer points at the"
+            f" published commit {ANALYTICS_V042_COMMIT} (found"
+            f" {resolved}); the joint layout reproduces the G011 release"
+            " pair the pinned v0.4.0 suite asserts — a moved tag is a"
+            " stop, never a re-pin")
+    return resolved
+
+
 def stage_battery(work_dir: Path, log: StageLog) -> dict:
     """G011 T006: run BOTH repositories' full and package-level checks
     from one-shot clean checkouts of the frozen commits. The checkouts
@@ -1331,11 +1368,36 @@ def stage_battery(work_dir: Path, log: StageLog) -> dict:
     # The joint suite resolves the analytics repo at
     # <orx root>/.release-workspaces/orx-analytics: provision the clean
     # analytics checkout exactly there (the release workspace layout).
+    # G012: that layout carries the G011 release pair analytics (v0.4.2)
+    # the pinned v0.4.0 suite's own joint tests pin; the 0.4.3 freeze
+    # commit gets its own clean checkout for its own full checks.
+    goal_id = binding.get("goal_id", "g011")
+    joint_commit = joint_layout_analytics_commit(goal_id, an_commit)
     joint_layout = orx_clone / ".release-workspaces"
     joint_layout.mkdir(parents=True, exist_ok=True)
-    an_clone = clone_commit(ANALYTICS_REPO, an_commit,
+    an_clone = clone_commit(ANALYTICS_REPO, joint_commit,
                             joint_layout / "orx-analytics")
     provision_analytics_venv(an_clone, log)
+    freeze_clone = an_clone
+    checkouts = {
+        "orx": "battery/orx",
+        "analytics": "battery/orx/.release-workspaces/orx-analytics",
+    }
+    if joint_commit != an_commit:
+        freeze_clone = clone_commit(ANALYTICS_REPO, an_commit,
+                                    battery_dir / "analytics")
+        provision_analytics_venv(freeze_clone, log)
+        checkouts["analytics"] = "battery/analytics"
+        checkouts["joint_pair_analytics"] = (
+            "battery/orx/.release-workspaces/orx-analytics"
+            f" ({ANALYTICS_V042_TAG}@{joint_commit[:12]} — the release"
+            " pair the pinned v0.4.0 suite's joint tests pin)")
+        log.write(
+            f"joint layout carries the G011 pair analytics"
+            f" {ANALYTICS_V042_TAG}@{joint_commit[:12]} (the pinned"
+            " v0.4.0 suite pins its own release environment); the G012"
+            f" analytics freeze commit {an_commit[:12]} is checked in"
+            " its own clean checkout")
     dogfood = provision_dogfood_snapshot(orx_clone)
     if dogfood:
         log.write(f"dogfood fixture provisioned: {dogfood}"
@@ -1358,14 +1420,14 @@ def stage_battery(work_dir: Path, log: StageLog) -> dict:
          # module form: the analytics suite imports `scripts.…` from the
          # repo root, which `-m pytest` puts on sys.path
          ["uv", "run", "--extra", "dev", "python", "-m", "pytest", "-q"],
-         an_clone),
+         freeze_clone),
         ("analytics_swift_test",
          "the frozen analytics commit's Swift test suite",
-         ["swift", "test"], an_clone / "apps" / "macos"),
+         ["swift", "test"], freeze_clone / "apps" / "macos"),
         ("analytics_check_install",
          "the frozen analytics commit's sdist/wheel/install check",
          ["uv", "run", "--extra", "dev", "python",
-          "scripts/check_install.py"], an_clone),
+          "scripts/check_install.py"], freeze_clone),
     )
     checks: list[dict] = []
     failed: list[str] = []
@@ -1387,15 +1449,13 @@ def stage_battery(work_dir: Path, log: StageLog) -> dict:
     record_stage(
         manifest, "battery", "failed" if failed else "passed", log.rel,
         checks=checks, failed=failed,
-        checkouts={
-            "orx": "battery/orx",
-            "analytics": "battery/orx/.release-workspaces/orx-analytics",
-        },
+        checkouts=checkouts,
         fixtures_provisioned=[
             "analytics .venv (T001 procedure)",
             "dogfood .orx/state.db snapshot (sqlite backup)",
         ] if dogfood else ["analytics .venv (T001 procedure)"],
-        commits={"orx": orx_commit, "analytics": an_commit},
+        commits={"orx": orx_commit, "analytics": an_commit,
+                 "joint_pair_analytics": joint_commit},
     )
     save_manifest(work_dir, manifest)
     evidence_index(work_dir, manifest)

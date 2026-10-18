@@ -35,7 +35,7 @@
 | 阶段 | 命令 | 说明 |
 | --- | --- | --- |
 | 冻结 | `uv run python scripts/joint_release.py freeze --goal-id g012 --work-dir dist/g012 [--channel internal-preview]` | ORX 产品输入解析自发布标签 v0.4.0（移动即 `orx-pin-moved` 失败关闭），Analytics 取克隆 HEAD；版本从提交读出；样本溯源校验；binding 记录 `goal_id/goal_label`、`orx.pinned_tag`、`acceptance_driver.commit`（G012 验收驱动提交，仅溯源非输入）与 Analytics 冻结提交 |
-| 电池 | `uv run python scripts/joint_release.py battery --work-dir dist/g012` | 五项必需检查从冻结提交一次性干净克隆跑：ORX 全量 pytest＋check_release（克隆在 **v0.4.0 pin**，非 HEAD）＋ Analytics 全量 pytest＋swift test＋check_install；任一失败即阶段失败 |
+| 电池 | `uv run python scripts/joint_release.py battery --work-dir dist/g012` | 五项必需检查从冻结提交一次性干净克隆跑：ORX 全量 pytest＋check_release（克隆在 **v0.4.0 pin**，非 HEAD）＋ Analytics 全量 pytest＋swift test＋check_install；任一失败即阶段失败。联合布局注记（T007 实测补充）：v0.4.0 套件自带的 joint 测试钉住其自身发布对环境（analytics 0.4.2/store v3），故 pin 克隆旁的联合布局 `.release-workspaces/orx-analytics` 携带**已发布 v0.4.2 对**（tag 移动即 `analytics-v042-pin-moved` 失败关闭，绝不重定位）；0.4.3 冻结提交的三项自有检查在其独立干净克隆 `battery/analytics` 执行——任何检查不跳过、不替代 |
 | 构建 | `uv run python scripts/joint_release.py build --build-app --work-dir dist/g012` | ORX wheel 自 pin 的一次性检出构建；Analytics sdist/wheel 与最终 App（内部预览 dev zip，ad-hoc）自 Analytics 冻结提交的 build_app.sh 构建，尊重 g012 决定门；缺 App 归档即 fail-closed |
 | 候选 | `uv run python scripts/joint_release.py candidate --work-dir dist/g012` | 产出 `dist/g012/candidate.json`：**目标标记 G012**（`goal: "G012"`、`goal_id: "g012"`，不携带任何 G011 任务号或表述；发布说明文字亦按目标生成）；决定按 sha256 绑定 g012 决定文件；历史标签快照（含 v0.4.0 pin 与 v0.4.2）与 battery 证据随档冻结；`published: false` |
 | 候选只读复验 | `uv run python scripts/joint_release.py verify --manifest dist/g012/candidate.json --phase candidate` | 冻结候选只读复验（摘要/身份/电池证据/包与 App 元数据/签名/决定 sha/历史标签/样本溯源/pin 复核 + 目标标记与 binding 一致性）；不判 GUI 与渠道根（后续步骤的事） |

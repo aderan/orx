@@ -886,6 +886,33 @@ def test_g012_uncommitted_inputs_guard_exempts_only_generated_dirs(frozen_g012):
     assert len(problems) == 1 and "ORX" in problems[0]
 
 
+def test_g012_battery_joint_layout_pins_the_v042_release_pair(
+        frozen_g012, monkeypatch):
+    """G012: the joint layout beside the pinned v0.4.0 ORX clone carries
+    the G011 RELEASE PAIR analytics (tag v0.4.2) — the environment the
+    v0.4.0 suite's own joint tests pin (analytics 0.4.2 / store v3); the
+    G012 analytics freeze commit (0.4.3 / store v4) is checked in its own
+    clean checkout. A moved v0.4.2 tag is a stop, never a re-pin. G011
+    keeps the single version-consistent clone (the freeze commit)."""
+    _, manifest = frozen_g012
+    binding = manifest["binding"]
+    # g011: the joint layout carries the freeze commit itself (G011 pair)
+    assert joint_release.joint_layout_analytics_commit(
+        "g011", "freezec0mmit") == "freezec0mmit"
+    # g012: resolved from the REAL analytics repo's v0.4.2 tag
+    resolved = joint_release.joint_layout_analytics_commit(
+        binding["goal_id"], binding["analytics"]["commit"])
+    assert resolved == joint_release.ANALYTICS_V042_COMMIT
+    # the pair clone is NOT the 0.4.3 freeze commit (the pair moved on)
+    assert resolved != binding["analytics"]["commit"]
+    # a moved v0.4.2 tag fails closed
+    monkeypatch.setattr(
+        joint_release, "_git", lambda *a, **k: "0" * 40)
+    with pytest.raises(joint_release.StageFailure) as excinfo:
+        joint_release.joint_layout_analytics_commit("g012", "freezec0mmit")
+    assert excinfo.value.code == "analytics-v042-pin-moved"
+
+
 def test_g012_prescribed_invocation_shapes(tmp_path, capsys):
     """The exact T007/T008 invocation shapes under dist/g012 run and —
     before any G012 freeze exists — FAIL CLOSED (manifest-missing, never
