@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "summary": "Rev2 redo of an already-verified implementation: ZERO code changes. Verified intact in the clone (delivered at attempts 236/238, untouched since): DetailWindowRouting.swift activation chain (NSApp.activate(ignoringOtherApps:) -> openWindow(id: run-detail) -> next-tick makeKeyAndOrderFront front pass with identifier/title fallback matching), RunDetailHostView .onAppear/.onChange(of: model.selectedRun) fronting with host-NSWindow capture and fallback window hunt, PanelSections done->controlPlainText (terminal done renders plain '目标 已完成', no badge) mutually exclusive with non-terminal badge states (已暂停/取消中/已取消 keep orange badges), and AppModelTests selection routing (first click selects, consecutive different-project clicks keep last selection, 查看全部执行 clears selection). Re-ran the three deterministic command checks fresh, all green: filtered swift test 32/32 (PanelSectionsTests 11 tests 0 failures + AppModelTests), swift build, git diff --check. Re-probed the operator session lock at 14:01-14:02 CST (2026-10-18): screencapture returns a solid black screen, consistent with the 13:46 black-screen probe and lock-screen evidence on record — real-device visual verification remains physically infeasible; not simulated. Updated docs/diagnostics/g012/t003-panel-click-focus-and-done-plain-text.md with the rev2 redo context (vision entry now conditional per replan; the two honest locked-session fail verdicts attempts 237/240 stay on record) and the post-unlock manual re-check handover per G011 §9.1: click a panel card -> detail window fronts and takes keyboard focus; obscured window -> re-click fronts it again without duplicate detail windows; done shows plain 目标 已完成 text while paused/cancelling/cancelled keep orange badges.",
+  "checks": [
+    {
+      "command": "swift test --package-path .release-workspaces/orx-analytics/apps/macos --filter 'PanelSectionsTests|AppModelTests'",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T003/01-0012-command.log"
+    },
+    {
+      "command": "swift build --package-path .release-workspaces/orx-analytics/apps/macos",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T003/02-0013-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T003/03-0014-command.log"
+    }
+  ],
+  "artifacts": [
+    "docs/diagnostics/g012/t003-panel-click-focus-and-done-plain-text.md",
+    "docs/diagnostics/g012/t003-delivery-result.json"
+  ]
+}

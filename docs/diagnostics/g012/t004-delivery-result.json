@@ -1,0 +1,44 @@
+{
+  "status": "passed",
+  "summary": "Lowered and unified the refresh/collection cadence across engine, panel and detail (G012 用户反馈 4). Engine TIER_INTERVALS 5/15/60s -> 30/60/300s with demand leases resynced 30/90s -> 180/360s (>=2x the matching tier, one missed renewal never drops the tier; unrenewed demand still expires); CLI holder HOLDER_RENEW_SEC 30s -> 60s so background refresh jobs never outpace the active tier (each renewal is one coalesced job). App default panel/detail refresh 5s -> 30s; RunDetailModel.startAutoRefresh lost its independent 5s hardcode (interval now required, supplied by RunDetailView from the shared app.settings.panelRefreshInterval). Eliminated the duplicate immediate refresh on panel open: the auto loop is sleep-first (bootstrap keeps the single immediate round) and bootstrap gained a freshness gate (skip when a successful round landed within the interval); manual refresh and wake resync stay immediate. Detail-window loads are pure reads sending no refresh.request, so panel+detail open together add zero collection requests (pinned in AppModelTests); engine-side single-instance lock + coalesced single pending slot already guarantee no double collection. Settings migration: new panel.refresh.interval.chosen marker — explicit choices persist through unrelated saves; unmarked legacy default 5 adopts the new 30, unmarked non-5 values and marker-set 5s are kept; picker keeps 5/10/15/30/60 with the (默认) tag moved to 30s and footer copy updated. Controlled-clock evidence: test_lower_default_cadence_controlled_clock_comparison proves per-lane fewer runs over the SAME fake-clock 300s window (state 61->11, usage 16->3, anomalies 31->6; old tiers simulated via injectable intervals + old leases, no long real sleeps) and AppModelTests::testAutoRefreshRoundCountScalesWithIntervalInSameWindow does the same-window comparison for the app loop; lease alignment pinned by test_demand_leases_aligned_with_lower_cadence and test_holder_renewal_paces_background_jobs_to_the_new_cadence. Preserved semantics re-verified green: manual refresh immediate, concurrent refreshes coalesce to one bounded round, cache-first first frame, wake resync, failure keeps last good data, App/CLI coexistence/background. Full suites: Python 123 passed (workspace root; the two scripts-importing modules fail collection only when pytest runs from the ORX root — pre-existing path sensitivity outside this task's prescribed checks), Swift 159 executed / 0 failures (5 pre-existing unrelated skips). Docs updated: menubar-app-design.md §8 tier table, watch-migration.md cadence mention, engine/watch module docstrings, settings page copy. User's live app and ~/.orx-analytics untouched (work confined to the release-workspace clone).",
+  "checks": [
+    {
+      "command": ".release-workspaces/orx-analytics/.venv/bin/python -m pytest -q .release-workspaces/orx-analytics/tests/test_engine.py .release-workspaces/orx-analytics/tests/test_watch_engine.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T004/01-0004-command.log"
+    },
+    {
+      "command": "swift test --package-path .release-workspaces/orx-analytics/apps/macos --filter 'AppSettingsTests|AppModelTests|RunDetailModelTests'",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T004/02-0005-command.log"
+    },
+    {
+      "command": "swift build --package-path .release-workspaces/orx-analytics/apps/macos",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T004/03-0006-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T004/04-0007-command.log"
+    }
+  ],
+  "artifacts": [
+    ".release-workspaces/orx-analytics/src/orxanalytics/engine.py",
+    ".release-workspaces/orx-analytics/src/orxanalytics/watch.py",
+    ".release-workspaces/orx-analytics/tests/test_engine.py",
+    ".release-workspaces/orx-analytics/tests/test_watch_engine.py",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/AppSettings.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/AppModel.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/RunDetailModel.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsApp/SettingsView.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Tests/ORXAnalyticsCoreTests/AppSettingsTests.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Tests/ORXAnalyticsCoreTests/AppModelTests.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Tests/ORXAnalyticsCoreTests/RunDetailModelTests.swift",
+    ".release-workspaces/orx-analytics/docs/menubar-app-design.md",
+    ".release-workspaces/orx-analytics/docs/watch-migration.md",
+    "docs/diagnostics/g012/t004-refresh-cadence-lowering.md",
+    "docs/diagnostics/g012/t004-delivery-result.json"
+  ]
+}

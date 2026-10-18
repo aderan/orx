@@ -1,0 +1,81 @@
+{
+  "app": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app",
+  "app_executable": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/MacOS/ORXAnalyticsApp",
+  "bundle_after": {
+    "entries": 2000
+  },
+  "bundle_before": {
+    "entries": 2000
+  },
+  "bundle_diff": {
+    "added": [],
+    "added_bytecode": [],
+    "changed": [],
+    "removed": []
+  },
+  "codesign_after": {
+    "exit_code": 0,
+    "first_line": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app: valid on disk",
+    "log": "codesign-after.log"
+  },
+  "codesign_before": {
+    "exit_code": 0,
+    "first_line": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app: valid on disk",
+    "log": "codesign-before.log"
+  },
+  "data_dir": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data",
+  "evidence_dir": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check",
+  "failures": [],
+  "finished_utc": "2026-10-18T02:42:36+00:00",
+  "hostile_child_env": {
+    "PYTHONDONTWRITEBYTECODE": "0"
+  },
+  "hostile_rationale": "0 still enables bytecode writing on the bundled CPython 3.12.8 (absent/0/empty all write; only 1 does not), so this adversarial value can mask nothing; only the app's makeChild forcing keeps the bundle sealed",
+  "rounds": [
+    {
+      "app_executable": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/MacOS/ORXAnalyticsApp",
+      "app_pid": 92499,
+      "bundle_processes_after_stop": [],
+      "engine": {
+        "command": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/Resources/python/bin/python3 /private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/Resources/orx_engine_serve.py /Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data",
+        "pid": 92524,
+        "ppid": 92499
+      },
+      "engine_launch_log": {
+        "path": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data/logs/engine-launch.log",
+        "size": 0
+      },
+      "engine_process_observed": true,
+      "round": "first-launch",
+      "socket_observed": true,
+      "socket_path": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data/engine.sock",
+      "started_utc": "2026-10-18T02:42:34+00:00",
+      "stripped_dev_overrides": [],
+      "waited_seconds": 1.0
+    },
+    {
+      "app_executable": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/MacOS/ORXAnalyticsApp",
+      "app_pid": 92752,
+      "bundle_processes_after_stop": [],
+      "engine": {
+        "command": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/Resources/python/bin/python3 /private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-seal-candidate.IVeas4/ORX Analytics (Internal Preview).app/Contents/Resources/orx_engine_serve.py /Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data",
+        "pid": 92756,
+        "ppid": 92752
+      },
+      "engine_launch_log": {
+        "path": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data/logs/engine-launch.log",
+        "size": 0
+      },
+      "engine_process_observed": true,
+      "round": "engine-restart",
+      "socket_observed": true,
+      "socket_path": "/Users/flb/Sources/Products/ORX/docs/diagnostics/g012/seal-check/runtime-data/engine.sock",
+      "started_utc": "2026-10-18T02:42:35+00:00",
+      "stripped_dev_overrides": [],
+      "waited_seconds": 0.4
+    }
+  ],
+  "started_utc": "2026-10-18T02:42:34+00:00",
+  "tool": "check_runtime_seal.py",
+  "verdict": "pass"
+}

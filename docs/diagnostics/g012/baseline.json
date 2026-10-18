@@ -1,0 +1,192 @@
+{
+  "goal": "G012",
+  "task": "T001",
+  "run": "R012",
+  "recorded_at": "2026-10-17",
+  "purpose": "G012 release baseline: the analytics-only 0.4.3 release inputs and the two repositories' live git facts. Everything below was measured in this session with the named commands; the goal context's repo-state statements were re-verified rather than trusted, and anything not re-verified is listed under unknown_or_unverified — never presented as verified fact.",
+
+  "release_scope": {
+    "kind": "analytics-only",
+    "orx_analytics_version": "0.4.3 (to be produced by the G012 fix commits; the freeze commit is recorded at freeze time, never assumed)",
+    "orx": "v0.4.0 — PUBLISHED, PINNED AS THE PRODUCT INPUT, NOT RE-RELEASED (no new ORX tag, no re-upload, no ORX release action in G012)",
+    "channel": "internal-preview (ad-hoc dev-flavor zip; decision docs/diagnostics/g012/distribution.json, credentials re-probed live this session)",
+    "seal_fix": "the runtime seal defect disclosed in the v0.4.2 release notes (first engine start wrote 73 __pycache__ files into the bundle, codesign --verify 0 -> 1) MUST land in this release: EngineProcessManager.makeChild sets PYTHONDONTWRITEBYTECODE so an installed app's first start never writes into the bundle; the real first-launch seal check is part of the G012 acceptance order (runbook §5)"
+  },
+
+  "repositories": {
+    "orx": {
+      "path": "/Users/flb/Sources/Products/ORX",
+      "origin": "https://github.com/aderan/orx.git",
+      "branch": "main",
+      "head_commit": "bd6cb467527b421b96807e942e6edf0a1a614bb5",
+      "head_commit_date": "2026-10-18 09:25:11 +0800",
+      "head_subject_first_line": "G011 发布后补充：解锁后像素复核证据（docs-only 证据提交，零源码变更，不移动任何标签）",
+      "tree_version": "0.4.0 (src/orx/__init__.py at HEAD; the post-release commits are docs/evidence only, the release source is unchanged)",
+      "worktree": {
+        "status_porcelain_before_this_task": [" M docs/m1.2-report.md"],
+        "status_porcelain_note": "at baseline recording time the ONLY worktree change was the protected user report; this task (T001) adds its own uncommitted deliverables under scripts/joint_release.py, tests/test_joint_release.py, IMPLEMENTATION_PLAN.md and docs/diagnostics/g012/ — T001 must not stage or commit anything, the commit that lands them becomes the G012 acceptance driver commit",
+        "staged_files": "none (git diff --cached is empty)"
+      },
+      "remote_verification": {
+        "command": "git ls-remote origin main 'refs/tags/*' + git rev-list --left-right --count origin/main...HEAD",
+        "status": "verified",
+        "checked_at": "2026-10-17 (this session)",
+        "remote_main": "bd6cb467527b421b96807e942e6edf0a1a614bb5",
+        "findings": [
+          "remote main == local HEAD bd6cb46 (0 ahead / 0 behind; the G011 evidence commits are pushed, no divergence)",
+          "every local tag has an identically-mapped remote tag (see historical_tag_object_mapping)"
+        ]
+      }
+    },
+
+    "orx_analytics_release_clone": {
+      "path": ".release-workspaces/orx-analytics",
+      "origin": "https://github.com/aderan/orx-analytics.git",
+      "branch": "main",
+      "head_commit": "f8c81b598f2912cad5726d9712f7bdfcc2390684",
+      "head_commit_date": "2026-10-18 02:09:03 +0800",
+      "head_subject_first_line": "G011/T008 docs: v0.4.2 发布记录（独立证据提交，零源码变更；tag v0.4.2 定于冻结提交 2461a260）",
+      "tree_version": "0.4.2 (src/orxanalytics/__init__.py at HEAD)",
+      "worktree": {
+        "status_porcelain": ["?? apps/macos/.build/"],
+        "note": "the only dirt is the SwiftPM build cache — a GENERATED directory (see generated_directory_exclusion); no tracked file is modified"
+      },
+      "remote_verification": {
+        "command": "git ls-remote origin main 'refs/tags/*' + git rev-list --left-right --count origin/main...HEAD",
+        "status": "verified",
+        "checked_at": "2026-10-17 (this session)",
+        "remote_main": "f8c81b598f2912cad5726d9712f7bdfcc2390684",
+        "remote_tag_v0_4_2": "2461a260387caf0e6acb63446d4be3b8d1a43b46",
+        "findings": [
+          "remote main == local HEAD f8c81b5 (0 ahead / 0 behind; the G011 release + evidence commits are pushed)",
+          "remote tag v0.4.2 resolves to the identical commit 2461a260 as the local tag"
+        ]
+      },
+      "tags": {
+        "count": 1,
+        "snapshot": ["v0.4.2"]
+      }
+    },
+
+    "orx_analytics_source": {
+      "path": "/Users/flb/Sources/Tools/orx-analytics",
+      "origin": "https://github.com/aderan/orx-analytics.git",
+      "branch": "main",
+      "head_commit": "f8c81b598f2912cad5726d9712f7bdfcc2390684",
+      "worktree_status_porcelain": [],
+      "ahead_of_remote": "0 ahead / 0 behind (clean, in sync with origin/main f8c81b5)",
+      "integrity_note": "read-only treatment this session: no mutating git command ran in the user's source checkout (only rev-parse/branch/status/ls-remote-style reads); all G012 development happens in the isolated release clone"
+    }
+  },
+
+  "orx_product_input": {
+    "mode": "pinned-tag",
+    "tag": "v0.4.0",
+    "commit": "f1cc7757c953d3fee5bff5630613a6d2fb380a74",
+    "kind": "lightweight tag (tag ref resolves directly to the commit)",
+    "version_read_from_commit": "0.4.0 (git show <commit>:src/orx/__init__.py)",
+    "tag_type": "lightweight, identical to the v0.3.x discipline",
+    "verified": [
+      "local: git rev-parse v0.4.0^{commit} == f1cc7757c953d3fee5bff5630613a6d2fb380a74",
+      "remote: git ls-remote origin refs/tags/v0.4.0 == f1cc7757… (local and remote tag mapping identical)",
+      "the commit exists and reads version 0.4.0 from its tree (this session)"
+    ],
+    "published_release": "https://github.com/aderan/orx/releases/tag/v0.4.0 (2026-10-17T18:02:51Z, per docs/diagnostics/g011/release-record.md)",
+    "driver_enforcement": "scripts/joint_release.py goal g012: freeze resolves the ORX product input from the published tag and fails closed (orx-pin-moved) if it no longer points at ORX_V040_COMMIT; candidate/verify-candidate re-check the pin (orx_pin_problems)",
+    "not_republished": "G012 performs no ORX tag, push, or release action; the ORX wheel re-derived from the pin for the dependency/exercise chain is provenance only — the published v0.4.0 release stays authoritative"
+  },
+
+  "acceptance_driver_commit": {
+    "repo": "orx",
+    "baseline_head": "bd6cb467527b421b96807e942e6edf0a1a614bb5",
+    "status_at_recording": "PENDING — the G012 driver extension (scripts/joint_release.py), its tests, this baseline, the g012 decision file, the runbook and the plan section are uncommitted worktree content at recording time; T001 must not stage or commit them",
+    "how_it_gets_recorded": "the commit that lands them is recorded automatically by every g012 freeze as binding.acceptance_driver.commit (provenance only, never a build input — the ORX product input is the pinned v0.4.0 tag and the analytics freeze commit is analytics.commit)"
+  },
+
+  "analytics_freeze_baseline": {
+    "commit_at_recording": "f8c81b598f2912cad5726d9712f7bdfcc2390684 (v0.4.2 tree + the v0.4.2 release record; the post-freeze evidence commit)",
+    "note": "the ACTUAL 0.4.3 freeze commit is a FUTURE commit carrying the G012 fixes (quick-panel UX, refresh cadence, controller token attribution, the EngineProcessManager.makeChild seal fix); it is resolved and recorded at freeze time (binding.analytics.commit), never assumed here",
+    "v0_4_2_tag": {"tag": "v0.4.2", "commit": "2461a260387caf0e6acb63446d4be3b8d1a43b46", "kind": "lightweight", "stays_exactly_here": true}
+  },
+
+  "historical_tag_object_mapping": {
+    "measured_with": "git for-each-ref refs/tags --sort=refname --format='%(refname:short) %(objectname) %(*objectname) %(objecttype)' + git ls-remote origin 'refs/tags/*'",
+    "checked_at": "2026-10-17 (this session)",
+    "orx": [
+      {"tag": "v0.1.0", "kind": "annotated", "tag_object": "eb8b7d7f9a790d283c39c1af13a9922d3c42e164", "peeled_commit": "21d27e7fcd290b0f2ff848113a913c405019ed33", "remote_identical": true},
+      {"tag": "v0.2.0", "kind": "annotated", "tag_object": "82e83b064b1b80085e5e536c95b686a6c7516ed0", "peeled_commit": "e0c49ee8f48fba9ea8356b4a3f15db418da86fe8", "remote_identical": true},
+      {"tag": "v0.2.1", "kind": "annotated", "tag_object": "fb25779d9f9a257d3c9931e74ea2a1ad0ef08699", "peeled_commit": "fb3197e74b3813c7a9310b2fa6400326ad6d1d0e", "remote_identical": true},
+      {"tag": "v0.3.0", "kind": "lightweight", "tag_object": "0f2629e6988ba5082a876257c910d78457bd1338", "peeled_commit": "0f2629e6988ba5082a876257c910d78457bd1338", "remote_identical": true},
+      {"tag": "v0.3.1", "kind": "lightweight", "tag_object": "4a450cf8fc16a3ec79a8e1b1a3a1a5754b0cbeb3", "peeled_commit": "4a450cf8fc16a3ec79a8e1b1a3a1a5754b0cbeb3", "remote_identical": true},
+      {"tag": "v0.4.0", "kind": "lightweight", "tag_object": "f1cc7757c953d3fee5bff5630613a6d2fb380a74", "peeled_commit": "f1cc7757c953d3fee5bff5630613a6d2fb380a74", "remote_identical": true}
+    ],
+    "orx_analytics": [
+      {"tag": "v0.4.2", "kind": "lightweight", "tag_object": "2461a260387caf0e6acb63446d4be3b8d1a43b46", "peeled_commit": "2461a260387caf0e6acb63446d4be3b8d1a43b46", "remote_identical": true}
+    ],
+    "policy": "all existing tags in both repositories stay exactly where they are; G012 only adds a NEW v0.4.3 tag on the analytics freeze commit at publish time (phase 5), never rewrites or moves history; the ORX v0.3.x tags keep feeding the existing package-acceptance chain and v0.4.0 is now additionally load-bearing as the G012 product-input pin"
+  },
+
+  "protected_report": {
+    "path": "docs/m1.2-report.md",
+    "sha256": "5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5",
+    "sha256_semantics": "recomputed this session with shasum -a 256; byte-identical to the digest pinned by docs/diagnostics/g010/user-file-baseline.json and docs/diagnostics/g011/baseline.json (the G010 final disposition, unchanged since)",
+    "tracked": true,
+    "staged": false,
+    "staging_status": "modified in the worktree, unstaged (' M docs/m1.2-report.md'); git diff --cached empty",
+    "numstat": {"added_lines": 363, "deleted_lines": 206},
+    "numstat_matches_g010_g011_disposition": true,
+    "commit_attribution": "user. G012 tasks must not stage, overwrite, revert, rewrite, or commit this file.",
+    "release_decision": "EXCLUDED from the G012 release (same disposition as G011): releases materialize the file from its committed state (git archive/clone of the freeze commits); the g012 candidate.json restates the exclusion with the G012 label"
+  },
+
+  "g011_evidence_protection": {
+    "rule": "docs/diagnostics/g011/** and dist/g011/** are PUBLISHED G011 evidence — read-only for G012 (not modified, not re-staged, not overwritten); new G012 materials go to docs/diagnostics/g012/** (committable evidence) and dist/g012/** (gitignored run materials)",
+    "verified_this_session": "no file under docs/diagnostics/g011/ was touched by T001; the driver extension preserves the G011 default surface (default goal g011, default work dir dist/g011, g011 decision file) so G011 reproduction invocations are unchanged",
+    "test_contract": "tests/test_joint_release.py keeps pinning the G011 behaviors (sample provenance, fail-closed codes, channel separation, protected-report exclusion) alongside the new G012 group"
+  },
+
+  "generated_directory_exclusion": {
+    "semantics": "every build materializes a COMMITTED tree (git archive for one-shot checkouts, git clone for battery/build_app.sh runs), so untracked generated output can never enter a build; the exclusion below is about the freeze-time uncommitted-inputs GUARD, not about build inputs",
+    "analytics_clone": {
+      "paths": ["apps/macos/.build/"],
+      "what_it_is": "SwiftPM build cache left by toolchain runs inside the isolated clone (already noted in the G011 baseline environment_notes); untracked, not in the analytics .gitignore, hence visible in git status --porcelain as '?? apps/macos/.build/'",
+      "guard_treatment": "scripts/joint_release.py ANALYTICS_GENERATED_UNTRACKED exempts EXACTLY these untracked prefixes and ONLY for goal g012 (freeze_worktree_problems); a tracked modification inside the same directory, any other untracked path, and the entire g011 guard still refuse the candidate",
+      "tests": "tests/test_joint_release.py test_g012_uncommitted_inputs_guard_exempts_only_generated_dirs pins every branch of the exemption"
+    },
+    "orx_repo": {
+      "paths": ["dist/", ".release-workspaces/"],
+      "guard_treatment": "excluded from version control by the local .gitignore rule (the '.release-workspaces/' entry added in G011 plus the pre-existing 'dist/' entry); dist/g012 run materials (manifests, logs, checkouts, channels) therefore never appear as uncommitted inputs at all",
+      "honesty_note": "the ORX .gitignore is a local, untracked file (the user's global excludesfile lists '.gitignore'; on disk but not in HEAD — a pre-existing convention recorded by G011): the ignore guarantee protects this machine's worktree, and the G012 chain must not rely on the rule being present in any clean checkout (git archive/clone semantics are the actual exclusion mechanism, same as G011)"
+    },
+    "not_loosened": [
+      "the ORX protected-report-only rule at freeze time is unchanged for both goals",
+      "the analytics guard is unchanged for g011 (the generated prefix still refuses there)",
+      "the historical-tag, sample-provenance, fail-closed, channel-separation and signature gates are shared verbatim"
+    ]
+  },
+
+  "context_statements_reverified_live": [
+    "ORX HEAD bd6cb46 pushed, origin/main identical (goal context said 'origin/main matches' — verified: 0/0)",
+    "ORX v0.4.0 tag -> f1cc7757… (verified locally and via ls-remote)",
+    "analytics clone on main f8c81b5 with tag v0.4.2 -> 2461a260…, remote main bd06d70->f8c81b5 pushed (verified: remote main == f8c81b5, tag identical)",
+    "user source checkout /Users/flb/Sources/Tools/orx-analytics on f8c81b5, clean (verified)",
+    "analytics has exactly one tag v0.4.2 (verified: for-each-ref lists only v0.4.2)",
+    "ORX tags v0.1.0..v0.3.1, v0.4.0 (verified with full object mapping incl. annotated tag objects)"
+  ],
+
+  "unknown_or_unverified": [
+    "The G012 acceptance driver commit (PENDING: T001's deliverables are uncommitted by design; see acceptance_driver_commit).",
+    "The analytics 0.4.3 freeze commit (does not exist yet; phases 2–3 create it).",
+    "The published v0.4.0 asset SHA256s (orx wheel f71c19ae…, app zip 5187029c…) are quoted from docs/diagnostics/g011/release-record.md (published evidence) and were NOT re-downloaded/re-hashed this session; the publish-time download verification belongs to the G012 phase-5 order.",
+    "Push/write permission on the analytics remote is not re-tested this session (ls-remote proves read access only; publishing is phase 5's business)."
+  ],
+
+  "decisions": [
+    "Release shape: analytics-only orx-analytics 0.4.3 on the pinned published ORX v0.4.0; ORX is not rebuilt from HEAD, not tagged, not re-released.",
+    "The driver extension is minimal and goal-scoped: --goal-id g012 (explicit; default g011 unchanged), per-goal work dir (dist/g012) and decision file (docs/diagnostics/g012/distribution.json), the ORX product-input pin with moved-tag refusal (orx-pin-moved), a G012-labeled candidate record, and the analytics generated-directory exemption; no other gate is touched.",
+    "The G011 evidence and user report protections carry over verbatim (see protected_report and g011_evidence_protection).",
+    "Analytics stays a read-only analysis layer: the controller-token attribution is a read-only query over zcode session data (~/.zcode/cli/db/db.sqlite) keyed by run session ownership; it never modifies ORX state and never grants scheduling/recovery/replay authority."
+  ],
+
+  "implementation_plan_pointer": "IMPLEMENTATION_PLAN.md carries the five G012 phases (goals, success criteria, tests, status) appended as the G012 section; all earlier Goal history in that file is unchanged."
+}

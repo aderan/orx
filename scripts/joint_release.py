@@ -1,6 +1,20 @@
 """Joint frozen-build + acceptance driver for the ORX 0.4.x release combo
 (G011 T004): ORX v0.4.0 + orx-analytics v0.4.2.
 
+G012 (analytics-only 0.4.3, minimal extension): the SAME harness releases
+orx-analytics 0.4.3 on top of the PUBLISHED ORX v0.4.0 — pass
+``--goal-id g012`` (default work dir ``dist/g012``, decision file
+``docs/diagnostics/g012/distribution.json``). The ORX product input is
+pinned to the published ``v0.4.0`` tag commit (``ORX_V040_COMMIT``): ORX
+is not rebuilt from HEAD and NOT re-released, and freeze fails closed
+(``orx-pin-moved``) if the published tag ever moves. Every fail-closed
+gate, the sample provenance, the channel separation and the
+protected-report exclusion are shared verbatim with G011; the one
+goal-scoped exemption is the untracked GENERATED build output inside the
+analytics clone (``apps/macos/.build``), which can never enter a build
+(every build materializes a committed tree). See
+docs/diagnostics/g012/joint-acceptance-runbook.md.
+
 Two repositories, one frozen release. Every stage below works from FULL
 GIT COMMITS — ``git archive`` checkouts, never the working trees — so
 uncommitted workspace content (reports, edits, anything) can never enter
@@ -169,6 +183,72 @@ DECISION_FILE = REPO_ROOT / "docs" / "diagnostics" / "g011" / "distribution.json
 # freeze time; it never enters any build (git archive materializes the
 # committed state) and is never staged or committed by G011.
 PROTECTED_REPORT_ENTRY = " M docs/m1.2-report.md"
+
+# G012: the ORX product input for the analytics-only 0.4.3 release is the
+# PUBLISHED v0.4.0 tag commit — ORX is not rebuilt from HEAD and NOT
+# re-released. Published tags are immutable (same discipline as v0.3.0
+# above): the pin must stay exactly here or freeze/candidate fail closed.
+ORX_V040_TAG = "v0.4.0"
+ORX_V040_COMMIT = "f1cc7757c953d3fee5bff5630613a6d2fb380a74"
+
+# Goal profiles. The default stays g011 so every existing G011 invocation
+# reproduces unchanged; g012 is selected explicitly with --goal-id g012
+# (or inferred from an existing work-dir manifest at freeze time).
+GOAL_CONFIGS = {
+    "g011": {
+        "label": "G011",
+        "default_work_dir": DEFAULT_WORK_DIR,
+        "decision_file": DECISION_FILE,
+        # ORX product input = the repo HEAD at freeze time (the joint combo)
+        "orx_input": "head",
+        "candidate_task": "T006",
+        "publish_note": (
+            "a candidate is NOT a release: T007 records the operator GUI"
+            " acceptance and T008 publishes (push, tags, artifacts); this"
+            " file creates no published conclusion"),
+    },
+    "g012": {
+        "label": "G012",
+        "default_work_dir": Path("dist") / "g012",
+        "decision_file": REPO_ROOT / "docs" / "diagnostics" / "g012"
+                         / "distribution.json",
+        # ORX product input = the PUBLISHED v0.4.0 tag (analytics-only
+        # release; ORX is not re-published)
+        "orx_input": f"tag:{ORX_V040_TAG}",
+        "candidate_task": None,
+        "publish_note": (
+            "a candidate is NOT a release: the operator GUI acceptance and"
+            " the publish step (push, tag, artifacts) happen afterwards and"
+            " are recorded separately; this file creates no published"
+            " conclusion. ORX is NOT re-published: the ORX product input"
+            " stays the published v0.4.0 tag"),
+    },
+}
+
+# G012: generated build-output directories inside the analytics clone
+# (SwiftPM's apps/macos/.build cache) that `git status --porcelain` shows
+# as untracked but that can never enter a build — every build materializes
+# a COMMITTED tree (git archive / git clone of the freeze commit), so
+# these paths are pure local toolchain output. The exemption is EXACTLY
+# these untracked generated prefixes and only for goal g012: every other
+# uncommitted analytics entry still refuses the candidate, and the whole
+# G011 guard is unchanged.
+ANALYTICS_GENERATED_UNTRACKED = ("apps/macos/.build/",)
+
+
+def analytics_generated_exempt(entry: str) -> bool:
+    return entry.startswith("?? ") and any(
+        entry[3:].startswith(prefix)
+        for prefix in ANALYTICS_GENERATED_UNTRACKED)
+
+
+def goal_config(goal_id: str | None) -> dict:
+    goal_id = goal_id or "g011"
+    try:
+        return GOAL_CONFIGS[goal_id]
+    except KeyError:
+        raise JointReleaseError(
+            f"unknown goal id {goal_id!r} (known: {sorted(GOAL_CONFIGS)})")
 
 # The clean-checkout battery (G011 T006): the required check names whose
 # evidence the candidate phase re-verifies.
@@ -835,11 +915,13 @@ def old_analytics_refuses_newer_orx(orx_repo: Path, analytics_repo: Path,
 
 def current_analytics_upgrades_store_v2(analytics_repo: Path, sample_db: Path,
                                         workdir: Path) -> dict:
-    """The CURRENT analytics code (the clone's own venv — the 0.4.2
-    release environment) opens a COPY of the store-v2 sample, upgrades it
-    in place to store v3 (receipts mirror added), keeps every row, keeps
-    the source byte-identical, and still refuses a foreign future
-    version. Uses the clone's interpreter exactly like its own tests."""
+    """The CURRENT analytics code (the clone's own venv — the release
+    environment) opens a COPY of the store-v2 sample and upgrades it in
+    place through every additive step to the CURRENT store version (v3
+    receipts mirror, v4 zc_requests per-request token columns), keeps
+    every row, keeps the source byte-identical, and still refuses a
+    foreign future version. Uses the clone's interpreter exactly like
+    its own tests."""
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     if not ANALYTICS_VENV_PYTHON.is_file():
@@ -861,11 +943,12 @@ def current_analytics_upgrades_store_v2(analytics_repo: Path, sample_db: Path,
         """
         import json, sqlite3, sys
         from pathlib import Path
-        from orxanalytics.store import Store
+        from orxanalytics.store import Store, STORE_VERSION
         store = Store(Path(sys.argv[1]))
         conn = sqlite3.connect(
             f"file:{Path(sys.argv[1])/'analytics.db'}?immutable=1", uri=True)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(orx_receipts)")}
+        zc_cols = {r[1] for r in conn.execute("PRAGMA table_info(zc_requests)")}
         version = conn.execute(
             "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
         kept = conn.execute("SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
@@ -874,19 +957,27 @@ def current_analytics_upgrades_store_v2(analytics_repo: Path, sample_db: Path,
         print(json.dumps({
             "version": orxanalytics.__version__,
             "store_version": version,
+            "current_store_version": STORE_VERSION,
             "receipts_columns": sorted(cols),
+            "zc_request_columns": sorted(zc_cols),
             "snapshots_kept": kept,
         }))
         """,
         upgrade_home,
     )
     _require(upgraded.returncode == 0,
-             f"store v2→v3 upgrade failed: {upgraded.stderr}")
+             f"store v2 upgrade chain failed: {upgraded.stderr}")
     facts = json.loads(upgraded.stdout)
-    _require(facts["store_version"] == "3",
-             f"upgraded store_version {facts['store_version']!r} != '3'")
+    _require(facts["store_version"] == "4",
+             f"upgraded store_version {facts['store_version']!r} != '4'")
+    _require(facts["store_version"] == facts["current_store_version"],
+             "upgraded store_version disagrees with the analytics module's"
+             f" STORE_VERSION {facts['current_store_version']!r}")
     _require("delivery_digest" in facts["receipts_columns"],
              "orx_receipts mirror missing after upgrade")
+    _require({"input_tokens", "output_tokens", "cache_read",
+              "computed_total"} <= set(facts["zc_request_columns"]),
+             "zc_requests per-request token columns missing after upgrade")
     _require(facts["snapshots_kept"] > 0, "upgrade lost the sample rows")
     _require(sha256_file(sample_db) == sha_before,
              "the upgrade touched the committed store-v2 sample")
@@ -917,6 +1008,7 @@ def current_analytics_upgrades_store_v2(analytics_repo: Path, sample_db: Path,
         "current_analytics_version": facts["version"],
         "upgraded_store_version": facts["store_version"],
         "receipts_mirror": True,
+        "zc_request_token_columns": True,
         "snapshots_kept": facts["snapshots_kept"],
         "future_version_refused": True,
         "source_unchanged": True,
@@ -965,8 +1057,9 @@ def evidence_index(work_dir: Path, manifest: dict) -> Path:
     dumps, no absolute user paths. Raw logs stay local under the work
     dir (gitignored); this file is the committable index."""
     binding = manifest.get("binding", {})
+    goal_label = binding.get("goal_label") or "G011"
     lines = [
-        "# G011 joint release — sanitized evidence index",
+        f"# {goal_label} joint release — sanitized evidence index",
         "",
         f"Updated: {now_iso()}",
         "",
@@ -1023,10 +1116,33 @@ def evidence_index(work_dir: Path, manifest: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def stage_freeze(work_dir: Path, channel: str, log: StageLog) -> dict:
+def stage_freeze(work_dir: Path, channel: str, log: StageLog,
+                 goal_id: str = "g011") -> dict:
     if channel not in CHANNELS:
         raise JointReleaseError(f"unknown channel {channel!r}")
-    orx_head = head_commit(REPO_ROOT)
+    config = goal_config(goal_id)
+    if config["orx_input"] == f"tag:{ORX_V040_TAG}":
+        # G012: the ORX product input is the PUBLISHED v0.4.0 tag commit —
+        # never the (moving) HEAD, never a re-pin.
+        orx_head = _git(REPO_ROOT, "rev-parse", f"{ORX_V040_TAG}^{{commit}}")
+        if orx_head != ORX_V040_COMMIT:
+            raise StageFailure(
+                "freeze", "orx-pin-moved",
+                f"tag {ORX_V040_TAG} no longer points at the published"
+                f" commit {ORX_V040_COMMIT} (found {orx_head}); the G012"
+                " ORX product input is the published release — a moved tag"
+                " is a stop, never a re-pin")
+        orx_input = {
+            "input": f"tag:{ORX_V040_TAG}",
+            "pinned_tag": {
+                "tag": ORX_V040_TAG,
+                "commit": orx_head,
+                "published_commit": ORX_V040_COMMIT,
+            },
+        }
+    else:
+        orx_head = head_commit(REPO_ROOT)
+        orx_input = {"input": "head"}
     an_head = head_commit(ANALYTICS_REPO)
     orx_version = orx_version_at(REPO_ROOT, orx_head)
     an_version = analytics_version_at(ANALYTICS_REPO, an_head)
@@ -1038,7 +1154,9 @@ def stage_freeze(work_dir: Path, channel: str, log: StageLog) -> dict:
             f" (found {tag_commit}); historical tags must stay as-is for"
             " the existing package-acceptance chain")
     log.write(
-        f"frozen ORX {orx_version} @ {orx_head}\n"
+        f"goal {config['label']} ({goal_id})\n"
+        f"frozen ORX {orx_version} @ {orx_head}"
+        f" (input: {orx_input['input']})\n"
         f"frozen orx-analytics {an_version} @ {an_head}\n"
         f"channel {channel}; v0.3.0 tag intact at {tag_commit}")
 
@@ -1051,11 +1169,14 @@ def stage_freeze(work_dir: Path, channel: str, log: StageLog) -> dict:
 
     uv_version = _run(["uv", "--version"], cwd=REPO_ROOT).stdout.strip()
     binding = {
+        "goal_id": goal_id,
+        "goal_label": config["label"],
         "channel": channel,
         "frozen_at": now_iso(),
         "orx": {
             "commit": orx_head,
             "version": orx_version,
+            **orx_input,
             "worktree": worktree_status(REPO_ROOT),
             "old_tag_for_package_acceptance": {
                 "tag": V030_TAG, "commit": tag_commit},
@@ -1095,6 +1216,19 @@ def stage_freeze(work_dir: Path, channel: str, log: StageLog) -> dict:
             "platform": sys.platform,
         },
     }
+    if goal_id == "g012":
+        # The G012 acceptance driver commit (the ORX commit carrying the
+        # extended driver/runbook) is recorded SEPARATELY from the two
+        # product inputs: provenance only, never a build input.
+        binding["acceptance_driver"] = {
+            "repo": "orx",
+            "commit": head_commit(REPO_ROOT),
+            "note": (
+                "the ORX commit carrying the G012 driver/runbook — recorded"
+                " for provenance only, NOT a build input: the ORX product"
+                " input is the pinned v0.4.0 tag (orx.pinned_tag) and the"
+                " analytics freeze commit is analytics.commit"),
+        }
     manifest = load_manifest(work_dir) if manifest_path(work_dir).is_file() \
         else {"binding": None, "artifacts": {}, "stages": {}}
     previous = manifest.get("binding") or {}
@@ -1117,6 +1251,7 @@ def stage_freeze(work_dir: Path, channel: str, log: StageLog) -> dict:
         manifest["artifacts"] = {}
     manifest["binding"] = binding
     record_stage(manifest, "freeze", "passed", log.rel,
+                 goal_id=goal_id, goal_label=config["label"],
                  commits={"orx": orx_head, "analytics": an_head},
                  versions={"orx": orx_version, "analytics": an_version},
                  channel=channel, samples=samples)
@@ -1435,6 +1570,13 @@ def stage_build(work_dir: Path, log: StageLog, *, build_app: bool = False,
         raise StageFailure("build", "missing-step-evidence",
                            "freeze has not passed; run freeze first")
     binding = manifest["binding"]
+    if decision is None:
+        # per-goal default (g011: docs/diagnostics/g011/distribution.json;
+        # g012: docs/diagnostics/g012/distribution.json) — resolved only
+        # when present, exactly like the previous CLI pre-resolution
+        default_decision = goal_config(binding.get("goal_id"))["decision_file"]
+        if default_decision.is_file():
+            decision = default_decision
     orx_commit = binding["orx"]["commit"]
     an_commit = binding["analytics"]["commit"]
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -2680,8 +2822,15 @@ def freeze_worktree_problems(binding: dict) -> list[str]:
     is the baseline-protected user report in the ORX repo (and NOTHING
     tracked-or-untracked-visible in the analytics clone). Builds are git
     archives/clones of the frozen commits, so this records that no
-    uncommitted content existed to be excluded in the first place."""
+    uncommitted content existed to be excluded in the first place.
+
+    G012 only: untracked GENERATED build output inside the analytics clone
+    (``apps/macos/.build`` — ANALYTICS_GENERATED_UNTRACKED) is exempt; it
+    can never enter a build and the ORX product input is the pinned
+    v0.4.0 tag, not a worktree. Every other uncommitted entry — and the
+    entire G011 guard (goal g011 or a legacy binding) — refuses unchanged."""
     problems: list[str] = []
+    goal_id = binding.get("goal_id") or "g011"
     orx_entries = set(binding.get("orx", {}).get("worktree", {})
                       .get("entries", []))
     extra = orx_entries - {PROTECTED_REPORT_ENTRY}
@@ -2691,10 +2840,34 @@ def freeze_worktree_problems(binding: dict) -> list[str]:
             f" protected report: {sorted(extra)}")
     an_entries = binding.get("analytics", {}).get("worktree", {}).get(
         "entries", [])
+    if goal_id == "g012":
+        an_entries = [entry for entry in an_entries
+                      if not analytics_generated_exempt(entry)]
     if an_entries:
         problems.append(
             f"uncommitted analytics worktree content at freeze time:"
             f" {an_entries}")
+    return problems
+
+
+def orx_pin_problems(binding: dict) -> list[str]:
+    """G012: the ORX product input is the PUBLISHED v0.4.0 tag — at
+    candidate/verify time the pin must still resolve to the published
+    commit and stay the bound ORX input. G011 bindings (no pinned_tag)
+    are untouched."""
+    pinned = binding.get("orx", {}).get("pinned_tag")
+    if not pinned:
+        return []
+    problems: list[str] = []
+    live = _git(REPO_ROOT, "rev-parse", f"{pinned['tag']}^{{commit}}")
+    if live != pinned.get("published_commit"):
+        problems.append(
+            f"pinned ORX tag {pinned['tag']} moved: resolves to {live},"
+            f" published commit is {pinned.get('published_commit')}")
+    if live != binding.get("orx", {}).get("commit"):
+        problems.append(
+            f"pinned ORX tag {pinned['tag']} resolves to {live} but the"
+            f" binding froze {binding.get('orx', {}).get('commit')}")
     return problems
 
 
@@ -2799,6 +2972,64 @@ def _candidate_app_and_meta(base: Path, doc: dict, log_note: str) -> tuple:
     return facts, meta, signature
 
 
+def candidate_document(binding: dict, decision: dict, snapshot: dict,
+                       battery_checks: list, missing: list[str],
+                       battery_record: dict, artifacts: dict, facts: dict,
+                       meta: dict) -> dict:
+    """The frozen candidate document (schema 1). The goal label comes from
+    the binding: a G012 candidate is labeled G012 (and never carries a
+    G011 task id or note); a legacy binding without goal_id stays G011."""
+    goal_id = binding.get("goal_id") or "g011"
+    config = goal_config(goal_id)
+    return {
+        "schema": 1,
+        "phase": "candidate",
+        "goal": config["label"],
+        "goal_id": goal_id,
+        "task": config["candidate_task"],
+        "generated_at": now_iso(),
+        "published": False,
+        "published_note": config["publish_note"],
+        "freeze_commits": {
+            "orx": binding["orx"]["commit"],
+            "analytics": binding["analytics"]["commit"],
+        },
+        "versions": {
+            "orx": binding["orx"]["version"],
+            "analytics": binding["analytics"]["version"],
+        },
+        "channel": binding["channel"],
+        "decision": decision,
+        "historical_tags": snapshot,
+        "protected_report": {
+            "path": "docs/m1.2-report.md",
+            "disposition": (
+                "EXCLUDED from the release: the worktree modification is"
+                " the only dirt allowed at freeze time and never enters"
+                " any build — releases materialize the file from its"
+                " committed state (git archive/clone of the freeze"
+                f" commit); never staged, never committed by"
+                f" {config['label']}"),
+        },
+        "binding": binding,
+        "battery": {
+            "checks": battery_checks,
+            "all_passed": not missing,
+            "checkouts": battery_record.get("checkouts", {}),
+            "log": battery_record.get("log"),
+        },
+        "artifacts": artifacts,
+        "app": facts,
+        "package_metadata": meta,
+        "invalidation": (
+            "the candidate archive SHA256s are frozen AFTER the channel's"
+            " final gates (internal-preview: verified ad-hoc signature;"
+            " official: Developer ID + notarization + stapling). Any"
+            " later source, signature or byte change invalidates the"
+            " candidate and requires a rebuild plus joint re-acceptance"),
+    }
+
+
 def stage_candidate(work_dir: Path, log: StageLog,
                     decision_file: Path | None = None) -> dict:
     """Write candidate.json: the frozen candidate binding both repos'
@@ -2816,8 +3047,11 @@ def stage_candidate(work_dir: Path, log: StageLog,
                 " the frozen, clean-checkout-checked, built combination")
     binding = manifest["binding"]
     channel = binding["channel"]
-    decision_file = Path(decision_file) if decision_file is not None \
-        else DECISION_FILE
+    if decision_file is None:
+        # per-goal default (g011: docs/diagnostics/g011/distribution.json;
+        # g012: docs/diagnostics/g012/distribution.json)
+        decision_file = goal_config(binding.get("goal_id"))["decision_file"]
+    decision_file = Path(decision_file)
     decision = load_decision_facts(decision_file, channel)
     log.write(f"decision: {channel} allowed by {decision['path']}"
               f" (sha256 {decision['sha256'][:16]}…)")
@@ -2829,6 +3063,12 @@ def stage_candidate(work_dir: Path, log: StageLog,
         raise StageFailure("candidate", "commit-mismatch",
                            "the frozen commits changed under the candidate",
                            problems=problems)
+    problems = orx_pin_problems(binding)
+    if problems:
+        raise StageFailure(
+            "candidate", "orx-pin-moved",
+            "the pinned ORX product input (published v0.4.0) drifted"
+            " under the candidate", problems=problems)
     problems = freeze_worktree_problems(binding)
     if problems:
         raise StageFailure(
@@ -2871,54 +3111,9 @@ def stage_candidate(work_dir: Path, log: StageLog,
                            "historical tags drifted", problems=problems)
 
     app_record = artifacts["app_archive"]
-    candidate = {
-        "schema": 1,
-        "phase": "candidate",
-        "goal": "G011",
-        "task": "T006",
-        "generated_at": now_iso(),
-        "published": False,
-        "published_note": (
-            "a candidate is NOT a release: T007 records the operator GUI"
-            " acceptance and T008 publishes (push, tags, artifacts); this"
-            " file creates no published conclusion"),
-        "freeze_commits": {
-            "orx": binding["orx"]["commit"],
-            "analytics": binding["analytics"]["commit"],
-        },
-        "versions": {
-            "orx": binding["orx"]["version"],
-            "analytics": binding["analytics"]["version"],
-        },
-        "channel": channel,
-        "decision": decision,
-        "historical_tags": snapshot,
-        "protected_report": {
-            "path": "docs/m1.2-report.md",
-            "disposition": (
-                "EXCLUDED from the release: the worktree modification is"
-                " the only dirt allowed at freeze time and never enters"
-                " any build — releases materialize the file from its"
-                " committed state (git archive/clone of the freeze"
-                " commit); never staged, never committed by G011"),
-        },
-        "binding": binding,
-        "battery": {
-            "checks": battery_checks,
-            "all_passed": not missing,
-            "checkouts": battery_record.get("checkouts", {}),
-            "log": battery_record.get("log"),
-        },
-        "artifacts": artifacts,
-        "app": facts,
-        "package_metadata": meta,
-        "invalidation": (
-            "the candidate archive SHA256s are frozen AFTER the channel's"
-            " final gates (internal-preview: verified ad-hoc signature;"
-            " official: Developer ID + notarization + stapling). Any"
-            " later source, signature or byte change invalidates the"
-            " candidate and requires a rebuild plus joint re-acceptance"),
-    }
+    candidate = candidate_document(
+        binding, decision, snapshot, battery_checks, missing,
+        battery_record, artifacts, facts, meta)
     path = candidate_path(work_dir)
     path.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
     log.write(f"candidate written: {path.name}"
@@ -2963,6 +3158,17 @@ def verify_candidate(candidate_file: Path) -> dict:
                 "verify-candidate", "candidate-shape-invalid",
                 f"artifact {key!r} has no digest record")
     binding = doc["binding"]
+    # the goal label must agree with the binding (a G012 candidate is
+    # never verified under a G011 label, or vice versa)
+    try:
+        expected_label = goal_config(binding.get("goal_id"))["label"]
+    except JointReleaseError:
+        expected_label = None
+    if doc.get("goal") != expected_label:
+        raise StageFailure(
+            "verify-candidate", "candidate-shape-invalid",
+            f"the candidate goal label {doc.get('goal')!r} disagrees with"
+            f" its binding goal {binding.get('goal_id')!r}")
     base = candidate_file.parent
 
     # digests + identity against the frozen binding (fail-closed codes
@@ -2975,6 +3181,11 @@ def verify_candidate(candidate_file: Path) -> dict:
         raise StageFailure("verify-candidate", "commit-mismatch",
                            "the frozen commits are no longer valid",
                            problems=problems)
+    problems = orx_pin_problems(binding)
+    if problems:
+        raise StageFailure("verify-candidate", "orx-pin-moved",
+                           "the pinned ORX product input (published v0.4.0)"
+                           " drifted under the candidate", problems=problems)
 
     battery = doc.get("battery") or {}
     checks = {c.get("name"): c for c in battery.get("checks", [])}
@@ -3401,7 +3612,7 @@ def stage_self_test(work_dir: Path, log: StageLog) -> dict:
         work_dir / "upgrade-probe")
     refusal = old_analytics_refuses_newer_orx(REPO_ROOT, ANALYTICS_REPO,
                                               work_dir / "refusal-probe")
-    log.write(f"store v2→v3 upgrade chain: {json.dumps(upgrade, sort_keys=True)}")
+    log.write(f"store v2→current upgrade chain: {json.dumps(upgrade, sort_keys=True)}")
     log.write(f"old-code rollback refusal: {refusal['refusal']}")
 
     probe = probe_fail_closed(work_dir)
@@ -3447,14 +3658,24 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="G011 joint frozen-build + acceptance driver"
-                    " (ORX + orx-analytics)")
+        description="Joint frozen-build + acceptance driver (G011 combo"
+                    " ORX + orx-analytics; G012 analytics-only 0.4.3 via"
+                    " --goal-id g012)")
     # --work-dir is accepted before AND after the stage name (the
     # prescribed check uses `self-test --work-dir <dir>`).
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--work-dir", type=Path, default=None,
                         help="working directory (default:"
-                             f" {DEFAULT_WORK_DIR})")
+                             f" {DEFAULT_WORK_DIR}; g012: dist/g012)")
+    common.add_argument("--goal-id", choices=tuple(GOAL_CONFIGS),
+                        default=None,
+                        help="goal profile: g011 (default — the joint"
+                             " 0.4.0+0.4.2 combo, ORX input = repo HEAD)"
+                             " or g012 (analytics-only 0.4.3 with the ORX"
+                             " product input pinned to the published"
+                             " v0.4.0 tag; default work dir dist/g012,"
+                             " decision docs/diagnostics/g012/"
+                             "distribution.json)")
     sub = parser.add_subparsers(dest="stage", required=True)
     sub.add_parser("self-test", parents=[common])
     sub.add_parser("freeze", parents=[common])
@@ -3514,7 +3735,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
 
-    work_dir = args.work_dir or DEFAULT_WORK_DIR
+    work_dir = args.work_dir or goal_config(args.goal_id)["default_work_dir"]
     if not work_dir.is_absolute():
         work_dir = REPO_ROOT / work_dir
     if args.stage == "self-test":
@@ -3565,22 +3786,23 @@ def main(argv: list[str] | None = None) -> int:
             elif args.stage == "freeze":
                 manifest = load_manifest(work_dir) \
                     if manifest_path(work_dir).is_file() else None
-                channel = (manifest or {}).get("binding", {}).get(
-                    "channel", "internal-preview")
-                stage_freeze(work_dir, channel, log)
+                previous = (manifest or {}).get("binding", {})
+                channel = previous.get("channel", "internal-preview")
+                # goal continuity: an existing g012 work dir stays g012
+                # unless --goal-id explicitly selects another profile
+                goal_id = args.goal_id or previous.get("goal_id") or "g011"
+                stage_freeze(work_dir, channel, log, goal_id=goal_id)
             elif args.stage == "battery":
                 stage_battery(work_dir, log)
             elif args.stage == "build":
-                decision = args.decision
-                if decision is None and DECISION_FILE.is_file():
-                    decision = DECISION_FILE
+                # the per-goal decision default (g011/g012
+                # distribution.json) is resolved inside the stage from
+                # the manifest's binding goal
                 stage_build(work_dir, log, build_app=args.build_app,
-                            app_archive=args.app_archive, decision=decision)
+                            app_archive=args.app_archive,
+                            decision=args.decision)
             elif args.stage == "candidate":
-                decision = args.decision
-                if decision is None and DECISION_FILE.is_file():
-                    decision = DECISION_FILE
-                stage_candidate(work_dir, log, decision_file=decision)
+                stage_candidate(work_dir, log, decision_file=args.decision)
             elif args.stage == "exercise":
                 stage_exercise(work_dir, log,
                                stand_in_app_dir=args.stand_in_app_dir)

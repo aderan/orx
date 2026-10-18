@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "summary": "Rev2 CONFIRMATION dispatch for T001 (no redo). Prior classification stands: 1:T001 passed at attempt 228 with independent verification at 229 on the AS-IS deliverables, and this round re-verified that the work still applies. Start gate passed (orx task check T001 ran both prescribed commands, round 1/3). Both checks re-run fresh in this attempt and green: tests/test_joint_release.py passed 28/28 in 5.69s (exit 0, matching the 28-tests-expected-green requirement) and git diff --check clean (exit 0). Scoped deliverables confirmed present and unchanged in role: IMPLEMENTATION_PLAN.md, scripts/joint_release.py (174264 bytes), tests/test_joint_release.py (42797 bytes), docs/diagnostics/g012/ (baseline.json, distribution.json, joint-acceptance-runbook.md). The working-tree evolution since attempt 228 -- T002/T003/T006 deliverables in the clone and added g012 notes (t002-token-grouping-audit.md, t003-panel-click-focus-and-done-plain-text.md, t006-delivery-result.json, t006-runtime-seal-check.md, seal-check/) -- matches the Controller's expected-evolution note; the joint-release driver and its test suite remain green under it. No implementation work performed, nothing fixed, nothing red.",
+  "checks": [
+    {
+      "command": "uv run pytest -q tests/test_joint_release.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T001/01-0006-command.log"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T001/02-0007-command.log"
+    }
+  ],
+  "artifacts": [
+    "docs/diagnostics/g012/t001-rev2-confirmation.json"
+  ]
+}

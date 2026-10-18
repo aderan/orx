@@ -34,6 +34,15 @@ against the real .app bundle, operator GUI/signature evidence) is G011
 T006/T007's job; until those artifacts exist the stages fail closed and
 these tests pin exactly that. The run book is
 docs/diagnostics/g011/joint-acceptance-runbook.md.
+
+G012 (analytics-only 0.4.3 on the published ORX v0.4.0 pin) adds a
+focused group at the bottom: the --goal-id g012 profiles, the ORX
+product-input pin (and its moved-tag refusal at freeze/candidate time),
+the G012-labeled candidate document, the goal-scoped generated-directory
+exemption in the uncommitted-inputs guard (everything else — and the
+whole G011 guard — unchanged), and the exact prescribed dist/g012
+invocation shapes (fail-closed before a freeze exists). The G012 run
+book is docs/diagnostics/g012/joint-acceptance-runbook.md.
 """
 
 from __future__ import annotations
@@ -250,9 +259,10 @@ def test_current_analytics_upgrades_store_v2_additively(tmp_path):
         joint_release.ANALYTICS_REPO,
         REPO_ROOT / joint_release.STORE_V2_SAMPLE_DIR / "analytics.db",
         tmp_path / "upgrade")
-    assert facts["current_analytics_version"] == "0.4.2"
-    assert facts["upgraded_store_version"] == "3"
+    assert facts["current_analytics_version"] == "0.4.3"
+    assert facts["upgraded_store_version"] == "4"
     assert facts["receipts_mirror"] is True
+    assert facts["zc_request_token_columns"] is True
     assert facts["snapshots_kept"] == 1
     assert facts["future_version_refused"] is True
     assert facts["source_unchanged"] is True  # the committed sample is read-only
@@ -615,6 +625,8 @@ def _scratch_candidate(dest: Path, binding: dict) -> Path:
     doc = {
         "schema": 1,
         "phase": "candidate",
+        "goal": "G011",
+        "goal_id": "g011",
         "published": False,
         "binding": binding,
         "artifacts": {
@@ -712,3 +724,208 @@ def test_candidate_uncommitted_inputs_guard_is_behavioral(frozen):
     assert len(problems) == 2
     assert "stray.txt" in problems[0]
     assert "src/x.py" in problems[1]
+
+
+# ---------------------------------------------------------------------------
+# G012: analytics-only 0.4.3 on the published ORX v0.4.0 pin
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def frozen_g012(tmp_path_factory):
+    """One real G012 freeze: the ORX product input pinned to the published
+    v0.4.0 tag commit, analytics at the release clone's HEAD."""
+    work = tmp_path_factory.mktemp("jr-frozen-g012")
+    log = joint_release.StageLog(work, "freeze")
+    manifest = joint_release.stage_freeze(work, "internal-preview", log,
+                                          goal_id="g012")
+    return work, manifest
+
+
+def test_g012_goal_profiles_pin_and_defaults():
+    g011 = joint_release.GOAL_CONFIGS["g011"]
+    assert g011["label"] == "G011"
+    # the G011 default surface is unchanged
+    assert g011["default_work_dir"] == joint_release.DEFAULT_WORK_DIR
+    assert g011["decision_file"] == joint_release.DECISION_FILE
+    assert g011["orx_input"] == "head"
+    g012 = joint_release.GOAL_CONFIGS["g012"]
+    assert g012["label"] == "G012"
+    assert g012["default_work_dir"] == Path("dist") / "g012"
+    assert g012["decision_file"] == (
+        joint_release.REPO_ROOT / "docs" / "diagnostics" / "g012"
+        / "distribution.json")
+    assert g012["orx_input"] == "tag:v0.4.0"
+    # the published pin is live, real, and reads the published version
+    live = joint_release._git(joint_release.REPO_ROOT, "rev-parse",
+                              "v0.4.0^{commit}")
+    assert live == joint_release.ORX_V040_COMMIT
+    assert joint_release.orx_version_at(
+        joint_release.REPO_ROOT, joint_release.ORX_V040_COMMIT) == "0.4.0"
+
+
+def test_g012_freeze_pins_orx_product_input_to_published_v040(frozen_g012):
+    work, manifest = frozen_g012
+    binding = manifest["binding"]
+    assert binding["goal_id"] == "g012"
+    assert binding["goal_label"] == "G012"
+    # ORX product input: the PUBLISHED v0.4.0 tag commit (never HEAD)
+    assert binding["orx"]["input"] == "tag:v0.4.0"
+    assert binding["orx"]["pinned_tag"] == {
+        "tag": "v0.4.0",
+        "commit": joint_release.ORX_V040_COMMIT,
+        "published_commit": joint_release.ORX_V040_COMMIT,
+    }
+    assert binding["orx"]["commit"] == joint_release.ORX_V040_COMMIT
+    assert binding["orx"]["version"] == "0.4.0"
+    assert joint_release.orx_version_at(
+        joint_release.REPO_ROOT,
+        binding["orx"]["commit"]) == binding["orx"]["version"]
+    # the analytics input is still the release clone's HEAD
+    assert binding["analytics"]["commit"] == joint_release.head_commit(
+        joint_release.ANALYTICS_REPO)
+    # the G012 acceptance driver commit is recorded SEPARATELY from the
+    # product inputs (provenance only)
+    assert binding["acceptance_driver"]["commit"] == \
+        joint_release.head_commit(joint_release.REPO_ROOT)
+    record = manifest["stages"]["freeze"]
+    assert record["status"] == "passed"
+    assert record["goal_id"] == "g012"
+    assert (work / record["log"]).is_file()
+
+
+def test_g012_freeze_refuses_a_moved_v040_pin(frozen_g012, monkeypatch):
+    work, _ = frozen_g012
+    monkeypatch.setattr(joint_release, "ORX_V040_COMMIT", "0" * 40)
+    moved = work / "moved-pin"
+    with pytest.raises(joint_release.StageFailure) as excinfo:
+        joint_release.stage_freeze(
+            moved, "internal-preview",
+            joint_release.StageLog(moved, "freeze"), goal_id="g012")
+    assert excinfo.value.code == "orx-pin-moved"
+
+
+def test_g012_orx_pin_rechecked_at_candidate_time(frozen_g012):
+    _, manifest = frozen_g012
+    binding = json.loads(json.dumps(manifest["binding"]))
+    assert joint_release.orx_pin_problems(binding) == []
+    moved = json.loads(json.dumps(binding))
+    moved["orx"]["pinned_tag"]["published_commit"] = "0" * 40
+    problems = joint_release.orx_pin_problems(moved)
+    assert problems and "moved" in problems[0]
+    # a G011 binding (no pin) is untouched by the pin check
+    assert joint_release.orx_pin_problems({"orx": {}}) == []
+
+
+def test_candidate_document_labels_the_goal(frozen, frozen_g012):
+    """The candidate record is labeled from the binding: G012 is G012,
+    never G011 (and never carries a G011 task id or note)."""
+    _, g011_manifest = frozen
+    _, g012_manifest = frozen_g012
+
+    def doc_for(manifest):
+        return joint_release.candidate_document(
+            manifest["binding"], decision={"channel": "stub"},
+            snapshot={"orx": [], "analytics": []},
+            battery_checks=[], missing=["orx_pytest"],
+            battery_record={"checkouts": {}, "log": "logs/01.log"},
+            artifacts={}, facts={}, meta={})
+
+    g011_doc = doc_for(g011_manifest)
+    assert g011_doc["goal"] == "G011"
+    assert g011_doc["task"] == "T006"
+    g012_doc = doc_for(g012_manifest)
+    assert g012_doc["goal"] == "G012"
+    assert g012_doc["goal_id"] == "g012"
+    assert g012_doc["task"] is None
+    assert g012_doc["published"] is False
+    assert "G011" not in json.dumps(g012_doc)  # no G011 mislabel anywhere
+    # a legacy G011 binding (no goal keys) still defaults to G011
+    legacy = json.loads(json.dumps(g011_manifest["binding"]))
+    legacy.pop("goal_id", None)
+    legacy.pop("goal_label", None)
+    doc = joint_release.candidate_document(
+        legacy, decision={}, snapshot={}, battery_checks=[], missing=[],
+        battery_record={}, artifacts={}, facts={}, meta={})
+    assert doc["goal"] == "G011"
+
+
+def test_g012_uncommitted_inputs_guard_exempts_only_generated_dirs(frozen_g012):
+    """G012: the analytics clone's untracked GENERATED build output
+    (apps/macos/.build) is the ONE exemption; tracked modifications,
+    untracked non-generated paths, the ORX protected-report rule and the
+    whole G011 guard still refuse."""
+    _, manifest = frozen_g012
+    binding = json.loads(json.dumps(manifest["binding"]))
+    binding["orx"]["worktree"] = {"dirty_files": 1,
+                                  "entries": [" M docs/m1.2-report.md"]}
+    binding["analytics"]["worktree"] = {
+        "dirty_files": 1, "entries": ["?? apps/macos/.build/"]}
+    assert joint_release.freeze_worktree_problems(binding) == []
+    # a tracked modification inside the same directory is NOT exempt
+    binding["analytics"]["worktree"]["entries"] = [
+        " M apps/macos/.build/debug.yaml"]
+    problems = joint_release.freeze_worktree_problems(binding)
+    assert len(problems) == 1 and "debug.yaml" in problems[0]
+    # an untracked non-generated path is NOT exempt
+    binding["analytics"]["worktree"]["entries"] = ["?? stray.txt"]
+    problems = joint_release.freeze_worktree_problems(binding)
+    assert len(problems) == 1 and "stray.txt" in problems[0]
+    # the exemption is goal-scoped: the same generated dir under G011
+    # still refuses (the G011 gate is unchanged)
+    g011_binding = json.loads(json.dumps(binding))
+    g011_binding["goal_id"] = "g011"
+    g011_binding["analytics"]["worktree"]["entries"] = [
+        "?? apps/macos/.build/"]
+    problems = joint_release.freeze_worktree_problems(g011_binding)
+    assert len(problems) == 1 and ".build" in problems[0]
+    # the ORX protected-report rule is unchanged for G012
+    binding["analytics"]["worktree"]["entries"] = ["?? apps/macos/.build/"]
+    binding["orx"]["worktree"]["entries"].append("?? stray.txt")
+    problems = joint_release.freeze_worktree_problems(binding)
+    assert len(problems) == 1 and "ORX" in problems[0]
+
+
+def test_g012_prescribed_invocation_shapes(tmp_path, capsys):
+    """The exact T007/T008 invocation shapes under dist/g012 run and —
+    before any G012 freeze exists — FAIL CLOSED (manifest-missing, never
+    a silent pass). --goal-id is explicit: unknown ids are usage errors."""
+    work = tmp_path / "g012"
+    shapes = (
+        ["verify", "--manifest", str(work / "candidate.json"),
+         "--phase", "candidate"],
+        ["verify", "--work-dir", str(work)],
+        ["verify-remote", "--work-dir", str(work),
+         "--channel-root", str(work / "channels" / "internal-preview")],
+        ["battery", "--work-dir", str(work)],
+        ["build", "--work-dir", str(work)],
+        ["candidate", "--work-dir", str(work)],
+        ["exercise", "--work-dir", str(work)],
+    )
+    for argv in shapes:
+        capsys.readouterr()
+        assert joint_release.main(list(argv)) == 1, argv
+        reported = json.loads(capsys.readouterr().err)
+        assert reported["code"] == "manifest-missing", (argv, reported)
+
+    # the literal published-shape check (paths relative to the repo root,
+    # exactly as prescribed) fails closed the same way and writes nothing;
+    # once a REAL dist/g012/candidate.json exists the same command is the
+    # prescribed live check and is not second-guessed here
+    literal = REPO_ROOT / "dist" / "g012" / "candidate.json"
+    if not literal.exists():
+        proc = subprocess.run(
+            ["uv", "run", "python", str(MODULE_PATH),
+             "verify", "--manifest", "dist/g012/candidate.json",
+             "--phase", "candidate"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 1
+        assert json.loads(proc.stderr)["code"] == "manifest-missing"
+        assert not literal.parent.exists()
+
+    # --goal-id is explicit: unknown ids are usage errors (exit 2)
+    with pytest.raises(SystemExit) as excinfo:
+        joint_release.main(["freeze", "--goal-id", "bogus",
+                            "--work-dir", str(work)])
+    assert excinfo.value.code == 2
+    capsys.readouterr()

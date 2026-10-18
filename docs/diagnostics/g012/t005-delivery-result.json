@@ -1,0 +1,44 @@
+{
+  "status": "passed",
+  "summary": "Controller token attribution completed end to end (G012 user feedback 5). The zcode model_usage mirror (zc_requests) gained the per-request token columns via additive store v3->v4 upgrade that resets the model_usage_rowid cursor so existing mirrored rows are re-read and backfilled idempotently (no double counting; v1->v4 chain and future-version refusal intact). usage_readmodel gained request_totals (model_usage request caliber: identity = session_id+logical_request_id+attempt_index dedup, cache_read subset of input, processed = input+output, turn_usage never stacked, error zero-placeholder flagged, settling rows named, NULL fields partial-summed with missing counts, never zero-filled) and rebuilt controller discovery: the root ancestor (any parent-chain depth, cycle-safe, linked roots excluded as attempt books) of anchor-linked subagent sessions, directory recorded as an alias-resolved fact and never used to guess; run attribution only on unique run evidence with explicit reasons (multi-run shared, unknown run); native_session_preview now carries controller_sessions entries (own request-caliber usage, updated stamps, child anchor evidence incl. nonces) plus a per-run controller_for_run verdict (attributed / unattributed / host_session_unbound / session_not_imported / no_controller_session / no_zcode_attempts, ids and reasons only, no top-level token numbers). Swift detail (DetailModels/DetailPresentation/RunDetailView) shows controller tokens via the shared MetricsFormat 3-digit grouping, source, updated-at and attribution basis; shared-across-runs sessions show their own cumulative total with a mandatory not-prorated label; unbound/not-imported show the reason with no numbers; the two calibers stay structurally separate. Live read-only verification against the real zcode DB + ORX state.db (scratch store under /tmp, sources untouched, stores removed afterwards) found every verdict path in real data: R003/R004/R005/R010 attributed; R007/R008 and R011/R012 shared-across-runs (current run R012's controller session: 345 requests, input 105,424,695, processed 105,625,001, 69/69 nonce-anchored children); R001/R006 host_session_unbound; R002 session_not_imported; R009 no_controller_session. De-identified aggregate record in docs/diagnostics/g012/t005-controller-token-attribution.md. No writes to ORX state.db, no mixed calibers, no scheduling/recovery/replay/usage-backfill calls.",
+  "checks": [
+    {
+      "command": ".release-workspaces/orx-analytics/.venv/bin/python -m pytest -q .release-workspaces/orx-analytics/tests/test_import.py .release-workspaces/orx-analytics/tests/test_usage_readmodel.py .release-workspaces/orx-analytics/tests/test_query_model.py .release-workspaces/orx-analytics/tests/test_metrics.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T005/01-0008-command.log"
+    },
+    {
+      "command": "swift test --package-path .release-workspaces/orx-analytics/apps/macos --filter 'DetailModelsTests|PythonWireContractTests|RunDetailModelTests'",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T005/02-0009-command.log"
+    },
+    {
+      "command": "swift build --package-path .release-workspaces/orx-analytics/apps/macos",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T005/03-0010-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T005/04-0011-command.log"
+    }
+  ],
+  "artifacts": [
+    ".release-workspaces/orx-analytics/src/orxanalytics/store.py",
+    ".release-workspaces/orx-analytics/src/orxanalytics/importers/__init__.py",
+    ".release-workspaces/orx-analytics/src/orxanalytics/probe.py",
+    ".release-workspaces/orx-analytics/src/orxanalytics/usage_readmodel.py",
+    ".release-workspaces/orx-analytics/tests/conftest.py",
+    ".release-workspaces/orx-analytics/tests/test_import.py",
+    ".release-workspaces/orx-analytics/tests/test_probe.py",
+    ".release-workspaces/orx-analytics/tests/test_usage_readmodel.py",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/DetailPresentation.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Tests/ORXAnalyticsCoreTests/DetailModelsTests.swift",
+    ".release-workspaces/orx-analytics/docs/metrics.md",
+    ".release-workspaces/orx-analytics/docs/correlation.md",
+    ".release-workspaces/orx-analytics/docs/compatibility.md",
+    "docs/diagnostics/g012/t005-controller-token-attribution.md"
+  ]
+}

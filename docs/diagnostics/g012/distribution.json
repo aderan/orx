@@ -1,0 +1,86 @@
+{
+  "goal": "G012",
+  "task": "T001",
+  "run": "R012",
+  "recorded_at": "2026-10-17",
+  "decision_file_schema": 1,
+  "purpose": "Distribution-channel decision for the G012 analytics-only release (orx-analytics 0.4.3 internal preview), fixed BEFORE any G012 build. The channel, its basis and its requirements live here; build_app.sh validates this file (validate-decision) before building and refuses mismatches, and scripts/joint_release.py (goal g012) binds it by sha256 at build/candidate time. G012 re-uses the G011 channel split verbatim: internal preview ships the honestly-labeled ad-hoc dev-flavor zip; official stays blocked on the two credential gaps re-probed live below. ORX is NOT re-published by G012 (its product input is the published v0.4.0 tag), so this decision governs the Analytics app archive and Python distribution artifacts only. Channel outcomes are recorded into this file's results slots by the G012 build phase; a channel switch requires an explicit new decision entry.",
+  "downgrade_policy": "official failure (missing credentials, failed signing/notarization/staple/assessment) exits non-zero with a machine-readable JSON reason and produces no archive; it never becomes an internal-preview artifact. Channel outcomes are recorded in separate results slots; a channel switch requires an explicit new decision entry in this file.",
+  "channels": {
+    "internal-preview": {
+      "app_name": "ORX Analytics (Internal Preview)",
+      "archive_kind": "zip",
+      "audience": "internal testing only (内部测试)",
+      "basis": [
+        "no Developer ID Application identity in the keychain (re-probed live 2026-10-17, this G012 session; see credential_facts_probed_live)",
+        "no stored notarytool credentials (re-probed live 2026-10-17, this G012 session; see credential_facts_probed_live)",
+        "G012 ships the user-feedback and controller-token fixes plus the v0.4.2-disclosed runtime seal fix as an honestly-labeled internal preview (0.4.3) to the same internal audience as v0.4.2, rather than fabricating signing evidence",
+        "ORX v0.4.0 stays published and untouched: the G012 combination is the already-released ORX v0.4.0 plus the new Analytics preview"
+      ],
+      "bundle_id": "org.orxanalytics.macos.dev",
+      "decision": "allowed",
+      "decision_reason": "the only channel this machine's credentials can produce honestly; explicitly labeled, never presented as a formal installer; same split G011 shipped v0.4.2 under",
+      "fail_closed": false,
+      "gatekeeper_limit": "Ad-hoc signed, NOT notarized: Gatekeeper blocks first launch and needs the documented manual confirmation. Internal preview — not a formal installer, do not distribute outside the internal audience.",
+      "labeling_required_in": [
+        "app-visible Info.plist (ORXAnalyticsChannel/Audience/GatekeeperNotice/SourceCommit)",
+        "in-app manifest Contents/Resources/distribution.json",
+        "archive name (channel token) and per-archive build record",
+        "install documentation (docs/app-installation.md)"
+      ],
+      "mode": "dev",
+      "signing": "ad-hoc"
+    },
+    "official": {
+      "app_name": "ORX Analytics",
+      "archive_kind": "dmg",
+      "audience": "general users (正式分发)",
+      "basis": [
+        "no Developer ID Application identity in the keychain (re-probed live 2026-10-17, this G012 session; see credential_facts_probed_live)",
+        "no stored notarytool credentials (re-probed live 2026-10-17, this G012 session; see credential_facts_probed_live)"
+      ],
+      "bundle_id": "org.orxanalytics.macos",
+      "decision": "blocked",
+      "fail_closed": true,
+      "mode": "dist",
+      "requirements": [
+        "valid Developer ID Application identity (Apple Development/Distribution do not qualify)",
+        "Developer ID signature on the outer app AND every nested Mach-O under the bundled python runtime, with secure timestamps",
+        "hardened runtime (--options runtime) with the pinned entitlements set for CPython (allow-unsigned-executable-memory, allow-jit)",
+        "notarytool submit --wait returns status Accepted",
+        "stapler staple + validate succeed on the .app",
+        "install evaluation: spctl --assess --type execute ACCEPTS a copied install; quarantine removal is never used as a method"
+      ],
+      "signing": "Developer ID Application + hardened runtime",
+      "user_steps_to_unblock": [
+        "obtain and import a Developer ID Application certificate into the login keychain (Apple Developer account -> Certificates)",
+        "store notarytool credentials once: xcrun notarytool store-credentials orx-analytics-notary (App Store Connect API key)",
+        "re-run the live probes, flip this channel's decision to 'allowed' with a NEW basis entry recording the re-probe, then build: scripts/build_app.sh dist --decision <this file>"
+      ]
+    }
+  },
+  "credential_facts_probed_live": {
+    "commands": [
+      "security find-identity -v -p codesigning",
+      "xcrun notarytool history --keychain-profile orx-analytics-notary"
+    ],
+    "developer_id_application": {
+      "consistent_with_baseline": "docs/diagnostics/g011/baseline.json tools.missing_for_install_level_verification (unchanged since G011)",
+      "evidence": "exactly two codesigning identities exist: 'Apple Development: libin feng (QCKV9T523J)' (F99C0848...) and 'Apple Distribution: libin feng (CJK4RPXHR4)' (3C224E0C...); neither is a Developer ID Application identity",
+      "present": false
+    },
+    "notarytool_stored_credentials": {
+      "evidence": "notarytool runs, but 'No Keychain password item found for profile: orx-analytics-notary'; store-credentials was suggested by the tool itself, i.e. no profile is stored",
+      "present": false
+    },
+    "probed_at": "2026-10-17 (G012 T001 session)",
+    "tools_available": [
+      "codesign",
+      "stapler",
+      "spctl",
+      "xcrun notarytool",
+      "hdiutil",
+      "ditto"
+    ]
+  }
+}

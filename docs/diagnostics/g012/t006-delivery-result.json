@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "summary": "Landed the disclosed v0.4.2 runtime seal fix and the full seal-check toolchain. EngineProcessManager.makeChild now forces PYTHONDONTWRITEBYTECODE=1 over any hostile inherited value (env injectable for tests; production path unchanged) and now actually creates <dataDir>/logs/engine-launch.log (FileHandle(forWritingAtPath:) never creates files, so the documented log was silently absent on fresh installs -- a real latent defect that also blocked the required real-launch evidence). Real-subprocess regression added: an importable temp Python module is imported through the production makeChild path under three hostile parent environments (0, empty, absent), asserting ZERO pyc/__pycache__ on disk (not just the env dict), with an unprotected control proving the interpreter does write bytecode otherwise. New scripts/check_runtime_seal.py --app PATH --evidence-dir DIR: full bundle content snapshots (per-file sha256, symlinks, dirs) before/after, strict codesign verify before/after, two rounds launching the APP executable itself (first launch via makeChild + engine restart), requiring real launch evidence (socket accepts, engine is a child of the launched app with bundle-referencing command, launch log under the data dir); fails on any bundle mutation (bytecode named explicitly), any verify failure, or missing evidence; never injects a write-disabling value (hands the app the adversarial 0), never runs Python directly, never re-signs; runtime data/logs stay outside the bundle. tests/test_runtime_seal.py covers pass + reject-new-bytecode + reject-prebroken-signature + reject-missing-evidence + refuse-evidence-dir-inside-app with ad-hoc-signed synthetic bundles. Freeze-candidate verification ran for real: rebuilt the internal-preview app (commit f8c81b5, seal fix in), dittoed to a scratch install copy (user's running 0.4.2 preview and ~/.orx-analytics untouched, verified), and the check PASSED (exit 0): 2000 bundle entries unchanged, codesign strict 0 before and after, both rounds with full evidence; evidence in docs/diagnostics/g012/seal-check/ + summary note t006-runtime-seal-check.md. Fixed prior attempt's regressions found on arrival: uncompiled removeItem(at: String) typo, checker zombie-reap false failure (Popen child must be waited, not just signalled), incomplete dev-override monkeypatch, AF_UNIX socket path overflow under pytest tmp dirs (explicit short --data-dir). docs/app-installation.md documents the seal fix and the check entry point.",
+  "checks": [
+    {
+      "command": "swift test --package-path .release-workspaces/orx-analytics/apps/macos --filter Engine",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T006/01-0000-command.log"
+    },
+    {
+      "command": ".release-workspaces/orx-analytics/.venv/bin/python -m pytest -q .release-workspaces/orx-analytics/tests/test_runtime_seal.py",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T006/02-0001-command.log"
+    },
+    {
+      "command": "swift build --package-path .release-workspaces/orx-analytics/apps/macos",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T006/03-0002-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T006/04-0003-command.log"
+    },
+    {
+      "command": ".release-workspaces/orx-analytics/.venv/bin/python .release-workspaces/orx-analytics/scripts/check_runtime_seal.py --app <scratch install copy of rebuilt internal-preview app> --evidence-dir docs/diagnostics/g012/seal-check --launch-timeout 120",
+      "exit_code": 0,
+      "log": "docs/diagnostics/g012/seal-check/seal-check-report.json"
+    }
+  ],
+  "artifacts": [
+    ".release-workspaces/orx-analytics/apps/macos/Sources/ORXAnalyticsCore/EngineProcessManager.swift",
+    ".release-workspaces/orx-analytics/apps/macos/Tests/ORXAnalyticsCoreTests/EngineProcessManagerTests.swift",
+    ".release-workspaces/orx-analytics/scripts/check_runtime_seal.py",
+    ".release-workspaces/orx-analytics/tests/test_runtime_seal.py",
+    ".release-workspaces/orx-analytics/docs/app-installation.md",
+    "docs/diagnostics/g012/seal-check/seal-check-report.json",
+    "docs/diagnostics/g012/seal-check/bundle-before.json",
+    "docs/diagnostics/g012/seal-check/bundle-after.json",
+    "docs/diagnostics/g012/seal-check/codesign-before.log",
+    "docs/diagnostics/g012/seal-check/codesign-after.log",
+    "docs/diagnostics/g012/seal-check/app-launch-1.log",
+    "docs/diagnostics/g012/seal-check/app-launch-2.log",
+    "docs/diagnostics/g012/t006-runtime-seal-check.md"
+  ]
+}

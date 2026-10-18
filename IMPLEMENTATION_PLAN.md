@@ -1113,3 +1113,211 @@ https://github.com/aderan/orx-analytics/releases/tag/v0.4.2 ，App 归档
   缺失/无公证凭据/无免密 sudo）、受保护报告处置与发布排除决定
   （sha256 与 G010 处置态逐字节一致）、.gitignore 隔离规则与本
   计划。详见 docs/diagnostics/g011/baseline.json。
+
+# G012：Analytics 0.4.3 快速面板实测反馈修复与内部预览发布（2026-10-17 起）
+
+目标：按用户实测反馈（2026-10-18，装上 0.4.2 预览后）修复快速面板
+体验——token 千位分隔、点击项目卡片后 run-detail 窗口前置、目标已完成
+终态降为普通文字、数据刷新节律调低（可给设置项）——并补齐 controller
+token 归属（按 run 会话归属只读查询 zcode session 数据显示宿主会话
+用量）；同步落地 v0.4.2 发布说明已披露的运行时 seal 修复
+（EngineProcessManager.makeChild 设 PYTHONDONTWRITEBYTECODE，安装后首启
+不再向 bundle 写 __pycache__）；以内部预览渠道发布 orx-analytics 0.4.3。
+Run：R012。
+
+硬约束（Goal 原文为据，全阶段有效）：
+- 本版为 orx-analytics 0.4.3（ORX 仓 0.4.0 不动）；必须落地 v0.4.2
+  发布说明中已披露的运行时 seal 修复。
+- 沿用 G011 发布基建：.release-workspaces/orx-analytics 隔离克隆开发、
+  joint_release.py 驱动验收、内部预览渠道（ad-hoc）发布、历史标签保持
+  原样、发布从冻结提交构建并打标推送。
+- Analytics 保持只读分析层：不承担调度、恢复或重放权；controller token
+  归属只读查询 zcode session 数据，不修改 ORX 库。
+- 受保护用户报告 docs/m1.2-report.md 不暂存不提交；G011 已发布证据
+  （docs/diagnostics/g011/、dist/g011/）只读。
+- 各阶段按测试先行、小步提交执行。
+
+基线事实（T001 实测，全量见 docs/diagnostics/g012/baseline.json）：
+ORX HEAD `bd6cb46` 与 origin/main 一致（已推送）；ORX 产品输入固定为
+发布标签 `v0.4.0` → `f1cc7757…`（本地与远端标签映射一致，v0.1.0–v0.4.0
+全部标签对象映射已记录，v0.1.0/v0.2.0/v0.2.1 为 annotated 带独立 tag
+对象）；Analytics 发布克隆 main `f8c81b5`（v0.4.2 发布记录提交）与远端
+一致，标签 `v0.4.2` → `2461a260…`；用户源检出
+/Users/flb/Sources/Tools/orx-analytics 同在 f8c81b5 干净；克隆工作区唯一
+脏项为生成目录 `?? apps/macos/.build/`（SwiftPM 缓存）；ORX 工作区唯一
+脏项为受保护报告（sha256 与 G010/G011 处置态逐字节一致）；正式渠道
+凭据缺口复测仍在（无 Developer ID Application、无 notarytool 存储凭据）。
+
+## 阶段 1：G012 基线与发布驱动 Analytics 单独发布扩展（T001）
+
+**目标**：建立 G012 基线（两仓本地/远端状态、全部历史标签对象映射、
+现有工作区改动、受保护报告与 G011 证据保护决定、生成目录安全排除）；
+最小扩展 G011 发布驱动支持 Analytics 单独发布——ORX 产品输入固定为
+现有 v0.4.0 提交、分别记录 G012 验收驱动提交与 Analytics 冻结提交、
+独立目标标识/分发决定/证据目录；交付 G012 运行手册与本五阶段计划。
+
+**成功标准**（T001 验收原文）：
+- 'IMPLEMENTATION_PLAN.md 增加 G012 五阶段目标、成功标准、测试和状态，
+  保留无关历史内容；各阶段按测试先行、小步提交执行。'
+- 'G012 基线记录已发布 ORX v0.4.0 的完整提交、Analytics f8c81b5 基线、
+  历史标签对象映射和现有工作区改动；实施时重新核实，不把上下文陈述
+  当作已验证事实。'
+- '发布驱动可将 ORX 产品固定在 v0.4.0，同时验收 Analytics 0.4.3；候选
+  记录准确标记 G012，不误写为 G011。'
+- 'G011 既有默认行为、旧样本溯源、失败关闭、渠道隔离与受保护报告排除
+  契约保持通过。'
+- '运行手册明确冻结、GUI 证据、真实首启封条检查、同字节发布和发布后
+  下载核对顺序，不要求重复发布 ORX。'
+
+**测试**：tests/test_joint_release.py 新增 G012 组（目标档案与 pin 实时
+核实、冻结固定 ORX 输入、moved-pin 拒绝、候选目标标记、生成目录豁免
+逐分支、dist/g012 规定命令形状 fail-closed）；既有 G011 组全量保持。
+规定检查：`uv run pytest -q tests/test_joint_release.py`、
+`git diff --check`。
+
+**状态**：Delivered（R012 T001 交付 attempt 228、独立验证 attempt 229
+通过；rev2 确认 attempt 247 复核仍绿；见轮次记录）
+
+## 阶段 2：快速面板实测反馈四项修复（Analytics 克隆内）
+
+**目标**：1) token 千位分隔——apps/macos/Sources/ORXAnalyticsCore/
+MetricsFormat.swift 的 format() 由 groupingSeparator="" 改为 3 位分组，
+覆盖所有 token/计数展示点及测试；2) 点击项目卡片后 run-detail 窗口
+前置聚焦（openWindow 后置前）；3) 目标已完成（终态 done）降为普通
+文字，已暂停/取消中/已取消等非终态徽标保留；4) 数据刷新节律默认值
+调低（引擎轮询/面板刷新，可给设置项）。
+
+**成功标准**：每项先写失败测试再实现（克隆内 Python＋Swift 测试先行
+红后绿）；面向用户可见行为留 GUI 证据口径（阶段 4 采集）；不动 wire
+协议 v1 形状（如需扩展另证）。
+
+**测试**：克隆全量 pytest＋swift test（阶段 4 battery 从冻结提交复跑）。
+
+**状态**：Delivered（R012 T002〔千位分隔〕/T003〔窗口前置＋done 普通
+文字〕/T004〔刷新节律〕交付且各自独立验证通过；T003 真机视觉项按 rev2
+条件式收口——会话锁定则边界记录＋解锁后人工复核移交；实现均已落入
+Analytics 克隆，随阶段 4 冻结提交收口；见轮次记录）
+
+## 阶段 3：controller token 归属补齐与运行时 seal 修复
+
+**目标**：1) controller 宿主会话 token 按 run 的会话归属只读关联
+~/.zcode/cli/db/db.sqlite 显示（复用 G010 session_ref/nonce 锚与
+host_session_unbound 等不可关联原因记录；只读，不修改 ORX 库）；
+2) EngineProcessManager.makeChild 设 PYTHONDONTWRITEBYTECODE=1——
+v0.4.2 发布说明已披露的运行时封条缺陷修复：安装后首启不再向 bundle
+写 __pycache__，codesign --verify 保持 0。
+
+**成功标准**：controller token 在面板用量视图可见（可关联时）或如实
+标注不可关联原因（复用 G010 词汇）；seal 修复有单测＋真实首启封条
+检查证据（阶段 4 §5 顺序执行）。
+
+**测试**：克隆内新增/更新单测先行；G011 已有封条纪律测试（构建期）
+保持绿。
+
+**状态**：Delivered（R012 T005〔controller token 归属，含 store v4 与
+真实数据全部判定路径核对〕/T006〔运行时 seal 修复＋check_runtime_seal.py
+工具链＋冻结候选实测 verdict pass〕交付且各自独立验证通过；见轮次记录）
+
+## 阶段 4：冻结与联合验收（dist/g012）
+
+**目标**：按 docs/diagnostics/g012/joint-acceptance-runbook.md 顺序：
+freeze --goal-id g012（ORX 固定 v0.4.0、Analytics 冻结提交、驱动提交
+溯源）→ battery（五项必需检查，ORX 侧自 v0.4.0 pin 干净克隆）→
+build --build-app → candidate（目标标记 G012）→ verify --manifest
+--phase candidate → exercise → GUI 证据（四项反馈＋controller token
+可见结果）→ 真实首启封条检查 → verify。
+
+**成功标准**：manifest stages 全 passed；候选只读复验绿；GUI 证据与
+首启封条检查齐全（缺一即败）；受保护报告全程未暂存未提交。
+
+**测试**：规定检查 verify＋verify --manifest --phase candidate（按
+手册命令）；battery 五项自干净检出全过。
+
+**状态**：In Progress（R012 T007 执行中：0.4.3 冻结提交已落 Analytics
+克隆，联合验收链按运行手册驱动；状态随验收证据提交更新）
+
+## 阶段 5：内部预览发布与收口（不重发 ORX）
+
+**目标**：Analytics 冻结提交打轻量标签 v0.4.3 推送（无强推、历史标签
+原样）；GitHub Release（prerelease）同字节发布冻结候选（App zip＋
+wheel＋sdist＋SHA256SUMS＋manifest.json＋兼容组合说明）；发布后下载
+全部资产核对哈希、填充渠道根、verify-remote 绿；发布记录
+docs/diagnostics/g012/release-record.md；本计划 G012 五阶段按验收要求
+移除（历史保留于轮次记录）。
+
+**成功标准**：发布阶段未重建未重签未修改任何字节；ORX v0.4.0 Release/
+标签零动作；verify-remote（渠道根绑定/字节/渠道隔离）绿；用户报告排除
+决定随 Release 披露。
+
+**测试**：规定检查 verify --work-dir dist/g012＋verify-remote --work-dir
+dist/g012 --channel-root dist/g012/channels/internal-preview。
+
+**状态**：Not Started
+
+## G012 轮次记录
+- 2026-10-17 R12 T001（attempt 228）：阶段 1 交付——G012 基线
+  docs/diagnostics/g012/baseline.json（全部实测：两仓本地/远端
+  ls-remote 核对一致、ORX v0.1.0–v0.4.0 与 Analytics v0.4.2 全部标签
+  对象映射〔含 annotated tag 对象与 peeled commit〕、ORX 产品输入=
+  发布标签 v0.4.0 → f1cc7757…、Analytics 克隆 f8c81b5 基线与用户源
+  检出状态、生成目录与受保护报告处置、G011 证据保护、上下文陈述
+  逐条重核实并单列未核实项）；驱动最小扩展 scripts/joint_release.py
+  （--goal-id g012 显式目标档案：默认 dist/g012＋g012 决定文件；ORX
+  产品输入固定发布标签，移动即 orx-pin-moved 失败关闭；binding 分别
+  记录 acceptance_driver.commit 与 Analytics 冻结提交；候选文档
+  candidate_document 按目标标记 G012 不误写 G011；未提交输入门禁
+  g012 豁免且仅豁免克隆未跟踪生成目录 apps/macos/.build/ 前缀，
+  g011 门禁与其余一切未提交内容照旧拒绝；main 移除 g011 决定文件
+  预解析改为按 binding 目标在阶段内解析——g011 默认行为等价）；
+  tests/test_joint_release.py 28 项（新增 7 项 G012 组，既有 21 项
+  G011 契约原样通过）；docs/diagnostics/g012/distribution.json（渠道
+  决定固定于任何 G012 构建前，凭据缺口本会话实测仍在）＋
+  joint-acceptance-runbook.md（冻结/GUI 证据/真实首启封条检查/同字节
+  发布/发布后下载核对顺序成文，明确不重复发布 ORX）＋本五阶段计划。
+  本任务不暂存不提交任何文件；驱动提交（承载本批改动的 ORX 提交）
+  由后续提交动作落库并经每次 g012 freeze 的 acceptance_driver 记录。
+- 2026-10-18 R12 T002（attempt 231）：用户反馈 1（token 千位分隔）
+  交付——MetricsFormat.format 改固定三位逗号分组（算术分组不经
+  ICU/locale），审计收口全部绕过格式器的计数插值点（面板状态行/区
+  标题/菜单栏徽标/详情任务与模型分布/诊断/历史分页/通知文案等），
+  partialSuffix 修「缺 0 行」补零为「缺 — 行」；未改任何存储值、
+  标识或求和口径。记录 docs/diagnostics/g012/t002-token-grouping-audit.md；
+  独立验证通过。
+- 2026-10-18 R12 T003（attempts 236/238/247）：用户反馈 2、3 交付——
+  DetailWindowRouting.swift（NSApp.activate → openWindow →
+  makeKeyAndOrderFront 前置遍历；面板卡片/查看全部执行/通知深链接线；
+  RunDetailHostView onAppear+onChange 双保险）与 PanelSections 终态
+  done 降 controlPlainText（非终态徽标保留、分层不回退）。记录
+  docs/diagnostics/g012/t003-panel-click-focus-and-done-plain-text.md；
+  命令检查三轮全绿；agent[vision] 真机视觉项因操作者会话锁定两次
+  如实 fail（237/240），rev2 改条件式后 attempt 247 收口（解锁后
+  人工复核移交清单在案）。
+- 2026-10-18 R12 T004（attempt 242）：用户反馈 4 交付——引擎
+  TIER_INTERVALS 5/15/60→30/60/300 秒＋需求租约对齐（漏一整轮不降级）
+  ＋HOLDER_RENEW_SEC 30→60＋面板默认 5s→30s（显式选择保留，
+  panel.refresh.interval.chosen 标记）＋详情自动刷新并入共享偏好；
+  消除打开面板重复立即刷新与多窗口重复采集；受控时钟证据钉死各
+  lane 新旧节律。记录
+  docs/diagnostics/g012/t004-refresh-cadence-lowering.md；独立验证通过。
+- 2026-10-18 R12 T005（attempt 244）：用户反馈 5 交付——store v4
+  （zc_requests 增列镜像 zcode model_usage 逐请求 token，游标重置幂等
+  补齐不重复计数，缺列 NULL 列名不补零）；controller 会话按子会话
+  关联树根祖先发现（目录只记录不作归属依据），own_usage 只计自身
+  请求行，唯一归属证据才归 run；controller_for_run 全部判定路径
+  （attributed/unattributed 附原因/host_session_unbound/
+  session_not_imported/no_controller_session/no_zcode_attempts）在真实
+  数据各出现一次＋合成回归覆盖；Swift 详情原生显示（千位分隔、来源、
+  更新时间、归属依据，跨 run 共享强制标注不摊分）。记录
+  docs/diagnostics/g012/t005-controller-token-attribution.md；独立验证
+  通过。
+- 2026-10-18 R12 T006（attempt 246）：运行时 seal 修复交付——
+  EngineProcessManager.makeChild 强制 PYTHONDONTWRITEBYTECODE=1 覆盖
+  继承环境任何冲突值；顺带修复全新安装 engine-launch.log 从未落盘
+  潜伏缺陷；EngineProcessManagerRealChildSealTests 真实子进程回归
+  （三种敌对父环境＋无保护对照组）；scripts/check_runtime_seal.py
+  两轮真实启动封条检查＋tests/test_runtime_seal.py 五类路径回归；
+  冻结候选（f8c81b5＋修复，版本仍 0.4.2，提升属发布任务）实测
+  verdict pass（首启＋重启两轮、前后 bundle 2000 条目逐字节一致、
+  codesign 前后 0）。记录
+  docs/diagnostics/g012/t006-runtime-seal-check.md＋seal-check/；独立
+  验证通过。
