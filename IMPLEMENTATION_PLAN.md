@@ -1233,8 +1233,10 @@ build --build-app → candidate（目标标记 G012）→ verify --manifest
 **测试**：规定检查 verify＋verify --manifest --phase candidate（按
 手册命令）；battery 五项自干净检出全过。
 
-**状态**：In Progress（R012 T007 执行中：0.4.3 冻结提交已落 Analytics
-克隆，联合验收链按运行手册驱动；状态随验收证据提交更新）
+**状态**：Delivered（R012 T007 收口：freeze/battery/build/candidate/
+verify-candidate/exercise/verify 全绿；安装副本两轮真实首启封条检查
+pass；五项反馈验收事实＋GUI 边界与移交记录在案；规定检查 6/6 绿。见
+docs/diagnostics/g012/joint-acceptance-report.md 与轮次记录）
 
 ## 阶段 5：内部预览发布与收口（不重发 ORX）
 
@@ -1321,3 +1323,27 @@ dist/g012 --channel-root dist/g012/channels/internal-preview。
   codesign 前后 0）。记录
   docs/diagnostics/g012/t006-runtime-seal-check.md＋seal-check/；独立
   验证通过。
+- 2026-10-18 R12 T007（attempt 253）：阶段 4 收口——Analytics 0.4.3 冻结
+  提交 d0867103…（版本/CHANGELOG/README/docs 对齐 0.4.3＋store v4＋
+  controller 原生预览＋新节律缺省＋seal 修复披露，冻结前实测 Python 279
+  passed、swift 163/0）；ORX 侧验收驱动提交 7cec66c（G012 扩展＋store
+  v4 升级链对齐＋g012 基线/手册/决定/任务记录入库，受保护报告未暂存）。
+  首轮 battery 暴露并修复 T001 设计缺口（v0.4.0 套件 joint 测试钉其自身
+  发布对 analytics 0.4.2/store v3，联合布局误携 0.4.3 冻结提交）：驱动
+  修正 043eecb——g012 联合布局固定已发布 v0.4.2 对（analytics-v042-pin-
+  moved 失败关闭），0.4.3 三项检查独立干净克隆执行，不跳过不替代；测试
+  29 项全绿（新增 joint-layout pin 用例）后自 freeze 重跑全链：
+  freeze→battery（5/5 exit 0）→build --build-app→candidate（目标标记
+  G012，published false，产物 sha 冻结：zip 461a2f03…/wheel 7f7c6692…/
+  sdist b25327a8…/orx wheel 自 pin 重建 f71c19ae… 与已发布资产一致）→
+  verify --phase candidate→exercise（无替身，bundled 0.4.3，只读）→
+  verify 全绿。归档 ditto 安装至 dist/g012/installed/，check_runtime_seal
+  两轮真实首启/重启 verdict pass（bundle 2000 条目零变化、codesign 前后
+  0、对抗环境 PYTHONDONTWRITEBYTECODE=0）；GUI 证据 dist/g012/
+  gui-evidence.json（CGSession 判解锁；徽标实时读数 2→1、AXPress 打开
+  真实面板窗口服务器证据、95 秒节律实测 ~30.3s/轮、引擎五项事实 JSON、
+  安装后二进制 --smoke-test PASS；像素截屏受 Screen Recording 权限拒绝
+  全黑帧实测＋SwiftUI 面板无 AX 内容两代同证——边界＋人工复核移交
+  G011 §9.1 同式）。验收报告 docs/diagnostics/g012/joint-acceptance-
+  report.md＋clone 侧 reports/release-v0.4.3-acceptance.md（冻结后证据
+  文档，零源码混入）；规定检查 6/6 绿（check 2/3 轮）。
