@@ -1114,7 +1114,7 @@ https://github.com/aderan/orx-analytics/releases/tag/v0.4.2 ，App 归档
   （sha256 与 G010 处置态逐字节一致）、.gitignore 隔离规则与本
   计划。详见 docs/diagnostics/g011/baseline.json。
 
-# G012：Analytics 0.4.3 快速面板实测反馈修复与内部预览发布（2026-10-17 起）
+# G012：Analytics 0.4.3 快速面板实测反馈修复与内部预览发布（2026-10-17 起；2026-10-19 归档）
 
 目标：按用户实测反馈（2026-10-18，装上 0.4.2 预览后）修复快速面板
 体验——token 千位分隔、点击项目卡片后 run-detail 窗口前置、目标已完成
@@ -1148,115 +1148,54 @@ ORX HEAD `bd6cb46` 与 origin/main 一致（已推送）；ORX 产品输入固�
 脏项为受保护报告（sha256 与 G010/G011 处置态逐字节一致）；正式渠道
 凭据缺口复测仍在（无 Developer ID Application、无 notarytool 存储凭据）。
 
-## 阶段 1：G012 基线与发布驱动 Analytics 单独发布扩展（T001）
+## 归档状态（T008 收口时记录）
 
-**目标**：建立 G012 基线（两仓本地/远端状态、全部历史标签对象映射、
-现有工作区改动、受保护报告与 G011 证据保护决定、生成目录安全排除）；
-最小扩展 G011 发布驱动支持 Analytics 单独发布——ORX 产品输入固定为
-现有 v0.4.0 提交、分别记录 G012 验收驱动提交与 Analytics 冻结提交、
-独立目标标识/分发决定/证据目录；交付 G012 运行手册与本五阶段计划。
+五阶段全部交付并自本文件移除（Goal 验收要求完成后移除 G012 临时
+阶段；各阶段交付细节保留于下方轮次记录与
+docs/diagnostics/g012/ 各报告——baseline.json／distribution.json／
+joint-acceptance-runbook.md／joint-acceptance-report.md／
+release-record.md）。
 
-**成功标准**（T001 验收原文）：
-- 'IMPLEMENTATION_PLAN.md 增加 G012 五阶段目标、成功标准、测试和状态，
-  保留无关历史内容；各阶段按测试先行、小步提交执行。'
-- 'G012 基线记录已发布 ORX v0.4.0 的完整提交、Analytics f8c81b5 基线、
-  历史标签对象映射和现有工作区改动；实施时重新核实，不把上下文陈述
-  当作已验证事实。'
-- '发布驱动可将 ORX 产品固定在 v0.4.0，同时验收 Analytics 0.4.3；候选
-  记录准确标记 G012，不误写为 G011。'
-- 'G011 既有默认行为、旧样本溯源、失败关闭、渠道隔离与受保护报告排除
-  契约保持通过。'
-- '运行手册明确冻结、GUI 证据、真实首启封条检查、同字节发布和发布后
-  下载核对顺序，不要求重复发布 ORX。'
-
-**测试**：tests/test_joint_release.py 新增 G012 组（目标档案与 pin 实时
-核实、冻结固定 ORX 输入、moved-pin 拒绝、候选目标标记、生成目录豁免
-逐分支、dist/g012 规定命令形状 fail-closed）；既有 G011 组全量保持。
-规定检查：`uv run pytest -q tests/test_joint_release.py`、
-`git diff --check`。
-
-**状态**：Delivered（R012 T001 交付 attempt 228、独立验证 attempt 229
-通过；rev2 确认 attempt 247 复核仍绿；见轮次记录）
-
-## 阶段 2：快速面板实测反馈四项修复（Analytics 克隆内）
-
-**目标**：1) token 千位分隔——apps/macos/Sources/ORXAnalyticsCore/
-MetricsFormat.swift 的 format() 由 groupingSeparator="" 改为 3 位分组，
-覆盖所有 token/计数展示点及测试；2) 点击项目卡片后 run-detail 窗口
-前置聚焦（openWindow 后置前）；3) 目标已完成（终态 done）降为普通
-文字，已暂停/取消中/已取消等非终态徽标保留；4) 数据刷新节律默认值
-调低（引擎轮询/面板刷新，可给设置项）。
-
-**成功标准**：每项先写失败测试再实现（克隆内 Python＋Swift 测试先行
-红后绿）；面向用户可见行为留 GUI 证据口径（阶段 4 采集）；不动 wire
-协议 v1 形状（如需扩展另证）。
-
-**测试**：克隆全量 pytest＋swift test（阶段 4 battery 从冻结提交复跑）。
-
-**状态**：Delivered（R012 T002〔千位分隔〕/T003〔窗口前置＋done 普通
-文字〕/T004〔刷新节律〕交付且各自独立验证通过；T003 真机视觉项按 rev2
-条件式收口——会话锁定则边界记录＋解锁后人工复核移交；实现均已落入
-Analytics 克隆，随阶段 4 冻结提交收口；见轮次记录）
-
-## 阶段 3：controller token 归属补齐与运行时 seal 修复
-
-**目标**：1) controller 宿主会话 token 按 run 的会话归属只读关联
-~/.zcode/cli/db/db.sqlite 显示（复用 G010 session_ref/nonce 锚与
-host_session_unbound 等不可关联原因记录；只读，不修改 ORX 库）；
-2) EngineProcessManager.makeChild 设 PYTHONDONTWRITEBYTECODE=1——
-v0.4.2 发布说明已披露的运行时封条缺陷修复：安装后首启不再向 bundle
-写 __pycache__，codesign --verify 保持 0。
-
-**成功标准**：controller token 在面板用量视图可见（可关联时）或如实
-标注不可关联原因（复用 G010 词汇）；seal 修复有单测＋真实首启封条
-检查证据（阶段 4 §5 顺序执行）。
-
-**测试**：克隆内新增/更新单测先行；G011 已有封条纪律测试（构建期）
-保持绿。
-
-**状态**：Delivered（R012 T005〔controller token 归属，含 store v4 与
-真实数据全部判定路径核对〕/T006〔运行时 seal 修复＋check_runtime_seal.py
-工具链＋冻结候选实测 verdict pass〕交付且各自独立验证通过；见轮次记录）
-
-## 阶段 4：冻结与联合验收（dist/g012）
-
-**目标**：按 docs/diagnostics/g012/joint-acceptance-runbook.md 顺序：
-freeze --goal-id g012（ORX 固定 v0.4.0、Analytics 冻结提交、驱动提交
-溯源）→ battery（五项必需检查，ORX 侧自 v0.4.0 pin 干净克隆）→
-build --build-app → candidate（目标标记 G012）→ verify --manifest
---phase candidate → exercise → GUI 证据（四项反馈＋controller token
-可见结果）→ 真实首启封条检查 → verify。
-
-**成功标准**：manifest stages 全 passed；候选只读复验绿；GUI 证据与
-首启封条检查齐全（缺一即败）；受保护报告全程未暂存未提交。
-
-**测试**：规定检查 verify＋verify --manifest --phase candidate（按
-手册命令）；battery 五项自干净检出全过。
-
-**状态**：Delivered（R012 T007 收口：freeze/battery/build/candidate/
-verify-candidate/exercise/verify 全绿；安装副本两轮真实首启封条检查
-pass；五项反馈验收事实＋GUI 边界与移交记录在案；规定检查 6/6 绿。见
-docs/diagnostics/g012/joint-acceptance-report.md 与轮次记录）
-
-## 阶段 5：内部预览发布与收口（不重发 ORX）
-
-**目标**：Analytics 冻结提交打轻量标签 v0.4.3 推送（无强推、历史标签
-原样）；GitHub Release（prerelease）同字节发布冻结候选（App zip＋
-wheel＋sdist＋SHA256SUMS＋manifest.json＋兼容组合说明）；发布后下载
-全部资产核对哈希、填充渠道根、verify-remote 绿；发布记录
-docs/diagnostics/g012/release-record.md；本计划 G012 五阶段按验收要求
-移除（历史保留于轮次记录）。
-
-**成功标准**：发布阶段未重建未重签未修改任何字节；ORX v0.4.0 Release/
-标签零动作；verify-remote（渠道根绑定/字节/渠道隔离）绿；用户报告排除
-决定随 Release 披露。
-
-**测试**：规定检查 verify --work-dir dist/g012＋verify-remote --work-dir
-dist/g012 --channel-root dist/g012/channels/internal-preview。
-
-**状态**：Not Started
+收口事实（2026-10-19，详见 docs/diagnostics/g012/release-record.md）：
+Analytics v0.4.3 已按内部预览渠道发布——轻量标签 `v0.4.3` → 冻结
+受验提交 `d0867103…`，Release
+https://github.com/aderan/orx-analytics/releases/tag/v0.4.3 （标记
+prerelease，App 归档 ad-hoc）；发布资产字节取自联合受验冻结候选
+（未重建未重签未修改），消费者侧 verify-remote（下载远端资产复算
+哈希、绑定与渠道隔离核对）绿；历史标签（本仓 v0.4.2、ORX
+v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Release
+零动作；正式分发渠道保持受阻（Developer ID／notarytool 凭据缺失）。
+受保护用户报告 docs/m1.2-report.md 全程未暂存未提交，发布物取其
+提交态。
 
 ## G012 轮次记录
+- 2026-10-19 R12 T008（attempt 256）：阶段 5 收口——发布已联合受验的
+  Analytics 0.4.3 内部预览并完成远端对应核对：推送前 ls-remote 重核
+  两仓（Analytics 远端 main f8c81b5、ORX 远端 main bd6cb46 均本地
+  严格祖先零分叉；Analytics 远端标签仅 v0.4.2、无 v0.4.3 同名冲突；
+  冻结 sha `d0867103a447…` 与 candidate.json 精确核对、本地四产物
+  哈希复算与冻结值逐字节一致）；轻量标签 `v0.4.3` → 冻结提交
+  `d0867103…` 随 clone main `f8c81b5..253dd93` 普通推送（首次 push
+  被 git-lfs locks-verify 代理探测超时阻断，`-c lfs.locksverify=false`
+  重试成功，非强推）；ORX main `bd6cb46..ee8571a`（验收驱动
+  7cec66c/043eecb＋验收文档 0eea576/ee8571a，driver/docs-only）。
+  GitHub Release [orx-analytics v0.4.3]
+  (https://github.com/aderan/orx-analytics/releases/tag/v0.4.3)
+  （**标记 prerelease**）上传冻结候选同字节资产：App zip
+  461a2f03…/wheel 7f7c6692…/sdist b25327a8…/SHA256SUMS.txt/
+  manifest.json/兼容组合说明（发布阶段未重建未重签未修改；ORX wheel
+  不重传，v0.4.0 Release/标签/资产零动作）；Release 说明七要素齐备
+  （五项修复、controller 口径与不摊分边界、新节律 30/60/300s、seal
+  已修复 0→0 取代 0.4.2 披露、内部预览渠道与 Finder/ditto 安装、
+  解锁后五项像素复核移交、兼容组合 schema 8–15/store v4）。发布后
+  下载全部资产逐项复算哈希与冻结候选一致（首次下载遇代理瞬时 SSL
+  EOF 重试成功），填充 internal-preview 渠道根后规定检查
+  verify-remote 绿（绑定/逐字节/渠道隔离）；两仓全部历史标签对象
+  映射逐一核对原样（含 annotated 对象与 peeled commit）。发布记录
+  docs/diagnostics/g012/release-record.md＋clone 侧
+  reports/release-v0.4.3-record.md（证据提交，零源码变更）；本计划
+  G012 五阶段按验收要求移除（归档状态替换，历史保留于轮次记录）；
+  受保护报告 docs/m1.2-report.md 全程未暂存未提交。
 - 2026-10-17 R12 T001（attempt 228）：阶段 1 交付——G012 基线
   docs/diagnostics/g012/baseline.json（全部实测：两仓本地/远端
   ls-remote 核对一致、ORX v0.1.0–v0.4.0 与 Analytics v0.4.2 全部标签
