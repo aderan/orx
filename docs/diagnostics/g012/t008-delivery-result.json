@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "summary": "Analytics 0.4.3 内部预览发布收口：轻量标签 v0.4.3 精确指向联合受验冻结提交 d0867103a447e94ca1fd01731a60be62aeb2823a 并普通推送（无强推、无历史标签移动；analytics v0.4.2→2461a260 与 ORX v0.1.0–v0.4.0 全部标签对象映射逐一核对原样）；GitHub prerelease https://github.com/aderan/orx-analytics/releases/tag/v0.4.3 上传受验同字节资产（App zip 461a2f03…、wheel 7f7c6692…、sdist b25327a8…、SHA256SUMS.txt、manifest.json、兼容组合说明；未重建未重签未修改；ORX v0.4.0 产品/标签/Release 零动作、ORX wheel 不重传）；发布后下载全部资产逐项复算哈希与冻结候选一致，填充 internal-preview 渠道根后 verify-remote 绿（绑定/逐字节/渠道隔离）；Release 说明含 controller 要求七要素（五项修复、controller 口径与共享会话不摊分边界、新默认节律 30/60/300s、首启 seal 已修复 0→0 取代 0.4.2 披露、内部预览渠道与 Finder/ditto 安装、解锁后五项像素复核移交、兼容组合 schema 8–15/store v4）；发布记录双侧落地（ORX docs/diagnostics/g012/release-record.md、clone reports/release-v0.4.3-record.md，证据提交 12b19ed/d49ea5d 均已推送），IMPLEMENTATION_PLAN.md G012 五阶段按验收要求移除（归档状态替换、历史保留于轮次记录、diff 仅触及 G012 段落）；受保护用户报告 docs/m1.2-report.md 全程未暂存未提交。规定检查终轮 6/6 绿（check rounds 3/3）。注：首次 push 曾被 git-lfs locks-verify 代理探测超时阻断（-c lfs.locksverify=false 重试成功，非强推）；首次资产下载遇代理瞬时 SSL EOF（重试后完整下载）；第 2 检查轮两个 ls-remote 因同一代理瞬态失败（第 3 轮复跑绿）——均不影响发布物字节与远端状态。",
+  "checks": [
+    {
+      "command": "uv run python scripts/joint_release.py verify-remote --work-dir dist/g012 --channel-root dist/g012/channels/internal-preview",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/01-0012-command.log"
+    },
+    {
+      "command": "git ls-remote --tags https://github.com/aderan/orx-analytics.git",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/02-0013-command.log"
+    },
+    {
+      "command": "git ls-remote --tags https://github.com/aderan/orx.git",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/03-0014-command.log"
+    },
+    {
+      "command": "gh release view v0.4.3 --repo aderan/orx-analytics --json tagName,isPrerelease,url,assets",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/04-0015-command.log"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/05-0016-command.log"
+    },
+    {
+      "command": "git -C .release-workspaces/orx-analytics diff --check",
+      "exit_code": 0,
+      "log": ".orx/runs/R012/check/T008/06-0017-command.log"
+    }
+  ],
+  "artifacts": [
+    "docs/diagnostics/g012/release-record.md",
+    ".release-workspaces/orx-analytics/reports/release-v0.4.3-record.md",
+    "dist/g012/channels/internal-preview/SHA256SUMS.txt",
+    "dist/g012/channels/internal-preview/manifest.json",
+    "dist/g012/channels/internal-preview/compatibility-orx-0.4.0-analytics-0.4.3.md",
+    "dist/g012/channels/internal-preview/dist/ORXAnalytics-0.4.3-internal-preview-dev-macos13-arm64.zip",
+    "dist/g012/channels/internal-preview/dist/orx_agent-0.4.0-py3-none-any.whl",
+    "dist/g012/channels/internal-preview/dist/analytics/orx_analytics-0.4.3-py3-none-any.whl",
+    "dist/g012/channels/internal-preview/dist/analytics/orx_analytics-0.4.3.tar.gz",
+    "dist/g012/channels/internal-preview/channel-meta/analytics-release/SHA256SUMS.txt",
+    "dist/g012/release-staging/release-notes.md",
+    "IMPLEMENTATION_PLAN.md"
+  ]
+}
