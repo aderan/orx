@@ -1238,7 +1238,7 @@ def plan_check(
 @app.command()
 @handle_errors
 def run(json_out: bool = JsonOpt) -> None:
-    """Execute up to the CLI parallel cap (1); park host/external work. Returns."""
+    """Dispatch one worker slice, then return. Use status and verify to continue."""
     project = dispatch.open_project()
     result = dispatch.run_slice(project)
     _ok(json_out, **result)
@@ -1264,7 +1264,9 @@ def run(json_out: bool = JsonOpt) -> None:
             via = f" via {item['profile']}" if item.get("profile") else ""
             note = " (resurfaced waiting assignment)" if item.get("resurfaced") else ""
             attempt = f"attempt {item['attempt']}; " if item.get("attempt") else ""
-            typer.echo(f"host required: {item['task']}{via} ({attempt}{item['claim']}){note}")
+            blocked = (item.get("execution") or {}).get("blocked_reason")
+            action = f"blocked: {blocked}" if blocked else item["claim"]
+            typer.echo(f"host required: {item['task']}{via} ({attempt}{action}){note}")
             if item.get("prompt_file"):
                 typer.echo(f"  prompt file: {item['prompt_file']}")
         for item in result["waiting_external"]:
@@ -2167,7 +2169,7 @@ def verify(
     ctx: typer.Context,
     json_out: bool = JsonOpt,
 ) -> None:
-    """Run deterministic checks and report outstanding agent verifications."""
+    """Run command checks and CLI verifiers; return host verdicts to submit."""
     if ctx.invoked_subcommand is not None:
         return
     project = dispatch.open_project()
@@ -2181,7 +2183,8 @@ def verify(
             typer.echo(
                 f"agent verification required: task {item['task']} entry {item['entry']!r}{attempt_note}"
                 f" (capabilities {item['required_capabilities']})"
-                + (f" via {item['profile']}" if item.get("profile") else f" ERROR: {item.get('error')}")
+                + (f" ERROR: {item['error']}" if item.get("error")
+                   else f" via {item['profile']}")
             )
             if item.get("submit_pass"):
                 typer.echo(f"  pass: {item['submit_pass']}")

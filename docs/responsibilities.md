@@ -26,7 +26,11 @@ ORX 的核心价值是：换一个 agent 或换一个宿主，仍能知道 Goal 
 
 宿主侧操作协议的分层（ORX 仓库 skills/，用户级安装）：orx-controller skill 是通用执行入口，承载两种目标接纳与全部调度、验证、恢复协议；orx-agent skill 承载 Planner/Worker/Verifier 单次指派的执行纪律；orx-pbv skill 是显式调用的可选多轮开发配方（切片、双门禁、有界修复、本地提交、轮报告），引用通用协议而不另写一套。
 
-当前 Controller 在宿主中运行；`orx run` 返回后由宿主继续推进。配置中的 controller profile 尚不代表 ORX 已实现内置常驻 Controller。
+当前和用户对话的 ADE agent 担任 Controller。它用 `orx-controller` 读取状态、选择下一步并转交指派，`orx-agent` 负责一项指派的执行。ORX 命令拥有运行状态。终端也可以由操作者逐条调用命令，仓库的 `scripts/` 用于发布和联合验收。
+
+Controller 调用调度命令时可通过 `ORX_CONTROLLER_HARNESS` 声明当前宿主，通过 `ORX_CONTROLLER_AGENTS` 声明原生角色引用（逗号分隔）。已声明宿主时，空角色列表表示该会话没有可用的原生角色。ORX 按本次调用的能力筛选 host 候选，CLI 和 external 候选沿用项目配置。不提供宿主声明的既有调用继续使用原有路由。
+
+`orx plan` 调度规划，`orx run` 推进一轮 Worker，`orx verify` 执行命令检查及 CLI 验证并返回待提交的宿主验证，`orx status --json` 提供下一步判断所需的状态。配置中的 `controller.profile` 保留兼容读取。当前 ADE 会话直接担任主控。
 
 ## ORX 执行什么
 

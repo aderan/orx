@@ -116,6 +116,63 @@ def test_plan_returns_host_assignment(cli_project):
     assert "tests pass" in body["assignment"]["prompt"]
 
 
+@pytest.mark.parametrize(
+    ("harness", "agents", "native"),
+    [("codex", "native-planner", False), ("zcode", "", False),
+     ("zcode", "native-planner", True)],
+)
+def test_plan_only_dispatches_native_roles_available_in_current_host(
+    cli_project, monkeypatch, harness, agents, native,
+):
+    profiles = cli_project / ".orx" / "profiles.toml"
+    profiles.write_text(profiles.read_text().replace(
+        'model = "m-planner"',
+        'model = "m-planner"\nhost_mode = "subagent"\nagent_ref = "native-planner"',
+    ))
+    monkeypatch.setenv("ORX_CONTROLLER_HARNESS", harness)
+    monkeypatch.setenv("ORX_CONTROLLER_AGENTS", agents)
+    invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+    result = invoke("plan", "--json", "--depth", "standard")
+    body = payload(result)
+    if native:
+        assert result.exit_code == 0, result.stdout
+        assert body["assignment"]["execution"]["agent_ref"] == "native-planner"
+    else:
+        assert result.exit_code == 1, result.stdout
+        assert ("host_harness_mismatch" if harness == "codex"
+                else "host_agent_unavailable") in body["error"]
+
+
+def test_run_uses_project_cli_fallback_when_native_worker_is_incompatible(
+    cli_project, monkeypatch,
+):
+    config = cli_project / ".orx" / "config.toml"
+    config.write_text(config.read_text().replace(
+        'profiles = ["host-worker", "host-external"]',
+        'profiles = ["host-worker", "cli-fake"]',
+    ))
+    profiles = cli_project / ".orx" / "profiles.toml"
+    profiles.write_text(profiles.read_text().replace(
+        'model = "m-worker"',
+        'model = "m-worker"\nhost_mode = "subagent"\nagent_ref = "native-worker"',
+    ))
+    monkeypatch.setenv("ORX_CONTROLLER_HARNESS", "codex")
+    goal = payload(invoke("goal", "new", "--json", "--objective", "ship it",
+                          "--acceptance", "tests pass"))["goal"]
+    plan = ir_for(type("GoalRef", (), goal)(), [
+        task_spec("T001", acceptance=["tests pass"], verification=["true"]),
+    ])
+    (cli_project / "plan.json").write_text(json.dumps(plan))
+    submitted = invoke("plan", "submit", "--json", "--file", "plan.json")
+    assert submitted.exit_code == 0, submitted.stdout
+
+    result = invoke("run", "--json")
+    assert result.exit_code == 0, result.stdout
+    assert [(item["profile"], item["status"]) for item in payload(result)["started"]] == [
+        ("cli-fake", "passed")
+    ]
+
+
 def test_plan_submit_rejects_invalid_plan_with_errors(cli_project):
     invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
     plan_path = cli_project / "plan.json"

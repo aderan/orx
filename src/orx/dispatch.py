@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from datetime import datetime
@@ -1453,6 +1454,16 @@ def plan_route(
         pinned_profile=profile_flag,
         allow_class_downgrade=project.config.allow_class_downgrade,
     )
+    if request.controller is not None and (waiting := store.assignment_waiting(run.id)):
+        waiting_profile = project.profiles.get(waiting.profile)
+        if waiting_profile is None:
+            raise RoutingError(f"planning assignment {waiting.id} has no configured profile")
+        blocked = request.controller.rejection(waiting_profile)
+        if blocked:
+            raise RoutingError(f"planning assignment {waiting.id} is waiting on its host ({blocked})")
+        if profile_flag is not None and profile_flag != waiting.profile:
+            raise RoutingError(f"planning assignment {waiting.id} already uses {waiting.profile}")
+        request = dataclass_replace(request, pinned_profile=waiting.profile)
     result = routing.route(store, project.config, project.profiles, request)
     if not result.ok:
         routing.persist_decision(store, request, result)
@@ -1899,8 +1910,9 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
     actual_model with its source), in which working directory, and the stable
     attempt identity every later submission must quote. The nonce (v11) is
     the same token embedded at the top of the dispatch prompt."""
+    controller = routing.ControllerContext.from_environment()
     if profile is None:
-        return {
+        spec = {
             "mode": "self",
             "agent_ref": None,
             "model": attempt.model,
@@ -1911,6 +1923,9 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
             "nonce": attempt.nonce,
             "submit": "controller",
         }
+        if controller is not None and attempt.driver == "host":
+            spec["blocked_reason"] = "assigned host profile is missing"
+        return spec
     driver = profile.driver.value
     if driver == "host":
         mode = profile.host_mode
@@ -1918,7 +1933,7 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
         # cli/external are not host execution modes; the spec still carries
         # the requested facts and the stable attempt identity.
         mode = driver
-    return {
+    spec = {
         "mode": mode,
         "agent_ref": profile.agent_ref if mode == "subagent" else None,
         "model": profile.model,
@@ -1929,6 +1944,13 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
         "nonce": attempt.nonce,
         "submit": "controller",
     }
+    if controller is not None and (blocked := controller.rejection(profile)):
+        spec["blocked_reason"] = blocked
+    return spec
+
+
+def _host_discovery_flag(harness: str) -> str:
+    return " --discover-session" if harness == "zcode" else ""
 
 
 def _write_assignment_file(project: Project, run: Run, assignment: Assignment) -> None:
@@ -2731,7 +2753,8 @@ def run_slice(project: Project) -> dict:
             # re-pastes the archived prompt (which carries the nonce), so the
             # re-claim can discover the new subagent's session too.
             entry["claim"] = (
-                f"orx task claim {task.task_id} --discover-session"
+                f"orx task claim {task.task_id}"
+                + (_host_discovery_flag(attempt.harness) if attempt else "")
             )
             entry["isolation"] = "prompt_only"
             out["host_required"].append(entry)
@@ -2898,12 +2921,13 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     }
     if kind == "host":
         entry["claim"] = (
-            f"orx task claim {task.task_id} --discover-session"
+            f"orx task claim {task.task_id}" + _host_discovery_flag(profile.harness.value)
         )
         entry["session_identity"] = (
-            "claim binds the claiming subagent's zcode session id "
-            "(deterministic first-prompt lookup); pass --session <id> "
-            "instead when the caller knows its own id"
+            "Pass --session <id> with the worker's known native session reference."
+            if profile.harness.value != "zcode" else
+            "Claim discovers the ZCode worker session by assignment. "
+            "Pass --session <id> instead when the worker has its native reference."
         )
         entry["isolation"] = "prompt_only"
     else:
@@ -3150,6 +3174,19 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     # case — a delivery or protocol failure never destroys the observations.
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
+    # A CLI worker can submit through the public command while its process
+    # is still running. That accepted receipt owns the attempt's delivery.
+    receipt = store.completion_receipt_for_attempt(attempt.id)
+    if receipt is not None:
+        store.evidence_add(attempt.id, "execution", log)
+        return {
+            **receipt.receipt,
+            "profile": profile.name,
+            "log": log,
+            "prompt_file": prompt_file,
+            "process_exit_code": run_result.exit_code,
+            "delivery": {"status": receipt.delivery_status, "channel": "explicit_submission"},
+        }
     # The worker's own delivery, interpreted independently of the process
     # result (transport) and before any controller gate runs. Only the
     # message-channel harnesses carry the final-message contract; the shell
@@ -4140,8 +4177,9 @@ CLI_FINAL_DELIVERY_BLOCK = """
    transport, not your verdict — the harness controls it, and a blocked run
    may still exit 0. End your FINAL message with exactly one fenced
    ```json block carrying your structured delivery result, and write
-   nothing after it (the same schema `orx task complete --evidence`
-   validates):
+   nothing after it. The launcher reads this document and records the
+   delivery. Use completion commands only for explicit host/external
+   assignments.
 
    {"status": "passed" | "failed" | "blocked",
     "summary": "<non-empty: what was delivered, or why not>",
@@ -4219,6 +4257,15 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
             ),
         ).rstrip("\n")
     else:
+        if delivery_channel == DELIVERY_CHANNEL_MESSAGE:
+            failed_submission = "return the structured failed/blocked delivery in your final message"
+            passed_submission = "return a passed delivery in your final message"
+        else:
+            failed_submission = (
+                f"submit the structured failed/blocked delivery result with "
+                f"`orx task complete {task.task_id} --evidence <file>`"
+            )
+            passed_submission = f"submit a passed result with `orx task complete {task.task_id} --evidence <file>`"
         contract_block = f"""1. START GATE: before any implementation work, prove the checks can run in
    your environment. Run `orx task check {task.task_id}` (or trial-run each
    prescribed check command yourself) and confirm the tools exist, the
@@ -4243,16 +4290,13 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
    temporarily red. Run the full check set at stage boundaries only — when
    a new behavior is complete, when a module modification is complete, and
    when you are ready to deliver — not after every edit. When the budget
-   is exhausted and checks are still red, stop iterating: submit the
-   structured failed/blocked delivery result (`orx task complete
-   {task.task_id} --evidence <file>`) or `orx task fail {task.task_id}
-   --reason <why>` so the Controller decides the next round. Do not keep
-   working past the budget.
+   is exhausted and checks are still red, stop iterating and
+   {failed_submission} so the Controller decides the next round.
 4. DELIVERY GATE: every prescribed command check above must pass (exit 0)
-   before you may exit 0 or submit `orx task complete {task.task_id}
-   --evidence <file>`. A green self-check is necessary, not sufficient: it
-   never replaces the independent verifier — agent checks and independent
-   acceptance still judge the work afterwards.{delivery_block}"""
+   before you may {passed_submission}.
+   A green self-check is necessary, not sufficient: it never replaces the
+   independent verifier — agent checks and independent acceptance still
+   judge the work afterwards.{delivery_block}"""
     return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
 
 Your assignment is ONE task. Do only this task and stay inside its scope.
@@ -6238,20 +6282,36 @@ def verify_dispatch(project: Project) -> dict:
             request = routing.RouteRequest(
                 role=Role.VERIFIER, required_capabilities=item.capabilities
             )
-            result = routing.route(store, project.config, project.profiles, request)
-            if not result.ok:
+            existing = store.attempt_open_verifier_for_entry(revision.id, task.task_id, item.raw)
+            if existing is not None:
+                # An open verifier retains its assignment when the Controller changes.
+                existing_profile = project.profiles.get(existing.profile)
+                error = (
+                    "assigned verifier profile is missing" if existing_profile is None else None
+                )
+                if existing_profile is not None and request.controller is not None:
+                    error = request.controller.rejection(existing_profile)
+                if error:
+                    out["agent_required"].append({
+                        "task": task.task_id, "entry": item.raw,
+                        "profile": existing.profile, "attempt": existing.id, "error": error,
+                        "required_capabilities": list(item.capabilities) or ["coding"],
+                    })
+                    continue
+                profile = existing_profile
+            else:
+                profile = None
+            if profile is None:
+                result = routing.route(store, project.config, project.profiles, request)
                 routing.persist_decision(store, request, result)
-                out["agent_required"].append(
-                    {
-                        "task": task.task_id,
-                        "entry": item.raw,
+                if not result.ok:
+                    out["agent_required"].append({
+                        "task": task.task_id, "entry": item.raw,
                         "required_capabilities": list(item.capabilities) or ["coding"],
                         "error": result.error,
-                    }
-                )
-                continue
-            routing.persist_decision(store, request, result)
-            profile = result.profile
+                    })
+                    continue
+                profile = result.profile
             assert profile is not None
             entry_out = {
                 "task": task.task_id,
@@ -6260,7 +6320,7 @@ def verify_dispatch(project: Project) -> dict:
                 "profile": profile.name,
                 "driver": profile.driver.value,
             }
-            if profile.driver.value == "host":
+            if existing is not None or profile.driver.value == "host":
                 # Phase B execution contract: the verifier identity is fixed
                 # HERE, at dispatch. A persistent attempt is opened and bound
                 # to this exact entry; the verdict must close it. Re-dispatch
@@ -6317,13 +6377,15 @@ def verify_dispatch(project: Project) -> dict:
                     project, run.id, task.task_id, prompt, label=f"verify-{task.task_id}-{index:02d}"
                 )
                 entry_out["isolation"] = "prompt_only"
+                entry_arg = shlex.quote(item.raw)
+                discover = _host_discovery_flag(attempt.harness)
                 entry_out["submit_pass"] = (
-                    f"orx verify submit {task.task_id} --result pass --entry {item.raw!r}"
-                    f" --attempt {attempt.id} --discover-session"
+                    f"orx verify submit {task.task_id} --result pass --entry {entry_arg}"
+                    f" --attempt {attempt.id}{discover}"
                 )
                 entry_out["submit_fail"] = (
-                    f"orx verify submit {task.task_id} --result fail --entry {item.raw!r}"
-                    f" --attempt {attempt.id} --discover-session"
+                    f"orx verify submit {task.task_id} --result fail --entry {entry_arg}"
+                    f" --attempt {attempt.id}{discover}"
                     f" --reason \"<issues for the fix loop>\""
                 )
                 out["agent_required"].append(entry_out)

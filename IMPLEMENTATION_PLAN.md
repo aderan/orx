@@ -1,3 +1,96 @@
+# ORX 0.5：跨宿主主控与 CLI 执行
+
+2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。
+
+> 在支持 ORX 操作契约的 agent 会话中交代一个 Goal，当前会话按项目配置推进规划、实现和验证。首个验收宿主选 Codex。ORX 负责运行状态、依赖和验收记录，用户可通过 `orx status` 查看进度和阻塞。
+
+**现状检查**
+
+| 环节 | 已核实的行为 | 缺口 |
+| --- | --- | --- |
+| Controller 和 Run | 当前会话在 Codex。配置仍保存 `controller.profile = "zcode-controller"`，该字段目前用于配置校验、展示和候选定义。命令处理没有对应的主控启动逻辑。一次 `orx run` 推进一个 Worker 调度片段。 | 明确由谁主动推进。ADE 入口沿用当前会话，只有 ORX 负责启动一个需要判断的 Controller 时，启动参数才必须指定或配置。以独立的会话信息记录实际主控，随后按需要扩展用量归属。 |
+| 实际路由 | 使用项目有效配置和临时状态库重放，standard planner 选 Codex CLI，worker 选 ZCode host，普通及视觉 verifier 都选 ZCode host。排除该 host 后，当前 Cursor economy verifier 缺少 `vision`。三个 planning depth 当前引用相同 profile 顺序。 | 原生子代理候选需要匹配当前宿主能启动的角色。CLI 或 API 执行候选按自身能力检查。若计划包含浏览器或视觉验收，应尽早发现候选缺失。 |
+| Harness | 本机有 Codex CLI 0.165.0、Cursor CLI、Claude Code 2.1.308 和 ZCode CLI 0.17.1。ORX 已有 Codex/Cursor/shell adapter。配置加载拒绝 `cli:zcode`，也不识别 Claude Code harness。 | 把 ZCode 和 Claude Code 接入现有 adapter seam。ZCode 的 `--prompt`、`--json` 和 `app-server` 已见于本机 help，但精确模型、effort、终止及结果协议仍需真实验收。Claude Code 本机 help 有 model、effort、非交互 JSON 和 schema。 |
+| 模型与路由 | 现有 `class` 为 frontier/strong/economy。deep 规划写死 frontier 门槛。effort 为 low/medium/high/xhigh/max，Codex 本机目录的部分模型另有 ultra，现有 profile 拒绝 ultra。旧配置给同一个 Grok 4.7 标了 frontier 和 strong。 | 迁移到项目明确分配的 T0–T3 + S、四档抽象 effort 和项目固定职责。显式映射供应商参数，避免按模型名或旧 class 猜新的等级。 |
+| 验收 | 命令检查和结构化 worker 交付已有基础。CLI verifier 仍从最终消息和 stdout/stderr 合并流提取旧 marker，缺少合法裁决也写成验收失败。 | 统一 agent verdict。已终止的验证器断连、超时、畸形输出记录为执行问题，保留当前交付并重验该条目。合法 fail 才进入产品修复。 |
+
+证据入口：[配置加载](src/orx/config.py)、[路由](src/orx/routing.py)、[执行](src/orx/dispatch.py)、[adapter 注册](src/orx/adapters/__init__.py)、[已发布的原有分档](docs/routing-strategy.md)。现有 adapter、模型选择、路由、打包验收测试共 143 项通过，使用测试替身。真实跨 harness Run 尚待验收。
+
+**主控入口与配置**
+
+| 入口 | 谁推进 Goal | 需要的配置 |
+| --- | --- | --- |
+| ADE 中的现有会话，例如 Codex GUI | 接受用户请求的会话加载 `orx-controller` 操作契约，调用 ORX 命令并作推进决策。 | 配置 Planner、Worker、Verifier。主控身份取当前会话，能报告时记录宿主和 session ref。 |
+| 普通终端直接运行 `orx plan/run/verify` | 操作者选择下一条命令，ORX 按配置处理当前步骤。 | CLI 角色配置即可。需要原生宿主能力的指派保持可见的等待状态。 |
+| 终端启动一个自动推进的 Controller | 由明确选定的 CLI agent 进程接纳 Goal 或接手现有 Run，加载相同操作契约。也可以先进入该 agent 的会话，再按 ADE 方式执行。 | 只有在要求 ORX 代为启动主控时，才需要启动 profile 或调用参数，例如指定 Codex CLI。当前仓库尚无这个启动入口。把它作为日常基线之后的可选入口。 |
+
+原生 subagent 由当前主控的宿主工具启动。已有项目可以保留多个原生候选，按当前会话可用的角色筛选，并在发出指派前说明缺失能力。独立 CLI 与经 adapter 接入的 API 执行都使用自己的模型、工具、权限和工作目录，选择与主控品牌无关。纯模型 API 的能力按其实际输入输出核对。ZCode 会话发现保留为 ZCode 原生路径的可选实现，其他宿主可以报告真实的原生会话引用。
+
+`controller.profile` 的现有配置继续可读。若实现终端启动器，再为启动配置确定名称和优先级。host identity、主控启动参数、Planner/Worker/Verifier 的执行 profile 各有独立来源。
+
+**命令、脚本和 skill**
+
+| 接口 | 约定 | 已发现的定义缺口 |
+| --- | --- | --- |
+| ORX CLI | `goal new` 接纳目标。 `plan` 调度 Planner，host 产物经 `plan check/submit` 激活。 `run` 调度一轮 Worker。 `verify` 运行命令检查并处理 Verifier。 `status --json` 汇报状态。 | `verify` 的 CLI 帮助只说报告待验证项，实际也会直接运行 CLI verifier。需要注明每种模式的返回值、是否已提交结果以及下一步。 |
+| `orx-controller` skill | 决定何时规划、继续派工、等待、重试、重规划或结束，转交 ORX 给出的指派。 | 通用流程目前把 host_required 描述为启动 subagent，同时 payload 支持 self。worker claim 和 verifier submit 示例默认使用 ZCode 的 `--discover-session`。应按 driver、execution mode 和宿主能力分别说明。 |
+| `orx-agent` skill | 完成单次指派，按指派的协议提交计划、交付或裁决。 `orx-pbv` 提供可选的分轮流程。 | 核心契约应与机器返回值一致。迁移裁决时同步更新 prompt、skill、CLI 和测试。 |
+| 仓库脚本 | 当前 `scripts/check_release.py` 与 `scripts/joint_release.py` 面向发布和联合验收。实际 `orx` 可执行入口由 `pyproject.toml` 注册。 | 首次验收沿用已有命令和 skill。将来增加启动脚本时，让它调用公开 CLI，并把判断交给相同的 Controller 契约。 |
+
+**模型与执行配置**
+
+- 通用模型四档为 **T0 旗舰、T1 高阶、T2 强力、T3 高效**。**S 为专有模型类别**，如 Decision Model 用于指定分类、OCR 用于文字识别。S 需要对应专有能力才能参与，独立于通用档位的顺序和降档。支持图像的通用模型仍可属于 T0–T3，图像输入和浏览器操作分别验收。T4 取消，小型通用模型可按任务结果归入 T3。
+- 任务难度 **D1–D5**、模型 **Tier**、抽象 **Effort** 各自独立。D1–D2 建议 T3/T2 + Low/Medium，D3 建议 T2 + High，D4 建议 T1 High 规划和 T2 High 实现，D5 建议 T0 High/Max 复核及人工门禁。0.5 初期由 Controller 和 Planner 按表判断，先使用固定项目 profile。保留现有 `light/standard/deep` 作为规划范围的独立概念。
+- 抽象 Effort 固定 **Low / Medium / High / Max**。High 为复杂工程常用档，Max 用在明确需要时。以现有 adapter 和模型目录实现能力映射，记录请求档、传给 harness 的具体值及可观测的实际值。“支持 xhigh 或 ultra”可作为供应商原生信息，已有 xhigh 配置保留语义。启用不支持的档位须有明确诊断。
+- 项目 config 固定 Planner、Worker 和 Verifier 的选项及顺序。继续使用 `profile`，约定 `harness/model` 式的名字即可。Tier 由显式维护的模型归类决定，CLI 选择来自制造商可验证的参数和版本。10 月 20 日 PDF 和 10 月 23 日讨论的样例有差异，实施时先固定本项目真正使用的少量模型。
+- 首个跨 harness 配置可以用 Codex 会话作为 Controller，Codex CLI 作 Planner，ZCode CLI 作 Worker，Claude Code CLI 作语义 Verifier。使用本机验过的模型和 effort，Cursor CLI 可作显式备选。命令验证走项目自身的测试工具。上例是验收配置提议，各 harness 可按项目重新分配。
+- 工作目录、权限、结果、会话身份和可见能力由 adapter 归一。各 harness 从本机 CLI 启动，ZCode 可在同一 seam 内通过 headless flags 或 stdio 协议连接。原有 host/external 指派继续提供对当前会话上下文或外部交付的入口。已经获得执行归属的 attempt 等待结果或确认终止，再由 Controller 决定下一步。
+- LiteLLM 的 `litellm.agent()` 是可参考的共同接口与按 harness 查询能力的先例。其当前 SDK 支持列表列出 Codex 和 Claude Code，ZCode 和 Cursor 仍需要单独接入。0.5 把 LiteLLM 保持为可选评估项，主链使用本机 CLI；采用 SDK 或代理须证明能减少当前项目真实使用的接入成本。参考 [LiteLLM harness 矩阵](https://docs.litellm.ai/docs/harness/supported)、[ZCode Protocol](https://github.com/zai-org/ZCode/blob/main/docs/zcode-protocol.md)、[Claude Code CLI](https://code.claude.com/docs/en/cli-reference)。
+
+## Stage 1: 跑通 Codex 主控基线
+
+**Goal**：以当前 Codex 会话为首个 Controller，使用已支持的 Codex/Cursor CLI 跑通规划、两项依赖任务和验收。明确现有命令、结构化返回和 Controller skill 对推进下一步的分工。
+
+**Success Criteria**：可从 Codex 启动或续接，能说明当前下一步，依赖只在检查通过后解锁。预检展示配置来源、有效候选和缺失能力。先在临时项目准备可复验的配置，参考链路证明后再用于当前项目。
+
+**Tests**：运行已支持 adapter 的替身集成和一个小型真实 Run。确认当前宿主可以在无专用主控启动配置时接手。测试原生候选与当前宿主不匹配、缺失 CLI 或 vision、掉线后续接现有状态。
+
+**Status**：Complete
+
+当前 Codex 会话以 `ORX_CONTROLLER_HARNESS=codex` 主控独立临时仓库中的 G001/R001。旧 `controller.profile` 仍指向 ZCode。Codex CLI（GPT-6.1 Sol / medium）生成了两项任务的计划。原生 ZCode 候选不符合当前宿主，T001 和 T002 均由项目配置的 Cursor CLI（Grok 4.7 / medium）执行。T001 通过检查后 T002 解锁。T002 通过命令检查并进入 `verifying`，由 Codex CLI（GPT-6.1 Sol / low）给出语义裁决 `pass`。最终两个任务均为 `passed`，Run 为 `done`，实际命令输入 212 输出 `100.0`。
+
+T001 的 Worker 同时使用显式提交和最终消息，暴露了外层重复尝试完成的错误。保留已接受的 T001 成果并继续原 Run。修复后 T002 再次走显式提交时，外层复用原回执，正常返回 `verifying`，没有重复验收。增加了对应回归及原生候选、切换主控后保留验证 attempt 的测试。全套 1176 项测试通过，最终改动的相关测试 214 项通过。
+
+## Stage 2: 扩展 CLI adapter 与裁决
+
+**Goal**：沿同一个 adapter seam 接入 ZCode 与 Claude Code，把结果归一为规划、worker 交付或 verifier 裁决。先实测启动参数与输出样本，再写 adapter。
+
+**Success Criteria**：四个 coding harness 可由符合 ORX 操作契约的 Controller 按项目配置调度。每个启用 profile 能验证模型、effort、权限和返回协议，保留已观测的会话和用量。合法裁决、传输错误和协议错误分别入账。旧 marker 过渡限定在 adapter 的指定结果通道。
+
+**Tests**：以真实 CLI 输出建立 fixture。覆盖畸形结果、stderr 冲突、断连、超时、合法 fail、重复回执及只重验一条。对启用的 ZCode/Claude Code 运行真实非交互小任务。ZCode 显式验证一次 GLM 5.3 与一次 Flash 选择，使用能力范围内的 effort；未验证的 profile 暂停启用。
+
+**Status**：Not Started
+
+## Stage 3: 迁移四级模型和专有模型配置
+
+**Goal**：更新模型等级与 effort 的定义、配置加载、路由条件、默认示例和迁移说明。旧 class 通过明确的兼容规则继续可读。
+
+**Success Criteria**：项目职责配置可直接记录所选 profile。Tier 和 effort 可独立配置。替换 deep 的旧 frontier 门槛，深度规划候选由配置决定。S 只匹配明确任务能力。D1–D5 先作为规划与复核的决策指引，需要为难度单独选模型时再增加配置。
+
+**Tests**：旧 TOML 和状态库读取、不同 tier/effort 组合、原生 xhigh 的语义、S 的能力匹配、未知映射诊断、历史执行记录可读。遇到 S 的真实场景再接入对应工具。
+
+**Status**：Not Started
+
+## Stage 4: 验收日常 Run 并切换默认配置
+
+**Goal**：用一个真实小 Goal 验收 Codex 主控与独立 CLI 执行，用结果确认项目配置。
+
+**Success Criteria**：从 Codex 一次发起，配置中的 Planner、Worker、Verifier 各产生可核对的 attempt。至少两项有依赖的任务通过计划定义的检查，Run 达到 `done`。候选缺失、验证器失联等阻塞能直接看到原因和下一步。
+
+**Tests**：执行真实跨 harness Run，覆盖一条确定性验收和一条语义验收。用隔离场景演练从失败裁决进入产品修复、从验证器故障只重验及从控制会话中断续接。比较人工介入次数、首轮通过率和每个验证成功任务的总成本。用量不全时标明缺口。
+
+**Status**：Not Started
+
 # 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
 
 仅交接计划，尚未创建live Goal或启动实施。权威Goal与IR见 `docs/diagnostics/recovery-hardening-2026-10-07/`，任务细节见 `docs/recovery-execution-goal-2026-10-07.md`。接手后写入真实Goal ID；保留以上历史章节。

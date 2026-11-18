@@ -312,6 +312,25 @@ def test_verify_dispatch_is_idempotent_one_attempt_per_entry(sub_planned, tmp_pa
     assert len(verifier_attempts) == 1
 
 
+def test_verify_dispatch_keeps_open_attempt_when_controller_changes(
+    sub_planned, tmp_path, monkeypatch,
+):
+    _finish_with_agent_pending(sub_planned, tmp_path)
+    first = dispatch.verify_dispatch(sub_planned)["agent_required"][0]
+    monkeypatch.setenv("ORX_CONTROLLER_HARNESS", "codex")
+
+    switched = dispatch.verify_dispatch(sub_planned)
+    assert switched["launched"] == []
+    assert switched["agent_required"][0]["attempt"] == first["attempt"]
+    assert "host_harness_mismatch" in switched["agent_required"][0]["error"]
+
+    monkeypatch.setenv("ORX_CONTROLLER_HARNESS", "zcode")
+    monkeypatch.setenv("ORX_CONTROLLER_AGENTS", "orx-verifier")
+    resumed = dispatch.verify_dispatch(sub_planned)["agent_required"][0]
+    assert resumed["attempt"] == first["attempt"]
+    assert resumed["execution"]["nonce"] == first["execution"]["nonce"]
+
+
 def test_submit_binds_dispatch_attempt_despite_routing_change(sub_planned, tmp_path):
     """The verdict closes the attempt that was fixed at dispatch — a routing
     edit between dispatch and submit cannot move the attribution."""

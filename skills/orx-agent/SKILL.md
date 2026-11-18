@@ -100,7 +100,7 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
      When the budget is exhausted and checks are still red, stop
      iterating and deliver `status: "failed"` or `"blocked"` so the
      Controller decides the next round.
-  4. **DELIVERY GATE** — exit 0 / `orx task complete` only when every
+  4. **DELIVERY GATE** — report a passed delivery only when every
      prescribed command check is green. ORX re-runs the command entries
      itself at completion: a red row rejects the delivery (the task keeps
      its status and your attempt stays open — fix and complete again on
@@ -123,8 +123,10 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
   task not running) exits 1/2 having written nothing; if your attempt was
   superseded, stop and follow the assignment's delivery contract instead
   of fighting the refusal.
-- When you finish or stop, write the structured delivery result and submit
-  it with `orx task complete <task-id> --evidence <file>`:
+- When you finish or stop, follow the assignment's delivery channel. A
+  CLI assignment with a final-message contract returns this document as
+  the final fenced JSON block. A host or external assignment submits the
+  document with `orx task complete <task-id> --evidence <file>`:
 
 ```json
 {
@@ -159,7 +161,7 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
     different file, in a new process — replays the original receipt and
     writes nothing new. Do NOT change the content to "try again": a
     different body under the same identity is rejected as a conflict.
-- **CLI-launched workers (no `orx` CLI in your environment)**: your final
+- **CLI-launched workers with a final-message contract**: your final
   message IS the delivery channel. End it with exactly one fenced `json`
   code block carrying the same structured delivery result (the schema
   above), and write nothing after it:
@@ -180,10 +182,8 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
   disagreeing documents are a protocol error too. `status: "passed"`
   enters the delivery gate; `status: "failed"`/`"blocked"` ends the
   attempt as your recorded delivery without the gate.
-- Exit non-zero with the blocker in your output if you are blocked with no
-  deliverable at all (`orx task fail`); make the blocker concrete (see
-  Boundaries) — it becomes the recorded failure reason and the next
-  attempt's feedback.
+- Report the concrete blocker through your assignment's delivery channel.
+  It becomes the recorded failure reason and the next attempt's feedback.
 
 ## If the assignment is a VERIFICATION
 

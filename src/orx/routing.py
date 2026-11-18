@@ -11,6 +11,7 @@ selected, and whether fallback was used.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from orx import records
@@ -39,6 +40,29 @@ HOST_EXCLUSIVE_CAPABILITIES: frozenset[str] = frozenset({HOST_CONTEXT_CAPABILITY
 
 
 @dataclass(frozen=True)
+class ControllerContext:
+    harness: str
+    agents: frozenset[str]
+
+    @classmethod
+    def from_environment(cls) -> ControllerContext | None:
+        harness = os.environ.get("ORX_CONTROLLER_HARNESS", "").strip()
+        if not harness:
+            return None  # Preserve existing callers that route without a host declaration.
+        agents = os.environ.get("ORX_CONTROLLER_AGENTS", "")
+        return cls(harness, frozenset(name.strip() for name in agents.split(",") if name.strip()))
+
+    def rejection(self, profile: Profile) -> str | None:
+        if profile.driver is not Driver.HOST:
+            return None
+        if profile.harness.value != self.harness:
+            return f"host_harness_mismatch:requires {profile.harness.value}, current {self.harness}"
+        if profile.host_mode == "subagent" and profile.agent_ref not in self.agents:
+            return f"host_agent_unavailable:{profile.agent_ref}"
+        return None
+
+
+@dataclass(frozen=True)
 class RouteRequest:
     role: Role
     depth: records.PlanDepth | None = None
@@ -50,6 +74,7 @@ class RouteRequest:
     # a suppressed (task, profile) pair must not remove the profile for
     # other tasks — so the exclusion rides the request, not the store.
     exclude_profiles: tuple[str, ...] = ()
+    controller: ControllerContext | None = field(default_factory=ControllerContext.from_environment)
 
     def describe(self) -> dict:
         out: dict = {"role": self.role.value}
@@ -61,6 +86,11 @@ class RouteRequest:
             out["pinned_profile"] = self.pinned_profile
         if self.exclude_profiles:
             out["exclude_profiles"] = sorted(self.exclude_profiles)
+        if self.controller is not None:
+            out["controller"] = {
+                "harness": self.controller.harness,
+                "agents": sorted(self.controller.agents),
+            }
         return out
 
 
@@ -183,7 +213,9 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
                 reject = f"quota_domain_exhausted:{profile.quota_domain}"
         if reject is None and class_filter_active and profile.model_class is not records.ModelClass.FRONTIER:
             reject = "class_below_frontier"
-        elif reject is None:
+        elif reject is None and req.controller is not None:
+            reject = req.controller.rejection(profile)
+        if reject is None:
             missing = sorted(set(req.required_capabilities) - set(profile.capabilities))
             if missing:
                 reject = "missing_capability:" + ",".join(missing)

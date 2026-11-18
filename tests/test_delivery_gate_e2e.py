@@ -984,7 +984,8 @@ def _captured_envelope(result_text: str, **overrides) -> dict:
     return payload
 
 
-def _replay_cli_delivery(monkeypatch, tmp_path, payload: dict, check: str = "true"):
+def _replay_cli_delivery(monkeypatch, tmp_path, payload: dict, check: str = "true",
+                         during_launch=None):
     """The replay logic of docs/diagnostics/cursor-2026-10-07/replay.py,
     parameterized on the captured process output: one CLI worker task
     through the REAL dispatch stack (route, launch seam, state machine,
@@ -1013,14 +1014,15 @@ def _replay_cli_delivery(monkeypatch, tmp_path, payload: dict, check: str = "tru
             lambda **kwargs: Launch(
                 argv=["captured-agent"], cwd=tmp_path, timeout=5),
         )
-        monkeypatch.setattr(
-            runtime, "run_launch",
-            lambda launch: runtime.CommandResult(
+        def run_worker(launch):
+            if during_launch is not None:
+                during_launch(project)
+            return runtime.CommandResult(
                 command="captured-agent", exit_code=0,
                 stdout=json.dumps(payload), stderr="",
                 duration_sec=0.01, timed_out=False,
-            ),
-        )
+            )
+        monkeypatch.setattr(runtime, "run_launch", run_worker)
         goal = dispatch.create_goal(
             project, objective="Replay the captured CLI delivery",
             acceptance=["checks runnable"], constraints=[], context="",
@@ -1197,6 +1199,22 @@ def test_cli_passed_delivery_flows_to_gate_and_verdict(tmp_path, monkeypatch):
     assert task["status"] == "passed", task["status"]
     assert attempt["session_ref"] == CAPTURED_CURSOR_SESSION
     assert [tuple(row) for row in usage] == [(46730, 2341, 166272)]
+
+
+def test_cli_returns_delivery_already_submitted_by_worker(tmp_path, monkeypatch):
+    evidence = tmp_path / "submitted.json"
+    document = {"status": "passed", "summary": "submitted during the launch",
+                "checks": [], "artifacts": []}
+    evidence.write_text(json.dumps(document))
+    payload = _captured_envelope(f"```json\n{json.dumps(document)}\n```")
+
+    def submit(project):
+        assert dispatch.task_complete(project, "T310", str(evidence))["status"] == "passed"
+
+    attempt, task, _ = _replay_cli_delivery(
+        monkeypatch, tmp_path, payload, during_launch=submit)
+    assert task["status"] == "passed"
+    assert len(_replay_verifications(tmp_path, attempt["id"])) == 1
 
 
 def test_cli_passed_delivery_with_red_gate_fails_on_the_gate(tmp_path, monkeypatch):

@@ -61,6 +61,18 @@ proceed as entry A: establish or continue the Goal and run the loop.
 
 ## Roles, profiles, and native subagents
 
+- The current ADE or terminal agent conversation is the Controller. Use its
+  tools to call ORX. The project chooses Planner, Worker, and Verifier
+  profiles. `controller.profile` does not start or identify this conversation.
+- On each routing call (`plan`, `replan`, `run`, `verify`), pass the current
+  harness and the native agent references this session can actually launch:
+  `ORX_CONTROLLER_HARNESS=codex ORX_CONTROLLER_AGENTS= orx run --json` is the
+  example for a Codex session with no configured ORX agents. Use a
+  comma-separated list for available references. ORX skips incompatible
+  host profiles for that invocation; CLI and external profiles follow project
+  order and capability requirements. An empty list permits host self work
+  in the current harness. A parked assignment with `execution.blocked_reason`
+  keeps its identity. Report the blocker and let its compatible host resume it.
 - Planner / Worker / Verifier are **per-assignment roles**, not separate
   processes. Every assignment names its role; the same host may serve
   several across a run, one assignment at a time.
@@ -161,6 +173,25 @@ Rules:
 
 ## The loop
 
+Read the JSON status after each dispatch or submission. Use the recorded
+state to select the next command:
+
+| State | Next step |
+| --- | --- |
+| Goal has no active plan | Run `orx plan --json`. A `completed` plan is already active. A `host_required` assignment needs execution and `orx plan submit`. |
+| Task is runnable | Run `orx run --json` for one Worker slice. `started` reports CLI executions that returned during this call. Handle `host_required` and `waiting_external` using their assignment contracts. |
+| Task is verifying | Run `orx verify --json`. `checked` describes command-check state. `launched` reports CLI verifier results already recorded. An `agent_required` entry with a prompt needs host verification and submission. An entry with `error` is blocked. |
+| No runnable or verifying work | Inspect `failed`, `routing_errors`, `recovery`, and pending assignments. Follow the recovery rules below or report the blocker. |
+| Run is done | Report the results and their verification evidence. |
+
+ORX CLI owns the state transitions, the Controller selects the next step,
+and `orx-agent` describes one Planner, Worker, or Verifier assignment.
+Repository release scripts exercise packaging and release checks.
+For setup or a routing blocker, inspect `orx config list --json` for the
+effective values and their sources, and `orx doctor --json` for local
+availability. For a Codex or Cursor CLI permission issue, use
+`orx agent preflight <harness> --profile <name> --role <role> --json`.
+
 Worker assignments carry ORX's delivery contract in the prompt itself
 (pass it through unchanged). The contract appears in one of two forms
 (G009 T011): CLI/external/self dispatches carry the full four-clause text;
@@ -199,20 +230,19 @@ structured delivery statuses and the reason prefixes in steps 6–8.
      `<bin> watch stop` ONLY for a watcher this session started. A
      watcher another session or the user started is not yours to stop;
      leave it running.
-2. Treat `mode = "host_required"` from `orx plan` (or an entry in
-   `host_required` from `orx run`) as your cue to launch a subagent — it is
-   never a failure. The entry's `execution` spec is the full launch contract:
+2. For an unblocked `host_required` assignment, use its
+   `execution` spec as the launch contract:
    `mode` (`self` = do it yourself; `subagent` = launch the native agent named
    by `agent_ref`, e.g. the ZCode subagent `orx-worker`/`orx-verifier`),
    requested `model`/`effort` (profile facts — report what actually ran via
    `--actual-model`, never assume), `workdir`, and the stable `attempt` id.
-3. Pass the assignment `prompt` and `schema` through to the subagent
+3. Pass the assignment `prompt` and any supplied `schema` to the executor
    **unchanged**. Do not paraphrase the prompt or trim the schema. The
    prompt's first lines are the `ORX_ASSIGNMENT=orx-assignment:…` identity
    anchor ORX binds the subagent's session with — dropping or rewriting
    them breaks session identity (R006: rewritten prompts left every host
    attempt's `session_ref` NULL).
-4. For a planning assignment: run the prompt in a subagent, have it produce
+4. For a host planning assignment: follow its execution mode, produce
    Plan IR JSON, save it to a file, then precheck before activation:
    `orx plan check --file plan.json` (read-only diff report — the declared
    old<->new correspondence with renumbering, the four classifications, redo
@@ -230,18 +260,20 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    plan per the errors and resubmit.
 5. For a host task: claim FIRST, then do the work, then submit the result.
    Claiming after working invites a conflict exit. Pass the claim command
-   from the assignment payload through to the subagent verbatim — it is
-   `orx task claim <id> --discover-session`, which binds the subagent's real
-   zcode session id by matching the `ORX_ASSIGNMENT` nonce at the top of
-   the prompt it received (a worker cannot learn its own id any other way).
+   from the assignment payload to the executor. Use `--session` with the
+   worker's own native reference when known. The ZCode-specific
+   `--discover-session` option resolves identity using the
+   `ORX_ASSIGNMENT` nonce at the top of the prompt.
    Quote the attempt you answered:
    `orx task complete <id> --evidence evidence.json --attempt <id from
    claim>`. A submission for an attempt that is closed or no longer the
    latest is rejected as stale — that is correct; do not fight it. A late or
    recovered worker may add `--session <its id>` on complete/fail to bind
    identity that claim could not.
-6. When the work is done, the worker submits the structured delivery
-   result: `orx task complete <id> --evidence evidence.json`. The file is
+6. A host or external worker submits the structured delivery result with
+   `orx task complete <id> --evidence evidence.json`. A CLI worker with a
+   final-message contract returns that result to the running ORX command.
+   For the explicit submission the file is
    JSON — `status` (`passed` | `failed` | `blocked`), `summary`, `checks[]`
    (each `{command, exit_code, log}`), `artifacts[]`; a legacy-shaped file
    is rejected by name and nothing is recorded. A `passed` claim runs the
@@ -251,8 +283,9 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    the worker back to fix and complete again on the SAME attempt (no
    retry, no new dispatch). Completion means "execution finished", NOT
    "passed" — verification decides.
-7. When the work failed, `orx task fail <id> --reason "<why>"`, or accept
-   the worker's structured `status: "failed"` / `"blocked"` delivery. The
+7. When the work failed, use the outcome ORX recorded. A host or external
+   executor can report failure with `orx task fail <id> --reason "<why>"` or a
+   structured `status: "failed"` / `"blocked"` delivery. The
    recorded reason distinguishes the kinds: `delivery blocked
    (environment/tool blocked)` means the checks could not run at all — fix
    the environment or the routing, not the code; `delivery failed
@@ -286,16 +319,13 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    sufficient, and whether a dropped task's note is honest are semantic
    judgments for you and the independent verifier; the structural checks do
    not decide them.
-10. When any task is in `verifying`, run `orx verify`. Agent checks come back
-    to you as assignments bound to a stable `attempt` id; submit each verdict
-    with `orx verify submit <task> --result pass|fail --entry '<exact entry>'
-    --attempt <id> --discover-session [--evidence <file>] [--reason "<issues>"
-    on fail] [--actual-model <what the verifier actually ran>]`
-    (`--discover-session` binds the verifier subagent's session by the
-    `ORX_ASSIGNMENT` nonce in its prompt, exactly like a worker's claim).
-    The verdict closes the attempt it was dispatched to; re-running
-    `orx verify` re-surfaces the same attempt (never a second dispatch), and
-    routing edits between dispatch and submit cannot move the attribution.
+10. For a host verifier in `agent_required`, use the returned `submit_pass`
+    or `submit_fail` command after it returns its verdict. The command binds
+    the exact entry and attempt. Supply the reason on fail, add evidence when
+    present, and report `--actual-model` when known. Use the verifier's
+    `--session` reference when available. `--discover-session` is for ZCode.
+    An open attempt resurfaces with its original identity. Check the original
+    executor before launching a replacement.
     A model mismatch prints a WARNING and is recorded — the verdict still
     counts, but never hide it.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.
