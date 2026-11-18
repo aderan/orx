@@ -251,3 +251,50 @@ def test_pbv_attempt_and_isolation_ledger(tmp_path, monkeypatch):
     assert len(worker_attempts) == 1 and worker_attempts[0].isolation == "prompt_only"
     assert verifier_attempts and verifier_attempts[-1].isolation == "prompt_only"
     assert verifier_attempts[-1].driver == "host"
+
+
+def test_passed_dependency_artifacts_reach_worker_and_verifier(tmp_path, monkeypatch):
+    project = _pbv_project(tmp_path, monkeypatch)
+    goal = _pbv_goal(project)
+    dispatch.submit_plan(project, _two_slice_plan(goal))
+
+    first = dispatch.run_slice(project)
+    assert first["next_actions"][0]["action"] == "host_assignment"
+    dispatch.task_claim(project, "T001")
+    (tmp_path / "failed.txt").write_text("rejected")
+    failed = write_evidence(tmp_path, "failed.json", status="failed", artifacts=["failed.txt"])
+    dispatch.task_complete(project, "T001", str(failed))
+    assert active_task(project, "T002").status != "runnable"
+    dispatch.task_retry(project, "T001")
+    dispatch.run_slice(project)
+    dispatch.task_claim(project, "T001")
+    (tmp_path / "result.txt").write_text("accepted")
+    evidence = write_evidence(tmp_path, artifacts=["result.txt", "../outside", "missing.txt"])
+    delivery = dispatch.task_complete(project, "T001", str(evidence))
+    assert dispatch.run_slice(project)["host_required"] == []
+
+    review = _review_entry(dispatch.verify_dispatch(project))
+    assert review["evidence"]["worker_attempt"] == delivery["attempt"]
+    dispatch.verify_submit(project, "T001", "pass", review["entry"], None)
+
+    second = dispatch.run_slice(project)["host_required"][0]
+    dependencies = second["inputs"]["dependency_artifacts"]
+    assert dependencies == [{
+        "task": "T001", "revision": 1, "attempt": delivery["attempt"],
+        "artifacts": [
+            {"path": "result.txt", "exists": True},
+            {"path": "missing.txt", "exists": False},
+        ],
+    }]
+    assert "result.txt" in second["prompt"]
+    assert dispatch.run_slice(project)["host_required"][0]["inputs"] == second["inputs"]
+    dispatch.task_claim(project, "T002")
+    (tmp_path / "second.txt").write_text("second")
+    evidence = write_evidence(tmp_path, "second.json", artifacts=["second.txt"])
+    dispatch.task_complete(project, "T002", str(evidence))
+    verifier = _review_entry(dispatch.verify_dispatch(project), "T002")
+    assert verifier["evidence"]["dependency_artifacts"] == dependencies
+    assert verifier["evidence"]["artifacts"] == [{"path": "second.txt", "exists": True}]
+    assert "second.txt" in verifier["prompt"]
+    dispatch.verify_submit(project, "T002", "pass", verifier["entry"], None)
+    assert dispatch.status_data(project)["next_actions"] == [{"action": "done"}]

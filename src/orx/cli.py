@@ -129,6 +129,13 @@ def _ok(json_out: bool, **data) -> None:
         typer.echo(json.dumps({"ok": True, **data}, indent=2))
 
 
+def _render_next_actions(data: dict) -> None:
+    for step in data["next_actions"]:
+        tasks = f" ({', '.join(step['tasks'])})" if step.get("tasks") else ""
+        command = f" — {step['command']}" if step.get("command") else ""
+        typer.echo(f"next: {step['action']}{tasks}{command}")
+
+
 JsonOpt = typer.Option(False, "--json", help="Emit a JSON envelope on stdout.")
 SessionOpt = typer.Option(
     None,
@@ -1399,6 +1406,7 @@ def run(json_out: bool = JsonOpt) -> None:
                       "deferred", "routing_errors", "recovery")
         ):
             typer.echo("nothing to dispatch")
+        _render_next_actions(result)
 
 
 @app.command()
@@ -1439,6 +1447,7 @@ def status(json_out: bool = JsonOpt) -> None:
     _ok(json_out, **data)
     if not json_out:
         _render_status(data)
+        _render_next_actions(data)
 
 
 def _format_progress_age(age_sec: float) -> str:
@@ -2273,7 +2282,7 @@ def verify(
     ctx: typer.Context,
     json_out: bool = JsonOpt,
 ) -> None:
-    """Run command checks and CLI verifiers; return host verdicts to submit."""
+    """Run pending checks and CLI verifiers; return assignments for host verifiers."""
     if ctx.invoked_subcommand is not None:
         return
     project = dispatch.open_project()
@@ -2299,6 +2308,7 @@ def verify(
                 f"verifier launched: task {item['task']} entry {item['entry']!r}"
                 f" -> {outcome} ({item.get('detail')}){next_step}"
             )
+        _render_next_actions(result)
 
 
 @verify_app.command("submit")

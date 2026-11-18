@@ -194,6 +194,13 @@ state to select the next command:
 | No runnable or verifying work | Inspect `failed`, `routing_errors`, `recovery`, and pending assignments. Follow the recovery rules below or report the blocker. |
 | Run is done | Report the results and their verification evidence. |
 
+Use `next_actions` from `status`, `run`, and `verify` when available. For a
+host assignment, use the claim or verdict submission commands in that same
+response. Worker `inputs` and verifier `evidence` show the delivered paths
+and producing attempts. An unavailable dependency artifact calls for
+inspection before proceeding. Use the run state and error details to decide
+whether to recover, retry, or replan.
+
 ORX CLI owns the state transitions, the Controller selects the next step,
 and `orx-agent` describes one Planner, Worker, or Verifier assignment.
 Repository release scripts exercise packaging and release checks.

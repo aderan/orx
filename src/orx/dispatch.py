@@ -2587,6 +2587,7 @@ def run_slice(project: Project) -> dict:
     }
     if revision is None:
         out["note"] = "no active plan revision"
+        out["next_actions"] = _next_actions(store, goal, run)
         return out
 
     # Best-effort live preflight (G005): providers reporting a reached limit
@@ -2746,6 +2747,7 @@ def run_slice(project: Project) -> dict:
                 _execution_spec(project, project.profiles.get(attempt.profile), attempt)
                 if attempt else None
             ),
+            "inputs": _load_assignment_inputs(prompt_file, attempt.id) if attempt else None,
             "resurfaced": True,
         }
         if status is TaskStatus.WAITING_HOST:
@@ -2821,7 +2823,125 @@ def run_slice(project: Project) -> dict:
         })
 
     refresh(store, goal, run)
+    out["next_actions"] = _next_actions(
+        store, goal, run, blocked_workers=[
+            entry["task"] for entry in out["routing_errors"]
+        ] + [entry["task"] for entry in out["deferred"] if "budget" in entry]
+        + [entry["task"] for entry in out["host_required"]
+           if (entry.get("execution") or {}).get("blocked_reason")],
+    )
     return out
+
+
+def _record_delivery_artifacts(store: Store, attempt_id: int, delivery: dict) -> None:
+    for path in dict.fromkeys(delivery["artifacts"]):
+        if plan_mod.is_safe_scope_path(path) and path != ".orx" and not path.startswith(".orx/"):
+            store.evidence_add(attempt_id, "delivery_artifact", path)
+
+
+def _worker_delivery(project: Project, revision_id: int, task_id: str) -> dict:
+    store = project.store
+    attempt = next((a for a in reversed(store.attempts_for_task(revision_id, task_id))
+                    if a.role == Role.WORKER.value and a.result == "completed"), None)
+    if attempt is None:
+        return {"worker_attempt": None, "artifacts": [], "paths": []}
+    artifacts = []
+    paths = []
+    for row in store.evidence_rows_for_task(revision_id, task_id):
+        if row.attempt_id != attempt.id:
+            continue
+        if row.kind != "delivery_artifact":
+            if row.kind in ("completion", "execution"):
+                paths.append({"kind": row.kind, "path": row.path})
+            continue
+        path = project.root / row.path
+        try:
+            exists = path.resolve().is_relative_to(project.root.resolve()) and path.exists()
+        except (ValueError, OSError, RuntimeError):
+            exists = False
+        artifacts.append({"path": row.path, "exists": exists})
+    return {"worker_attempt": attempt.id, "artifacts": artifacts, "paths": paths}
+
+
+def _dependency_artifacts(project: Project, revision: Revision, task: TaskRow) -> list[dict]:
+    store = project.store
+    dependencies = []
+    for task_id in store.deps_for(revision.id, task.task_id):
+        if store.task_get(revision.id, task_id).status != TaskStatus.PASSED.value:
+            continue
+        delivery = _worker_delivery(project, revision.id, task_id)
+        dependencies.append({
+            "task": task_id, "revision": revision.revision,
+            "attempt": delivery["worker_attempt"], "artifacts": delivery["artifacts"],
+        })
+    return dependencies
+
+
+def _dependency_artifact_lines(dependencies: list[dict]) -> str:
+    lines = [
+        f"  - {dep['task']} (revision {dep['revision']}, worker attempt {dep['attempt']}): "
+        f"{artifact['path']!r}" + ("" if artifact["exists"] else " (unavailable)")
+        for dep in dependencies for artifact in dep["artifacts"]
+    ]
+    if not lines:
+        return ""
+    return (
+        "Artifacts delivered by passed direct dependencies (project-relative):\n"
+        + "\n".join(lines) + "\n"
+    )
+
+
+def _worker_inputs(project: Project, goal: Goal, revision: Revision, task: TaskRow,
+                   profile: Profile) -> dict:
+    return {
+        "goal": {"id": goal.id, "objective": goal.objective,
+                 "constraints": goal.constraints, "context": goal.context},
+        "revision": revision.revision,
+        "task": task.task_id,
+        "objective": task.objective,
+        "scope": task.scope,
+        "preread": task.preread,
+        "acceptance": task.acceptance,
+        "required_capabilities": task.routing.get("required_capabilities", []),
+        "checks": preflight_task_checks(task),
+        "check_budget": project.config.worker_max_check_rounds,
+        "prior_failure": _prior_failure_context(
+            project.store, revision.id, task.task_id, project.root, harness=profile.harness.value,
+        ),
+        "replan_context": _replan_reference_context(
+            project.store, project.root, revision.id, task.task_id, audience="worker",
+        ),
+        "dependency_artifacts": _dependency_artifacts(project, revision, task),
+        "workdir": str(project.root),
+        "profile": profile.name,
+        "harness": profile.harness.value,
+        "driver": profile.driver.value,
+        "requested_model": profile.model,
+        "requested_effort": profile.effort.value,
+    }
+
+
+def _worker_assignment_prompt(goal: Goal, task: TaskRow, nonce: str, inputs: dict,
+                              *, delivery_channel: str | None = None, contract: str = "full") -> str:
+    return worker_prompt(
+        goal, task, prior_failure=inputs["prior_failure"], check_budget=inputs["check_budget"],
+        replan_context=inputs["replan_context"], identity=_identity_block(nonce),
+        checks=inputs["checks"], dependency_artifacts=inputs["dependency_artifacts"],
+        delivery_channel=delivery_channel, contract=contract,
+    )
+
+
+def _save_assignment_inputs(project: Project, prompt_file: str, attempt_id: int,
+                            inputs: dict) -> None:
+    path = (project.root / prompt_file).with_suffix(f".{attempt_id}.inputs.json")
+    path.write_text(json.dumps(inputs, indent=2) + "\n")
+
+
+def _load_assignment_inputs(prompt_file: Path, attempt_id: int) -> dict | None:
+    try:
+        return json.loads(prompt_file.with_suffix(f".{attempt_id}.inputs.json").read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def _write_task_assignment_file(project: Project, run_id: str, task_id: str,
@@ -2853,26 +2973,11 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
     # stored on the attempt row is the one embedded in the prompt (and its
     # archived assignment file) — one token, one attempt, no second minting.
     nonce = mint_nonce()
-    prompt = worker_prompt(
-        goal, task,
-        prior_failure=_prior_failure_context(
-            store, revision_row_id, task.task_id, project.root,
-            harness=profile.harness.value,
-        ),
-        check_budget=project.config.worker_max_check_rounds,
-        replan_context=_replan_reference_context(
-            store, project.root, revision_row_id, task.task_id, audience="worker"
-        ),
-        identity=_identity_block(nonce),
-        # G009 T011: a subagent-mode host worker runs under the
-        # agents/orx-worker.md definition (harness-injected, contract
-        # verbatim); its prompt carries the brief reference. Self/external
-        # execution has no provably loaded definition: full contract.
-        contract=(
-            "brief"
-            if kind == "host" and profile.host_mode == "subagent"
-            else "full"
-        ),
+    revision = store.revision_get(revision_row_id)
+    inputs = _worker_inputs(project, goal, revision, task, profile)
+    prompt = _worker_assignment_prompt(
+        goal, task, nonce, inputs,
+        contract="brief" if kind == "host" and profile.host_mode == "subagent" else "full",
     )
     with store.tx():
         _assert_goal_dispatchable(store, goal)
@@ -2906,16 +3011,17 @@ def _park_task(project: Project, goal: Goal, run: Run, revision_row_id: int,
             TaskStatus.WAITING_HOST if kind == "host" else TaskStatus.WAITING_EXTERNAL,
             reason=f"routed to {kind} profile '{profile.name}'",
         )
+    prompt_file = _write_task_assignment_file(project, run.id, task.task_id, prompt)
+    _save_assignment_inputs(project, prompt_file, attempt.id, inputs)
     entry = {
         "task": task.task_id,
         "objective": task.objective,
         "profile": profile.name,
         "attempt": attempt.id,
         "prompt": prompt,
-        "prompt_file": _write_task_assignment_file(project, run.id, task.task_id, prompt),
-        # Structured static preflight (denylist + first-token PATH probe) for
-        # the same rows the prompt text renders; nothing was executed.
-        "preflight": preflight_task_checks(task),
+        "prompt_file": prompt_file,
+        "inputs": inputs,
+        "preflight": inputs["checks"],
         "preread": list(task.preread),
         "execution": _execution_spec(project, profile, attempt),
     }
@@ -3040,6 +3146,14 @@ def _record_cli_protocol_error(project: Project, store: Store, goal: Goal,
 
 def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision,
                       task: TaskRow, result, request, profile) -> dict:
+    inputs = _worker_inputs(project, goal, revision, task, profile)
+    outcome = _execute_cli_assignment(project, goal, run, revision, task, result, request, profile, inputs)
+    outcome["inputs"] = inputs
+    return outcome
+
+
+def _execute_cli_assignment(project: Project, goal: Goal, run: Run, revision: Revision,
+                            task: TaskRow, result, request, profile, inputs: dict) -> dict:
     """One CLI task execution: probe, launch, record, verify. Execution
     finished != passed — verification still decides.
 
@@ -3062,17 +3176,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
 
     scratch = _launch_dir(project, run.id, f"worker-{task.task_id}")
     nonce = mint_nonce()
-    prompt = worker_prompt(
-        goal, task,
-        prior_failure=_prior_failure_context(
-            store, revision.id, task.task_id, project.root,
-            harness=profile.harness.value,
-        ),
-        check_budget=project.config.worker_max_check_rounds,
-        replan_context=_replan_reference_context(
-            store, project.root, revision.id, task.task_id, audience="worker"
-        ),
-        identity=_identity_block(nonce),
+    prompt = _worker_assignment_prompt(
+        goal, task, nonce, inputs,
         delivery_channel=getattr(adapter, "delivery_channel", DELIVERY_CHANNEL_EXIT),
     )
     # Same contract as the host/external park path: the preflight-bearing
@@ -3080,7 +3185,7 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     # launched the worker, so both launch paths leave the identical audit
     # artifact (prompt text with the static preflight baked in).
     prompt_file = _write_task_assignment_file(project, run.id, task.task_id, prompt)
-    preflight = preflight_task_checks(task)
+    preflight = inputs["checks"]
     try:
         launch = adapter.build_worker_launch(
             root=project.root,
@@ -3318,6 +3423,8 @@ def _execute_cli_task(project: Project, goal: Goal, run: Run, revision: Revision
     # is a verdict and no verification result is inherited or substituted.
     replan_delivery = None
     if not verify.gate_failures(gate):
+        if delivery is not None:
+            _record_delivery_artifacts(store, attempt.id, delivery)
         replan_delivery = _record_replan_delivery(
             project, run, revision, store.task_get(revision.id, task.task_id),
             attempt, delivered_evidence=log,
@@ -4093,13 +4200,12 @@ def preflight_task_checks(task: TaskRow) -> list[dict]:
     return rows
 
 
-def _preflight_block(task: TaskRow) -> str:
+def _preflight_block(rows: list[dict]) -> str:
     """The check listing of the worker prompt: every verification entry
     ONCE, tagged with its static pre-flight status (G009 T011 merged the
     old duplicate plain list into this block — the raw entry string was
     carried twice per check). Tags are stable for tooling:
     [preflight:ok], [preflight:blocked], [preflight:not-run]."""
-    rows = preflight_task_checks(task)
     lines: list[str] = []
     command_total = 0
     blocked = 0
@@ -4221,7 +4327,8 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
                   check_budget: int = 3, replan_context: str = "",
                   identity: str = "",
                   delivery_channel: str | None = None,
-                  contract: str = "full") -> str:
+                  contract: str = "full", checks: list[dict] | None = None,
+                  dependency_artifacts: list[dict] | None = None) -> str:
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     allowed = ", ".join(task.scope.get("allowed", [])) or "(none)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
@@ -4245,6 +4352,12 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
         CLI_FINAL_DELIVERY_BLOCK
         if delivery_channel == DELIVERY_CHANNEL_MESSAGE else ""
     )
+    dependency_block = _dependency_artifact_lines(dependency_artifacts or [])
+    allowed_reads = (
+        "these files, relevant available dependency artifacts listed below, and the"
+        if dependency_block else "these plus the"
+    )
+    preflight = _preflight_block(preflight_task_checks(task) if checks is None else checks)
     preread = "\n".join(f"  - {path}" for path in task.preread) or "  (not specified)"
     if contract == "brief":
         contract_block = _BRIEF_CONTRACT_NOTE.format(
@@ -4307,13 +4420,13 @@ Goal constraints (binding for this work):
 {constraints}
 
 {context_block}{replan_block}Scope (write only inside these project-relative paths): {allowed}
-Read these files first — before any exploration, and only these plus the
+Read these files first — before any exploration, and only {allowed_reads}
 files you yourself create or modify (project-relative):
 {preread}
-Acceptance (your work is verified against these, verbatim):
+{dependency_block}Acceptance (your work is verified against these, verbatim):
 {acceptance}
 {prior_failure}
-{_preflight_block(task)}Delivery contract (binding, in order):
+{preflight}Delivery contract (binding, in order):
 {contract_block}
 Rules:
 - do not modify the Goal text or other tasks' scope
@@ -4379,31 +4492,40 @@ Task acceptance criteria (judge against these, verbatim):
 {result_contract}"""
 
 
-def _gate_summary(store: Store, revision_id: int, task: TaskRow) -> str:
-    """Current command-check results for a task, for verifier context: the
-    latest row per entry from the current attempt window only. A
-    same-session check -> fix -> check loop shows the fresh row; rows from
-    earlier attempts are history and are not handed to the verifier as if
-    they were this round's result."""
-    rows = [
-        v for v in store.verifications_current(revision_id, task.task_id)
-        if v.kind == "command"
-    ]
-    latest: dict[str, Verification] = {}
-    for v in rows:
-        latest[v.command] = v  # id order: the last write wins
+def _verification_evidence(project: Project, revision: Revision, task: TaskRow) -> dict:
+    latest = {}
+    for row in project.store.verifications_current(revision.id, task.task_id):
+        if row.kind == "command":
+            latest[row.command] = {
+                "command": row.command, "passed": row.passed, "exit_code": row.exit_code,
+                "log": row.output_path, "attempt": row.attempt_id,
+            }
+    return {
+        **_worker_delivery(project, revision.id, task.task_id),
+        "command_checks": list(latest.values()),
+        "dependency_artifacts": _dependency_artifacts(project, revision, task),
+    }
+
+
+def _gate_summary(checks: list[dict]) -> str:
     lines = []
-    for v in latest.values():
-        exit_note = "denied" if v.exit_code is None else f"exit {v.exit_code}"
-        lines.append(f"  - {v.command} -> {exit_note} ({'passed' if v.passed else 'FAILED'})")
+    for check in checks:
+        code = check["exit_code"]
+        exit_note = "denied" if code is None else f"exit {code}"
+        log = f" — log {check['log']!r}" if check["log"] else ""
+        lines.append(f"  - {check['command']} -> {exit_note} ({'passed' if check['passed'] else 'FAILED'}){log}")
     return "\n".join(lines)
 
 
-def _evidence_lines(store: Store, revision_id: int, task_id: str) -> str:
-    """Evidence paths attached to a task's attempts (execution logs, completion
-    and verification evidence), most recent last."""
-    rows = store.evidence_for_task(revision_id, task_id)
-    return "\n".join(f"  - [{kind}] {path}" for kind, path in rows[-5:])
+def _evidence_lines(evidence: dict) -> str:
+    lines = [f"  - [{row['kind']}] {row['path']!r}" for row in evidence["paths"]]
+    for artifact in evidence["artifacts"]:
+        availability = "" if artifact["exists"] else " (unavailable)"
+        lines.append(f"  - [artifact] {artifact['path']!r}{availability}")
+    dependency_lines = _dependency_artifact_lines(evidence["dependency_artifacts"])
+    if dependency_lines:
+        lines.append(dependency_lines.rstrip())
+    return "\n".join(lines)
 
 
 def _prior_issues(store: Store, revision_id: int, task_id: str) -> str:
@@ -4868,6 +4990,7 @@ def _record_accepted_delivery(
     passed = delivery["status"] == "passed"
     replan_delivery = None
     if passed:
+        _record_delivery_artifacts(store, attempt.id, delivery)
         store.evidence_add(attempt.id, "completion", str(evidence_path))
         # The accepted delivery persists the replan reference chain bound to
         # the completing attempt: provenance rows for every resolved (task
@@ -6259,6 +6382,7 @@ def verify_dispatch(project: Project) -> dict:
     out = {"checked": [], "agent_required": [], "launched": []}
     if revision is None:
         out["note"] = "no active plan revision"
+        out["next_actions"] = _next_actions(store, goal, run)
         return out
 
     # Startup gate (G010 T002): a paused Goal dispatches no verifier. Tasks
@@ -6330,12 +6454,14 @@ def verify_dispatch(project: Project) -> dict:
                     continue
                 profile = result.profile
             assert profile is not None
+            evidence = _verification_evidence(project, revision, task)
             entry_out = {
                 "task": task.task_id,
                 "entry": item.raw,
                 "required_capabilities": list(item.capabilities) or ["coding"],
                 "profile": profile.name,
                 "driver": profile.driver.value,
+                "evidence": evidence,
             }
             if existing is not None or profile.driver.value == "host":
                 # Phase B execution contract: the verifier identity is fixed
@@ -6378,8 +6504,8 @@ def verify_dispatch(project: Project) -> dict:
                         )
                 prompt = verifier_prompt(
                     goal, task, item,
-                    gate_summary=_gate_summary(store, revision.id, task),
-                    evidence_lines=_evidence_lines(store, revision.id, task.task_id),
+                    gate_summary=_gate_summary(evidence["command_checks"]),
+                    evidence_lines=_evidence_lines(evidence),
                     prior_issues=_prior_issues(store, revision.id, task.task_id),
                     replan_context=_replan_reference_context(
                         store, project.root, revision.id, task.task_id,
@@ -6409,15 +6535,22 @@ def verify_dispatch(project: Project) -> dict:
             else:
                 out["launched"].append(
                     _run_cli_verifier(project, goal, run, revision, task, item,
-                                      profile, request, result)
+                                      profile, request, result, evidence)
                 )
 
     refresh(store, goal, run)
+    assigned = {entry["task"] for entry in out["agent_required"] if not entry.get("error")}
+    unavailable = {entry["task"] for entry in out["agent_required"] if entry.get("error")}
+    retryable = {entry["task"] for entry in out["launched"] if entry.get("retryable")}
+    out["next_actions"] = _next_actions(
+        store, goal, run, blocked_verifiers=unavailable,
+        host_verifiers=assigned, retryable_verifiers=retryable,
+    )
     return out
 
 
 def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision,
-                      task: TaskRow, item, profile, request, result) -> dict:
+                      task: TaskRow, item, profile, request, result, evidence: dict) -> dict:
     """Commit a verdict only when the verifier executed and delivered it."""
     store = project.store
 
@@ -6432,6 +6565,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         )
         return {
             "task": task.task_id, "entry": item.raw, "attempt": attempt.id,
+            "profile": profile.name, "evidence": evidence,
             "verdict": None, "error_kind": kind, "detail": reason,
             "reason": reason,
             "log": log, "retryable": retryable,
@@ -6448,8 +6582,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
             root=project.root, scratch=scratch, profile=profile,
             prompt=verifier_prompt(
                 goal, task, item,
-                gate_summary=_gate_summary(store, revision.id, task),
-                evidence_lines=_evidence_lines(store, revision.id, task.task_id),
+                gate_summary=_gate_summary(evidence["command_checks"]),
+                evidence_lines=_evidence_lines(evidence),
                 prior_issues=_prior_issues(store, revision.id, task.task_id),
                 replan_context=_replan_reference_context(
                     store, project.root, revision.id, task.task_id, audience="verifier"
@@ -6533,6 +6667,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         return {
             "task": task.task_id,
             "entry": item.raw,
+            "profile": profile.name,
+            "evidence": evidence,
             "verdict": "cancelled",
             "stopped": {
                 "signal": run_result.stop_signal,
@@ -6575,6 +6711,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         "task": task.task_id,
         "entry": item.raw,
         "attempt": attempt.id,
+        "profile": profile.name,
+        "evidence": evidence,
         "verdict": "pass" if passed else "fail",
         "detail": detail,
         "log": log,
@@ -7076,6 +7214,47 @@ def agent_probe(harness: str) -> dict:
     }
 
 
+def _next_actions(store: Store, goal: Goal, run: Run, *, blocked_workers=(),
+                  blocked_verifiers=(), host_verifiers=(), retryable_verifiers=()) -> list[dict]:
+    goal = store.goal_get(goal.id)
+    run = store.run_get(run.id)
+    if goal.status == GoalStatus.PAUSED.value:
+        return [{"action": "paused", "command": "orx goal resume --json"}]
+    if goal.status in (GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value):
+        return [{"action": goal.status}]
+    if run.status == RunStatus.DONE.value:
+        return [{"action": "done"}]
+    revision = store.revision_active(run.id)
+    if revision is None:
+        return [{"action": "plan", "command": "orx plan --json"}]
+
+    tasks = store.tasks_all(revision.id)
+    actions = []
+    settled_verifiers = (set(blocked_verifiers) | set(host_verifiers)) - set(retryable_verifiers)
+    for state, action, command, excluded in (
+        (TaskStatus.VERIFYING, "verify", "orx verify --json", settled_verifiers),
+        (TaskStatus.RUNNABLE, "run", "orx run --json", blocked_workers),
+        (TaskStatus.WAITING_HOST, "host_assignment", "orx run --json", blocked_workers),
+        (TaskStatus.WAITING_EXTERNAL, "wait_external", None, ()),
+        (TaskStatus.RUNNING, "inspect_execution", None, ()),
+        (TaskStatus.FAILED, "inspect_failure", None, ()),
+        (TaskStatus.BLOCKED, "inspect_blocker", None, ()),
+    ):
+        ids = [task.task_id for task in tasks if task.status == state.value and task.task_id not in excluded]
+        if ids:
+            step = {"action": action, "tasks": ids}
+            if command is not None:
+                step["command"] = command
+            actions.append(step)
+    if blocked_workers:
+        actions.append({"action": "inspect_routing", "tasks": sorted(set(blocked_workers))})
+    if blocked_verifiers:
+        actions.append({"action": "inspect_verifier", "tasks": sorted(set(blocked_verifiers))})
+    if host_verifiers:
+        actions.append({"action": "host_verification", "tasks": sorted(set(host_verifiers))})
+    return actions or [{"action": "inspect_status"}]
+
+
 def status_data(project: Project) -> dict:
     goal, run = _active_context(project)
     revision = _active_revision(project, run)
@@ -7109,6 +7288,7 @@ def status_data(project: Project) -> dict:
         ),
         "resources": resource_list(project),
         "result": run.status,
+        "next_actions": _next_actions(project.store, goal, run),
     }
     # G010 T003: while a cancel is pending, the status surface lists the
     # unconfirmed executions and their executable follow-ups — the wrap-up

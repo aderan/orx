@@ -97,6 +97,20 @@ Run `orx verify` again to retry pending entries. Previously accepted checks
 on the same worker delivery remain recorded. A valid `fail` verdict puts
 the task into the worker repair flow.
 
+`orx run --json` returns each worker's `inputs`, including its scope, checks,
+prereads, and `dependency_artifacts`. For new structured deliveries, ORX
+records the project-relative artifacts declared by the worker after the
+command gate passes. Once a direct dependency passes all its checks, its
+paths and producing attempt appear in the next task's assignment. The paths
+refer to the project workspace, and unavailable paths are marked explicitly.
+
+`orx verify --json` returns `evidence` for each issued verifier assignment,
+including the current worker attempt, command-check results and log paths,
+and the current and dependency artifacts. `run`, `verify`, and `status`
+also return `next_actions` for the Controller, such as dispatching a ready
+task, continuing verification, handling a host assignment, or inspecting a
+blocker. The Controller decides when to retry, replan, or request input.
+
 ## Layout
 
 - `.orx/config.toml` — role/depth profile ordering, runtime caps
