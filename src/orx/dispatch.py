@@ -6620,7 +6620,29 @@ def verify_submit(
     `verify` dispatch time. An explicit --attempt must be that open attempt;
     without one, the open dispatch attempt for the entry is preferred. Only a
     verdict with NO open dispatch attempt routes a verifier here (legacy
-    submit-after-complete flow). Late or duplicate submissions are rejected."""
+    submit-after-complete flow). Late or duplicate submissions are rejected.
+
+    The attempt, evidence, verdict, and lifecycle updates commit together.
+    Check the active revision and attempt under the same write lock as the
+    updates so concurrent submissions cannot close the same attempt twice.
+    """
+    with project.store.tx():
+        outcome = _record_verifier_submission(
+            project, task_id, result_value, entry, evidence, reason,
+            session=session, attempt_id=attempt_id, actual_model=actual_model,
+            discover_session=discover_session,
+        )
+    if isinstance(outcome, RoutingError):
+        raise outcome
+    return outcome
+
+
+def _record_verifier_submission(
+    project: Project, task_id: str, result_value: str, entry: str | None,
+    evidence: str | None, reason: str | None, *, session: str | None,
+    attempt_id: int | None, actual_model: str | None, discover_session: bool,
+) -> dict | RoutingError:
+    """Record the submission within the caller's write transaction."""
     store = project.store
     goal, run = _active_context(project)
     revision, task = _active_task(project, run, task_id)
@@ -6683,14 +6705,23 @@ def verify_submit(
     else:
         bound = None
 
+    if bound is not None and bound.driver == "cli" and bound.verify_entry is not None:
+        raise ConflictError(f"attempt {bound.id} awaits its CLI verifier result")
+
+    evidence_rel = None
+    if evidence:
+        evidence_path = Path(evidence).expanduser()
+        if not evidence_path.is_absolute():
+            evidence_path = (Path.cwd() / evidence_path).resolve()
+        if not evidence_path.exists():
+            raise NotFoundError(f"evidence file not found: {evidence}")
+        evidence_rel = str(evidence_path)
+
     discovery: dict | None = None
     usage_backfill: dict | None = None
     if bound is not None:
-        if bound.driver == "cli" and bound.verify_entry is not None:
-            raise ConflictError(f"attempt {bound.id} awaits its CLI verifier result")
         if session_ref is not None:
             store.attempt_update(bound.id, session_ref=session_ref)
-        discovery: dict | None = None
         if (discover_session and bound.driver == "host"
                 and bound.harness == "zcode" and bound.session_ref is None):
             # Verifier sessions are discoverable exactly like worker
@@ -6728,9 +6759,10 @@ def verify_submit(
         )
         route_result = routing.route(store, project.config, project.profiles, request)
         if not route_result.ok:
-            # A verifier must exist to accept a verdict on behalf of an agent.
+            # Commit the rejection audit before returning the routing error.
+            # No attempt or verdict has been written on this path.
             routing.persist_decision(store, request, route_result)
-            raise RoutingError(route_result.error or "verifier routing failed")
+            return RoutingError(route_result.error or "verifier routing failed")
         profile = route_result.profile
         assert profile is not None
         bound = store.attempt_create(
@@ -6763,14 +6795,7 @@ def verify_submit(
 
     mismatch = _record_reported_model(store, bound.id, bound.model, actual_model)
 
-    evidence_rel = None
-    if evidence:
-        evidence_path = Path(evidence).expanduser()
-        if not evidence_path.is_absolute():
-            evidence_path = (Path.cwd() / evidence_path).resolve()
-        if not evidence_path.exists():
-            raise NotFoundError(f"evidence file not found: {evidence}")
-        evidence_rel = str(evidence_path)
+    if evidence_rel is not None:
         store.evidence_add(bound.id, "verification", evidence_rel)
 
     store.verification_add(

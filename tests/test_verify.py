@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -146,6 +147,85 @@ def test_agent_verdict_fail_via_submit(planned, tmp_path):
     _finish(planned, "T003", tmp_path)
     result = dispatch.verify_submit(planned, "T003", "fail", None, str(write_evidence(tmp_path)))
     assert result["status"] == "failed"
+
+
+@pytest.mark.parametrize("dispatch_first", [True, False], ids=["dispatched", "legacy"])
+def test_missing_verifier_evidence_can_be_resubmitted(planned, tmp_path, monkeypatch, dispatch_first):
+    monkeypatch.setenv("ORX_ZCODE_DB", str(tmp_path / "missing-zcode.db"))
+    _finish(planned, "T003", tmp_path)
+    attempt_id = None
+    if dispatch_first:
+        entry = dispatch.verify_dispatch(planned)["agent_required"][0]
+        attempt_id = entry["attempt"]
+    store = planned.store
+    before = store.attempts_all()
+    revision_id = active_task(planned, "T003").revision_id
+    evidence = tmp_path / "verifier.txt"
+
+    with pytest.raises(NotFoundError, match="evidence file not found"):
+        dispatch.verify_submit(
+            planned, "T003", "pass", None, str(evidence), attempt_id=attempt_id,
+            session="rejected-session", actual_model="reported-model",
+        )
+
+    assert store.attempts_all() == before
+    assert store.verifications_for(revision_id, "T003") == []
+    assert active_task(planned, "T003").status == "verifying"
+    evidence.write_text("Checked the result.")
+    result = dispatch.verify_submit(
+        planned, "T003", "pass", None, str(evidence), attempt_id=attempt_id,
+    )
+
+    assert result["status"] == "passed"
+    if dispatch_first:
+        assert result["attempt"] == attempt_id
+        assert len(store.attempts_all()) == len(before)
+    [verdict] = store.verifications_for(revision_id, "T003")
+    assert verdict.attempt_id == result["attempt"]
+    assert ("verification", str(evidence)) in store.evidence_for_task(revision_id, "T003")
+
+
+def test_verifier_submission_rolls_back_when_goal_update_fails(project, goal, tmp_path, monkeypatch):
+    monkeypatch.setenv("ORX_ZCODE_DB", str(tmp_path / "missing-zcode.db"))
+    dispatch.submit_plan(project, ir_for(goal, [
+        task_spec("T001", acceptance=goal.acceptance, verification=["agent: check result"]),
+    ]))
+    dispatch.run_slice(project)
+    _finish(project, "T001", tmp_path)
+    entry = dispatch.verify_dispatch(project)["agent_required"][0]
+    store = project.store
+    attempt = store.attempt_get(entry["attempt"])
+    task = active_task(project, "T001")
+    evidence_before = store.evidence_for_task(task.revision_id, "T001")
+    run_before = store.run_for_goal(goal.id)
+    evidence = tmp_path / "verifier.txt"
+    evidence.write_text("Checked the result.")
+    store.conn.execute("""
+        CREATE TEMP TRIGGER reject_goal_completion BEFORE UPDATE OF status ON goals
+        WHEN NEW.status = 'done'
+        BEGIN SELECT RAISE(ABORT, 'injected goal update failure'); END
+    """)
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected goal update failure"):
+        dispatch.verify_submit(
+            project, "T001", "pass", entry["entry"], str(evidence),
+            attempt_id=attempt.id, session="verifier-session", actual_model="reported-model",
+        )
+
+    assert store.attempt_get(attempt.id) == attempt
+    assert store.verifications_for_attempt(attempt.id) == []
+    assert store.evidence_for_task(task.revision_id, "T001") == evidence_before
+    assert active_task(project, "T001") == task
+    assert store.run_for_goal(goal.id) == run_before
+    assert store.goal_get(goal.id).status == "active"
+
+    store.conn.execute("DROP TRIGGER reject_goal_completion")
+    result = dispatch.verify_submit(
+        project, "T001", "pass", entry["entry"], str(evidence), attempt_id=attempt.id,
+    )
+    assert result["attempt"] == attempt.id
+    assert store.run_for_goal(goal.id).status == "done"
+    assert store.goal_get(goal.id).status == "done"
 
 
 def test_host_verifier_session_does_not_change_verdict(planned, tmp_path, monkeypatch):
