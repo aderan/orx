@@ -79,6 +79,10 @@ T001 的 Worker 同时使用显式提交和最终消息，暴露了外层重复�
 
 全套 1186 项测试通过。之后补齐重复 JSON 字段和 ZCode 选模回退的校验，相关 109 项回归通过，并用真实 R001 的 ZCode 裁决日志重放确认通过。
 
+后续 Claude Code 项目配置优先使用 `model = "sonnet"`。ORX 将别名原样交给 Claude Code 解析。使用此别名重新调用真实 Claude Code verifier，退出码为 0，返回合法 `pass`。实际模型是执行记录中的观测信息，项目可按需要显式固定模型 ID。
+
+ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](docs/zcode-cli-interface-research-2026-11-18.md)。
+
 ## Stage 3: 迁移四级模型和专有模型配置
 
 **Goal**：更新模型等级与 effort 的定义、配置加载、路由条件、默认示例和迁移说明。旧 class 通过明确的兼容规则继续可读。

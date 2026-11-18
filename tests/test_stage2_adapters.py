@@ -38,10 +38,9 @@ def output(stream):
 
 
 def test_claude_verifier_reads_native_schema_result(tmp_path):
-    model = "zcode/GLM-5.3[1m]"
-    adapter, launch = make_launch(tmp_path, "claude", model, "low")
+    adapter, launch = make_launch(tmp_path, "claude", "sonnet", "low")
     assert json.loads(launch.argv[launch.argv.index("--json-schema") + 1]) == verify.VERDICT_SCHEMA
-    assert launch.argv[launch.argv.index("--model") + 1] == model
+    assert launch.argv[launch.argv.index("--model") + 1] == "sonnet"
     assert launch.argv[launch.argv.index("--effort") + 1] == "low"
 
     run = output((FIXTURES / "claude-verifier.jsonl").read_text())
@@ -49,7 +48,7 @@ def test_claude_verifier_reads_native_schema_result(tmp_path):
         "pass", "protocol smoke",
     )
     capture = adapter.interpret_capture(launch, run)
-    assert capture.actual_model == model
+    assert capture.actual_model == "zcode/GLM-5.3[1m]"
     assert capture.session_ref == "claude_fixture"
     assert capture.usage["input_tokens"] == 14218
     assert not adapter.effort_outcome(launch, run).actual

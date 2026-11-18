@@ -65,9 +65,11 @@ Every command takes `--json` for a machine envelope:
   model ([model selection](docs/model-selection.md)). `force = true` opts
   into `--force`.
 - `driver = "cli", harness = "claude"` — Claude Code print mode with explicit
-  `--model` and `--effort`. Use the model ID or alias that the local Claude
-  Code provider configuration accepts. Planner and Verifier use native JSON
-  schemas. ORX records the reported model when the terminal result includes it.
+  `--model` and `--effort`. Set `model = "sonnet"` to let Claude Code
+  resolve its Sonnet alias, or use an explicit model ID when the project
+  needs to pin it. Planner and Verifier use native JSON schemas. ORX keeps
+  the requested alias in the profile and records the reported model when
+  the terminal result includes it.
 - `driver = "cli", harness = "zcode"` — ZCode headless edit/plan mode.
   For a built-in account provider, specify its qualified model ID (for
   example `account:bigmodel-individual-coding-plan/GLM-5.3`) and effort.
@@ -75,6 +77,9 @@ Every command takes `--json` for a machine envelope:
   existing CLI login. The result stream provides the session ID, model and
   usage when reported. Effective reasoning remains unknown if the CLI
   reports only the requested level.
+  Workers use `edit`, which permits workspace edits and may require
+  approval for shell commands. Headless runs deny Bash requests that need
+  interactive approval. Planner and Verifier use `plan`.
 - `driver = "external"` — parked at `waiting_external`; you finish it.
 
 When a CLI verifier disconnects, times out, or returns an invalid result,
