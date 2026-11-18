@@ -17,11 +17,12 @@ from typing import Optional
 import typer
 
 from orx import __version__, config as config_mod, dispatch, doctor as doctor_mod
+from orx import routing
 from orx import skills as skills_mod
 from orx import sources as sources_mod
 from orx import update as update_mod
 from orx.plan import ReplanCheckFailed
-from orx.records import ConfigError, NotFoundError, ORXError
+from orx.records import ConfigError, NotFoundError, ORXError, PlanDepth, Role
 from orx.verify import DeliveryRejected
 
 app = typer.Typer(
@@ -314,6 +315,111 @@ def config_list(json_out: bool = JsonOpt) -> None:
         for row in entries:
             rendered = _format_config_value(row["value"])
             typer.echo(f"{row['key']:<{width}}  {rendered}  ({row['origin']})")
+
+
+def _model_selection(
+    effective: config_mod.EffectiveConfig | dispatch.Project,
+) -> dict:
+    cfg = effective.config
+    controller = routing.ControllerContext.from_environment()
+
+    def candidate(name: str, *, executor: bool = True) -> dict:
+        profile = effective.profiles.get(name)
+        row = {"profile": name, "profile_origin": effective.profile_origins.get(name)}
+        if profile is None:
+            return {**row, "error": "profile is not defined"}
+        return {
+            **row,
+            "driver": profile.driver.value,
+            "harness": profile.harness.value,
+            "model": profile.model,
+            "effort": profile.effort.value,
+            "host_mode": profile.host_mode if profile.driver.value == "host" else None,
+            "agent_ref": profile.agent_ref,
+            "host_blocked_reason": controller.rejection(profile) if controller and executor else None,
+        }
+
+    def candidates(key: str, role: Role, depth: PlanDepth | None = None) -> dict:
+        return {
+            "origin": effective.origins[key],
+            "candidates": [candidate(name) for name in cfg.candidate_profiles(role, depth)],
+        }
+
+    return {
+        "controller": {
+            "session_harness": controller.harness if controller else None,
+            "origin": effective.origins["controller.profile"],
+            "candidate": candidate(cfg.controller_profile, executor=False),
+        },
+        "planner": {
+            "depth": cfg.plan_depth_default,
+            "depth_origin": effective.origins["plan.depth"],
+            "depths": {
+                depth.value: candidates(f"plan.{depth.value}.profiles", Role.PLANNER, depth)
+                for depth in PlanDepth
+            },
+        },
+        "worker": candidates("worker.profiles", Role.WORKER),
+        "verifier": candidates("verify.profiles", Role.VERIFIER),
+    }
+
+
+def _render_model_selection(selection: dict, root: Path | None) -> None:
+    def render_candidate(row: dict) -> str:
+        name = row["profile"]
+        if "error" in row:
+            return f"{name} ({row['error']})"
+        mode = f"/{row['host_mode']}" if row["host_mode"] else ""
+        detail = f"{row['driver']}:{row['harness']}{mode}"
+        if row["agent_ref"]:
+            detail += f" {row['agent_ref']}"
+        rendered = (
+            f"{name} · {detail} · {row['model']} / {row['effort']}"
+            f" (profile: {row['profile_origin']})"
+        )
+        if row["host_blocked_reason"]:
+            rendered += f" [{row['host_blocked_reason']}]"
+        return rendered
+
+    def render_candidates(label: str, group: dict) -> None:
+        typer.echo(f"  {label} ({group['origin']})")
+        if not group["candidates"]:
+            typer.echo("    (no profiles configured)")
+        for index, row in enumerate(group["candidates"], start=1):
+            typer.echo(f"    {index}. {render_candidate(row)}")
+
+    typer.echo(f"Project model selection ({root or 'no project'})")
+    controller = selection["controller"]
+    typer.echo(f"  Controller session: {controller['session_harness'] or '(harness not declared)'}")
+    typer.echo(
+        f"  Configured Controller profile ({controller['origin']}): "
+        f"{render_candidate(controller['candidate'])}"
+    )
+    planner = selection["planner"]
+    typer.echo(f"  Planner depth: {planner['depth']} ({planner['depth_origin']})")
+    for depth, group in planner["depths"].items():
+        render_candidates(f"Planner / {depth}", group)
+    render_candidates("Worker", selection["worker"])
+    render_candidates("Verifier", selection["verifier"])
+    typer.echo("  Candidates are shown in config order. Dispatch applies task and resource checks.")
+
+
+@config_app.command("models")
+@handle_errors
+def config_models(json_out: bool = JsonOpt) -> None:
+    """Preview configured models and fallback order without launching agents.
+
+    Shows the effective Controller profile, each Planner depth, Worker, and
+    Verifier, including which layer supplied each list and profile. Model and
+    effort are requested values. Host self assignments use the current
+    session. Set ORX_CONTROLLER_HARNESS and ORX_CONTROLLER_AGENTS as for
+    dispatch to see incompatible host candidates.
+    """
+    root = _project_root()
+    selection = _model_selection(_load_effective(root))
+    _ok(json_out, project_root=str(root) if root else None, model_selection=selection)
+    if not json_out:
+        _render_model_selection(selection, root)
 
 
 @config_app.command("get")
@@ -727,19 +833,22 @@ def goal_new(
     context: str = typer.Option("", "--context", help="Extra context for planners/workers."),
     json_out: bool = JsonOpt,
 ) -> None:
-    """Create the active Goal and its Run."""
+    """Create the active Goal and its Run, then show project model selection."""
     project = dispatch.open_project()
+    selection = _model_selection(project)
     goal, run = dispatch.create_goal(project, objective, acceptance, constraints, context)
     _ok(
         json_out,
         goal={"id": goal.id, "objective": goal.objective, "acceptance": goal.acceptance,
               "constraints": goal.constraints, "status": goal.status},
         run={"id": run.id, "status": run.status},
+        model_selection=selection,
     )
     if not json_out:
         typer.echo(f"Goal {goal.id} created (run {run.id}, status {run.status})")
         for item in goal.acceptance:
             typer.echo(f"  acceptance: {item!r}")
+        _render_model_selection(selection, project.root)
 
 
 @goal_app.command("show")
@@ -824,7 +933,7 @@ def goal_pause(json_out: bool = JsonOpt) -> None:
 @goal_app.command("resume")
 @handle_errors
 def goal_resume(json_out: bool = JsonOpt) -> None:
-    """Resume the paused Goal; nothing is started by the resume itself.
+    """Resume the paused Goal and show the current project model selection.
 
     Idempotent: resuming an already active Goal reports the unchanged state
     and exits 0. The resume keeps run, revision, planning assignment,
@@ -834,18 +943,20 @@ def goal_resume(json_out: bool = JsonOpt) -> None:
     dispatch is the operator's explicit `orx run`. If every task completed
     during the pause, this call converges the Run and Goal to done through
     the normal completion invariant. --json fields: goal, status, changed,
-    run, plan, in_flight, next. Exit 0 on success (including the idempotent
-    repeat), 1 on a domain error (e.g. the Goal is done), 2 on usage
-    errors.
+    run, plan, in_flight, next, model_selection. Exit 0 on success
+    (including the idempotent repeat), 1 on a domain error (e.g. the Goal
+    is done), 2 on usage errors.
     """
     project = dispatch.open_project()
     try:
+        selection = _model_selection(project)
         data = dispatch.goal_resume(project)
     finally:
         project.close()
-    _ok(json_out, **data)
+    _ok(json_out, **data, model_selection=selection)
     if not json_out:
         _render_goal_lifecycle(data, "resumed")
+        _render_model_selection(selection, project.root)
         if data.get("next"):
             typer.echo(f"  next dispatch: {data['next']}")
 

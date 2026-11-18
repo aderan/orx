@@ -89,6 +89,54 @@ def test_doctor_fails_on_broken_config(cli_project):
     assert result.exit_code == 1
 
 
+def test_config_models_shows_effective_candidates_before_any_goal(cli_project, monkeypatch):
+    user_config = cli_project / "isolated-config" / "config.toml"
+    user_config.parent.mkdir()
+    user_config.write_text('schema_version = 1\n[worker]\nprofiles = ["host-external"]\n')
+    config = cli_project / ".orx" / "config.toml"
+    config.write_text(HOST_CONFIG_TOML.replace(
+        '["host-worker", "host-external"]', '["host-worker", "cursor-grok"]',
+    ))
+    profiles = cli_project / ".orx" / "profiles.toml"
+    with profiles.open("a") as fh:
+        fh.write("""
+[profiles.cursor-grok]
+driver = "cli"
+harness = "cursor"
+model = {family = "grok", version = "4.7"}
+class = "strong"
+effort = "medium"
+""")
+    monkeypatch.setenv("ORX_CONTROLLER_HARNESS", "codex")
+    database = cli_project / ".orx" / "state.db"
+    before = database.stat().st_mtime_ns
+
+    result = invoke("config", "models", "--json")
+
+    assert result.exit_code == 0, result.output
+    selection = payload(result)["model_selection"]
+    assert selection["controller"]["session_harness"] == "codex"
+    assert selection["controller"]["candidate"]["model"] == "m-planner"
+    assert selection["planner"]["depth"] == "auto"
+    assert set(selection["planner"]["depths"]) == {"light", "standard", "deep"}
+    assert selection["worker"]["origin"] == "project"
+    first, second = selection["worker"]["candidates"]
+    assert first["profile"] == "host-worker"
+    assert first["host_blocked_reason"] == "host_harness_mismatch:requires zcode, current codex"
+    assert (second["profile"], second["harness"], second["model"], second["effort"]) == (
+        "cursor-grok", "cursor", "grok@4.7", "medium",
+    )
+    assert second["profile_origin"] == "project"
+    assert second["host_blocked_reason"] is None
+    assert database.stat().st_mtime_ns == before
+
+    result = invoke("config", "models")
+    assert result.exit_code == 0, result.output
+    assert "2. cursor-grok" in result.stdout
+    assert "grok@4.7" in result.stdout
+    assert "host_harness_mismatch" in result.stdout
+
+
 def test_goal_new_and_show_envelopes(cli_project):
     result = invoke("goal", "new", "--json",
                     "--objective", "ship it",
@@ -99,9 +147,31 @@ def test_goal_new_and_show_envelopes(cli_project):
     assert body["goal"]["id"] == "G001"
     assert body["run"]["id"] == "R001"
     assert body["goal"]["acceptance"] == ["tests pass", "docs updated"]
+    assert body["model_selection"] == payload(invoke("config", "models", "--json"))["model_selection"]
 
     result = invoke("goal", "show", "--json")
     assert payload(result)["goal"]["id"] == "G001"
+
+
+def test_goal_new_prints_model_selection_before_planning(cli_project):
+    result = invoke("goal", "new", "--objective", "ship it", "--acceptance", "tests pass")
+    assert result.exit_code == 0, result.output
+    assert "Project model selection" in result.stdout
+    assert "m-worker" in result.stdout
+    assert "m-verifier" in result.stdout
+    assert payload(invoke("status", "--json"))["plan"] is None
+
+
+def test_goal_resume_displays_models_from_the_current_project_config(cli_project):
+    invoke("goal", "new", "--json", "--objective", "ship it", "--acceptance", "tests pass")
+    assert invoke("goal", "pause", "--json").exit_code == 0
+    assert invoke("config", "set", "worker.profiles", "cli-fake,host-worker").exit_code == 0
+
+    result = invoke("goal", "resume", "--json")
+    assert result.exit_code == 0, result.output
+    assert [row["model"] for row in payload(result)["model_selection"]["worker"]["candidates"]] == [
+        "fake-model", "m-worker",
+    ]
 
 
 def test_plan_returns_host_assignment(cli_project):

@@ -22,6 +22,16 @@ Clarify only substantive ambiguity that changes the goal, the acceptance, or
 the authorization; respect existing authorization and repo defaults for
 everything else.
 
+For a new or resumed Goal, locate or initialize its ORX project, then run
+`orx config models --json` before the first dispatch. Use the same Controller
+environment as the routing calls below. Tell the user which project is active.
+Show the Controller session, Planner depth, and ordered Planner, Worker,
+and Verifier candidates with their harness, model, and effort. Identify
+incompatible host candidates and inherited routing. Use one compact line
+for Planner depths that share the same order. Apply the user's model
+preferences for the Goal before launching work. When routing config changes,
+refresh the preview and tell the user which candidates moved before dispatch.
+
 ### A. The user states a goal directly
 
 1. If the project has no `.orx/`, run `orx init` first; run `orx doctor`

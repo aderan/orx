@@ -21,6 +21,7 @@ is ever called. See `docs/m0-report.md` for the acceptance log.
 uv sync
 uv run orx init
 uv run orx doctor
+uv run orx config models        # preview project candidates before dispatch
 uv run orx goal new --objective "..." --acceptance "..."
 uv run orx plan --json          # host planner: assignment; cli planner: launches
 # write plan.json, then:
@@ -105,6 +106,7 @@ User-layer files live next to each other: `ORX_CONFIG_DIR` if set, otherwise
 ```sh
 orx config path [--json]
 orx config list [--json]          # effective value + winning layer
+orx config models [--json]        # per-role models, effort, order, and sources
 orx config get <key> [--json]     # same value and origin as list
 orx config set <key> <value> [--user] [--json]
 ```
@@ -115,6 +117,13 @@ untouched. `schema_version` is not writable. A missing user config is created
 with `schema_version = 1` and only the key being set. Effective precedence,
 high to low, is environment (`ORX_RUNTIME_MAX_PARALLEL`,
 `ORX_RUNTIME_COMMAND_TIMEOUT_SEC`), project, user, then built-in defaults.
+
+`orx goal new` and `orx goal resume` display the same model selection.
+Candidate order includes fallbacks. Task capabilities and resource status
+determine the route at dispatch. Pass the Controller's
+`ORX_CONTROLLER_HARNESS` and `ORX_CONTROLLER_AGENTS` to flag incompatible
+host candidates. To change the project order, use `orx config set` with
+`plan.<depth>.profiles`, `worker.profiles`, or `verify.profiles`.
 
 ## Agent discovery
 
