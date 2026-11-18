@@ -40,7 +40,7 @@ class ZCodeAdapter:
     def probe(self):
         return probe_headless(self.harness)
 
-    def _launch(self, *, root, scratch, profile, prompt, timeout, mode):
+    def _launch(self, *, root, scratch, profile, prompt, timeout):
         spec = effective_model_spec(profile)
         model = identity_token(spec)
         if spec.model_id is None and spec.provider:
@@ -65,7 +65,7 @@ class ZCodeAdapter:
             config_path = file.name
         return Launch(
             argv=["env", f"ZCODE_PERSONAL_PROVIDER_CONFIG_FILE={config_path}", "zcode",
-                  "--cwd", str(root), "--mode", mode, "--output-format", "stream-json",
+                  "--cwd", str(root), "--mode", "yolo", "--output-format", "stream-json",
                   "--prompt", prompt],
             cwd=root, timeout=timeout, stdin_text="", label=f"zcode:{profile.name}",
             planned_effort=EffortOutcome(effort, actual=""),
@@ -75,15 +75,15 @@ class ZCodeAdapter:
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None):
         return self._launch(root=root, scratch=scratch, profile=profile, prompt=prompt,
-                            timeout=timeout, mode="plan")
+                            timeout=timeout)
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout):
         return self._launch(root=root, scratch=scratch, profile=profile, prompt=prompt,
-                            timeout=timeout, mode="edit")
+                            timeout=timeout)
 
     def build_verifier_launch(self, *, root, scratch, profile, prompt, timeout):
         return self._launch(root=root, scratch=scratch, profile=profile, prompt=prompt,
-                            timeout=timeout, mode="plan")
+                            timeout=timeout)
 
     def extract_text(self, launch, run_result):
         stream = captured_stdout(run_result)

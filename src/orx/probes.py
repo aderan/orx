@@ -386,7 +386,7 @@ def doctor_harness_checks() -> list[tuple[str, str, str]]:
 
 PERMISSION_AXES: tuple[str, ...] = (
     "trust",          # workspace trust (--trust for cursor; per-project config for codex)
-    "force_yolo",     # --force/--yolo (cursor) / the never-passed bypass flag (codex)
+    "force_yolo",     # --force/--yolo (Cursor) or the bypass flag (Codex)
     "approval_mode",  # the harness's own approval policy
     "sandbox",        # sandbox mode (argv for codex; config for cursor)
     "project_hooks",  # harness-level hooks that intercept agent actions
@@ -594,28 +594,17 @@ def _argv_axis_entries(harness: str, profile, role: str) -> dict:
             "source": "argv: the cursor adapter always passes --trust "
                       "(workspace trust axis, not an approval mode)",
         }
-        if profile is None:
-            entries["force_yolo"] = _unknown_axis(
-                "argv: no profile selected — --force/--yolo is "
-                "profile-driven (unknown, not defaulted)")
-        else:
-            entries["force_yolo"] = {
-                "value": mirror["force_yolo"],
-                "source": f"argv: --force/--yolo only when profile "
-                          f"{profile.name} sets force = {mirror['force_yolo']}",
-            }
-    else:
-        mirror = codex_module.permission_argv_axes(profile, role)
         entries["force_yolo"] = {
             "value": mirror["force_yolo"],
-            "source": "argv: the codex adapter never passes "
-                      "--dangerously-bypass-approvals-and-sandbox",
+            "source": "argv: the cursor adapter always passes --force",
         }
-        entries["sandbox"] = {
-            "value": mirror["sandbox"],
-            "source": f"argv: the codex adapter always passes "
-                      f"-s {mirror['sandbox']} for role {role}",
-        }
+    else:
+        mirror = codex_module.permission_argv_axes(profile, role)
+        for name in ("force_yolo", "approval_mode", "sandbox"):
+            entries[name] = {
+                "value": mirror[name],
+                "source": f"argv: the codex adapter passes {codex_module.YOLO_FLAG}",
+            }
     return entries
 
 
@@ -710,7 +699,7 @@ def build_permission_preflight(
     else:
         config_axes, payload, metas = _codex_config_axes(
             codex_home_dir(), workspace)
-        argv_owned = ("force_yolo", "sandbox")
+        argv_owned = ("force_yolo", "approval_mode", "sandbox")
 
     axes: dict[str, dict] = {}
     for name in PERMISSION_AXES:
@@ -808,16 +797,16 @@ def doctor_permission_checks() -> list[tuple[str, str, str]]:
         deny = ", ".join(str(item) for item in approval.get("shell_deny", [])) or "none"
         out.append((
             "permissions:cursor", OK,
-            f"approval {approval['value']} (shell allow: {allow}; deny: {deny}); "
-            f"sandbox {sandbox['value']}; trust/force are per-profile argv "
-            "axes (`orx agent preflight cursor --profile NAME`); this "
+            f"configured approval {approval['value']} (shell allow: {allow}; deny: {deny}); "
+            f"sandbox {sandbox['value']}; ORX passes --trust and --force in argv "
+            "(`orx agent preflight cursor --profile NAME`); this "
             "proves nothing about in-agent shell execution",
         ))
     else:
         out.append((
             "permissions:cursor", WARN,
             f"{meta['state']} {cursor_config_path()}: approval/sandbox "
-            "unknown (not defaulted); per-profile argv axes via "
+            "unknown (not defaulted); ORX launch axes via "
             "`orx agent preflight cursor --profile NAME`",
         ))
 
@@ -834,8 +823,8 @@ def doctor_permission_checks() -> list[tuple[str, str, str]]:
             hooks_text = "no hooks configured"
         out.append((
             "permissions:codex", OK,
-            f"approval {approval}; {hooks_text}; workspace trust and the "
-            "-s sandbox axis are per-launch facts (`orx agent preflight "
+            f"configured approval {approval}; {hooks_text}; ORX uses approval "
+            "and sandbox bypass (`orx agent preflight "
             "codex --profile NAME`); this proves nothing about in-agent "
             "shell execution",
         ))

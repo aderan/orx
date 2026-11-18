@@ -13,7 +13,7 @@ from orx.runtime import CommandResult
 FIXTURES = Path(__file__).parent / "fixtures" / "stage2-cli"
 
 
-def make_launch(tmp_path, harness, model, effort):
+def make_launch(tmp_path, harness, model, effort, role="verifier"):
     profiles = tmp_path / "profiles.toml"
     profiles.write_text(f"""schema_version = 1
 [profiles.verifier]
@@ -25,11 +25,27 @@ effort = "{effort}"
 capabilities = ["coding"]
 """)
     adapter = adapters.get_adapter(harness)
-    launch = adapter.build_verifier_launch(
+    build = getattr(adapter, f"build_{role}_launch")
+    launch = build(
         root=tmp_path, scratch=tmp_path, profile=load_profiles(profiles)["verifier"],
         prompt="check", timeout=5,
     )
     return adapter, launch
+
+
+@pytest.mark.parametrize("role", ["planner", "worker", "verifier"])
+def test_zcode_roles_launch_in_yolo_mode(tmp_path, role):
+    model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+    _, launch = make_launch(tmp_path, "zcode", model, "high", role=role)
+    assert launch.argv[launch.argv.index("--mode") + 1] == "yolo"
+
+
+@pytest.mark.parametrize("role", ["planner", "worker", "verifier"])
+def test_claude_roles_launch_with_permission_bypass(tmp_path, role):
+    _, launch = make_launch(tmp_path, "claude", "sonnet", "low", role=role)
+    assert "--dangerously-skip-permissions" in launch.argv
+    assert "--permission-mode" not in launch.argv
+    assert "--tools" not in launch.argv
 
 
 def output(stream):

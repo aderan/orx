@@ -529,11 +529,11 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         assert "--json" in argv
         assert argv[argv.index("-m") + 1] == "fake-codex-model"
         assert argv[argv.index("-C") + 1] == str(tmp_path)
-        assert argv[argv.index("-s") + 1] == "workspace-write"
-        assert launch.sandbox == "workspace_write"
+        assert "-s" not in argv
+        assert launch.sandbox is None
         assert "--ephemeral" in argv
         assert argv[-1] == "DO THE WORK"  # prompt positional
-        assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+        assert "--dangerously-bypass-approvals-and-sandbox" in argv
         # mapped level high is supported by fake-codex-model: effort flag present
         effort_index = argv.index("-c")
         assert argv[effort_index + 1] == "model_reasoning_effort=high"
@@ -541,12 +541,7 @@ def test_codex_probe_and_argv_shape(tmp_path, bindir, monkeypatch):
         project.close()
 
 
-def test_codex_per_role_sandbox_contract(tmp_path, bindir, monkeypatch):
-    """docs/pbv-mapping.md §4.5: planner and verifier launch with
-    `-s read-only`, workers keep `-s workspace-write`, and the enforced mode
-    is declared on Launch.sandbox. Every other flag stays identical across
-    roles (--json, -m, -C, --ephemeral, --output-last-message, effort args,
-    positional prompt, empty stdin)."""
+def test_codex_roles_use_the_same_yolo_launch_contract(tmp_path, bindir):
     install_fake_codex(bindir)
     adapter = adapters.get_adapter("codex")
     assert adapter.probe().ok
@@ -566,16 +561,12 @@ def test_codex_per_role_sandbox_contract(tmp_path, bindir, monkeypatch):
     verifier = adapter.build_verifier_launch(
         root=tmp_path, scratch=scratch, profile=profile, prompt="x", timeout=5)
 
-    assert worker.argv[worker.argv.index("-s") + 1] == "workspace-write"
-    assert worker.sandbox == "workspace_write"
-    for role_launch in (planner, verifier):
+    assert "--dangerously-bypass-approvals-and-sandbox" in worker.argv
+    for role_launch in (worker, planner, verifier):
         argv = role_launch.argv
-        assert argv[argv.index("-s") + 1] == "read-only"
-        assert role_launch.sandbox == "read_only"
-        # only the sandbox value differs from the worker launch
-        s_at = worker.argv.index("-s")
-        assert argv[:s_at + 1] == worker.argv[:s_at + 1]
-        assert argv[s_at + 2:] == worker.argv[s_at + 2:]
+        assert argv == worker.argv
+        assert "-s" not in argv
+        assert role_launch.sandbox is None
         assert "--json" in argv and "--ephemeral" in argv
         assert argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
         assert argv[-1] == "x"  # prompt stays positional
@@ -587,7 +578,7 @@ def test_codex_per_role_sandbox_contract(tmp_path, bindir, monkeypatch):
         schema_path=tmp_path / "plan-schema.json")
     assert with_schema.argv[with_schema.argv.index("--output-schema") + 1] == str(tmp_path / "plan-schema.json")
     assert with_schema.argv[-1] == "x"
-    assert with_schema.sandbox == "read_only"
+    assert with_schema.sandbox is None
 
 
 def test_codex_effort_flag_omitted_when_unsupported(tmp_path, bindir, monkeypatch):
@@ -864,13 +855,13 @@ def test_cursor_probe_and_model_bracket(tmp_path, bindir, monkeypatch):
         assert argv_used[argv_used.index("--workspace") + 1] == str(tmp_path)
         assert "--trust" in argv_used
         assert argv_used[argv_used.index("--model") + 1] == "fake-cursor[effort=high]"
-        assert "--force" not in argv_used and "--api-key" not in argv_used
+        assert "--force" in argv_used and "--api-key" not in argv_used
         assert result["revision"] == 1
     finally:
         project.close()
 
 
-def test_cursor_force_flag_from_profile(tmp_path, bindir, monkeypatch):
+def test_cursor_force_flag_on_worker_with_legacy_profile(tmp_path, bindir, monkeypatch):
     calls = install_fake_agent(bindir, plan_in_result=False)
     project = make_cursor_project(tmp_path, force=True, planner=False,
                                   monkeypatch=monkeypatch)
@@ -1859,13 +1850,13 @@ def test_cursor_permission_axes_mirror_the_real_launch_argv(tmp_path, bindir):
         )
         mirror = permission_argv_axes(profile)
         assert mirror["trust"] is True
-        assert mirror["force_yolo"] is force
+        assert mirror["force_yolo"] is True
         assert mirror["sandbox"] is None  # the adapter never passes --sandbox
         for index, build in enumerate(builders):
             launch = build(root=tmp_path, scratch=tmp_path / f"s{force}{index}",
                            profile=profile, prompt="x", timeout=5)
             assert "--trust" in launch.argv       # trust is always on...
-            assert ("--force" in launch.argv) is force  # ...force only per profile
+            assert "--force" in launch.argv
             assert "--yolo" not in launch.argv
             assert "--sandbox" not in launch.argv
             # the mirror must equal what the adapter actually passed
@@ -1897,15 +1888,13 @@ def test_codex_permission_axes_mirror_the_real_launch_argv(tmp_path, bindir):
         launch = build(root=tmp_path, scratch=tmp_path / f"s-{role}",
                        profile=profile, prompt="x", timeout=5)
         argv = launch.argv
-        # sandbox is an explicit argv fact for codex, per role
-        assert mirror["sandbox"] == argv[argv.index("-s") + 1]
-        assert mirror["force_yolo"] is False
-        assert "--dangerously-bypass-approvals-and-sandbox" not in argv
-        # trust is not an argv axis for codex (it is per-project config)
+        assert "--dangerously-bypass-approvals-and-sandbox" in argv
+        assert "-s" not in argv
+        assert launch.sandbox is None
+        assert mirror["force_yolo"] is True
+        assert mirror["approval_mode"] == "never"
+        assert mirror["sandbox"] == "danger-full-access"
         assert mirror["trust"] is None
-    assert permission_argv_axes(profile, "worker")["sandbox"] == "workspace-write"
-    assert permission_argv_axes(profile, "planner")["sandbox"] == "read-only"
-    assert permission_argv_axes(profile, "verifier")["sandbox"] == "read-only"
 
 
 # ---------------------------------------------------------------------------

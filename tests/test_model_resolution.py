@@ -555,7 +555,7 @@ def test_codex_model_without_levels_keeps_provider_default_semantically(tmp_path
         assert launch.planned_effort.actual == "provider_default"
 
 
-def test_codex_roles_share_resolution_and_keep_sandboxes(tmp_path, bindir):
+def test_codex_roles_share_resolution_and_use_yolo(tmp_path, bindir):
     install_codex(bindir)
     adapter = adapters.get_adapter("codex")
     profile = spec_profile(harness=Harness.CODEX, model_spec=ModelSpec(
@@ -567,9 +567,9 @@ def test_codex_roles_share_resolution_and_keep_sandboxes(tmp_path, bindir):
                                            schema_path=None)
     verifier = adapter.build_verifier_launch(root=tmp_path, scratch=tmp_path / "s3",
                                              profile=profile, prompt="x", timeout=5)
-    assert worker.sandbox == "workspace_write"
-    assert planner.sandbox == verifier.sandbox == "read_only"
     for launch in (worker, planner, verifier):
+        assert "--dangerously-bypass-approvals-and-sandbox" in launch.argv
+        assert launch.sandbox is None
         assert launch.argv[launch.argv.index("-m") + 1] == "fake-codex-model"
         assert launch.argv[launch.argv.index("-c") + 1] == "model_reasoning_effort=high"
         assert launch.model_resolution["cli_slug"] == "fake-codex-model"

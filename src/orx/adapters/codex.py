@@ -16,13 +16,9 @@
   exec has no launch channel for them) is a ModelResolutionError naming
   the requested dimensions, the catalog state, and the refresh command —
   never a silent substitution.
-- Sandbox (per-role contract, docs/pbv-mapping.md §4.5): worker launches run
-  `-s workspace-write`; planner and verifier launches run `-s read-only`
-  (planning and verification read the tree, they must not mutate it). The
-  enforced mode is declared on Launch.sandbox ("workspace_write" /
-  "read_only"). Never --dangerously-bypass...; --ephemeral so ORX runs do
-  not depend on Codex session files; prompt is the positional argument;
-  planner adds `--output-schema <file>`.
+- All ORX-launched roles use the native approval and sandbox bypass.
+  `--ephemeral` keeps launches independent of Codex session files. The
+  prompt is positional, and the planner adds `--output-schema <file>`.
 - actual_effort: the effort reported in the JSONL event stream if present
   (source=reported); otherwise the catalog-validated value ORX passed
   (source=requested_validated); otherwise provider_default. CONFIRMED against
@@ -70,6 +66,7 @@ from orx.models import ModelSpec, ResolvedModel
 from orx.records import ORXError
 
 REQUIRED_FLAGS = ("--json", "-m", "-C", "--output-last-message")
+YOLO_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 
 _probe_cache: dict[str, ProbeReport] = {}
 
@@ -178,19 +175,12 @@ def _effort_flag(resolved: ResolvedModel, requested: str) -> tuple[list[str], Ef
 
 
 def permission_argv_axes(profile, role: str = "worker") -> dict:
-    """The permission-relevant argv axes :class:`CodexAdapter` will pass
-    for this profile and role (G009 T007 fingerprint mirror).
-
-    The adapter is the source of truth; tests pin this mirror to the real
-    launch argv. Sandbox is an explicit argv fact for codex (-s per role);
-    the bypass flag is NEVER passed (force/yolo stays its own axis, value
-    false as an argv fact); workspace trust is not an argv axis at all —
-    it lives in the CLI's per-project config."""
-    sandbox = "workspace-write" if role == "worker" else "read-only"
+    """Permission settings implied by the bypass flag for every CLI role."""
     return {
         "trust": None,
-        "force_yolo": False,
-        "sandbox": sandbox,
+        "force_yolo": True,
+        "approval_mode": "never",
+        "sandbox": "danger-full-access",
     }
 
 
@@ -242,8 +232,8 @@ class CodexAdapter:
         _probe_cache["codex"] = report
         return report
 
-    def _base_argv(self, *, root: Path, profile, prompt: str, scratch: Path,
-                   sandbox: str = "workspace-write") -> tuple[list[str], EffortOutcome, Path, ResolvedModel]:
+    def _base_argv(self, *, root: Path, profile, prompt: str,
+                   scratch: Path) -> tuple[list[str], EffortOutcome, Path, ResolvedModel]:
         catalog = model_catalog.launch_catalog("codex")
         resolved = resolve_codex_model(
             effective_model_spec(profile), catalog=catalog,
@@ -257,7 +247,7 @@ class CodexAdapter:
             "--json",
             "-m", resolved.cli_slug,
             "-C", str(root),
-            "-s", sandbox,
+            YOLO_FLAG,
             "--ephemeral",
             "--output-last-message", str(last_message),
             *effort_args,
@@ -265,9 +255,9 @@ class CodexAdapter:
         ]
         return argv, effort, last_message, resolved
 
-    def _launch(self, *, root, scratch, profile, prompt, timeout, sandbox: str) -> Launch:
+    def _launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
         argv, effort, last_message, resolved = self._base_argv(
-            root=root, profile=profile, prompt=prompt, scratch=scratch, sandbox=sandbox)
+            root=root, profile=profile, prompt=prompt, scratch=scratch)
         return Launch(argv=argv, cwd=root, timeout=timeout,
                       last_message_path=last_message, planned_effort=effort,
                       label=f"codex:{profile.name}",
@@ -275,21 +265,15 @@ class CodexAdapter:
                       # input (observed in a real run, 2026-10-03); never let
                       # it inherit the controller's stdin.
                       stdin_text="",
-                      # The CLI flag value is the isolation claim
-                      # (read-only -> read_only; docs/pbv-mapping.md §4.5).
-                      sandbox=sandbox.replace("-", "_"),
                       model_resolution=resolved.to_dict())
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
-        # Workers write code: they keep workspace-write (§4.5).
         return self._launch(root=root, scratch=scratch, profile=profile,
-                            prompt=prompt, timeout=timeout,
-                            sandbox="workspace-write")
+                            prompt=prompt, timeout=timeout)
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None) -> Launch:
-        # Planning reads the tree and must not mutate it (§4.5).
         launch = self._launch(root=root, scratch=scratch, profile=profile,
-                              prompt=prompt, timeout=timeout, sandbox="read-only")
+                              prompt=prompt, timeout=timeout)
         if schema_path is not None:
             # Insert before the positional prompt.
             argv = launch.argv[:-1] + ["--output-schema", str(schema_path), launch.argv[-1]]
@@ -297,9 +281,8 @@ class CodexAdapter:
         return launch
 
     def build_verifier_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
-        # Verification inspects the work; it must not change it (§4.5).
         return self._launch(root=root, scratch=scratch, profile=profile,
-                            prompt=prompt, timeout=timeout, sandbox="read-only")
+                            prompt=prompt, timeout=timeout)
 
     def effort_outcome(self, launch: Launch, run_result) -> EffortOutcome:
         planned = launch.planned_effort or EffortOutcome(requested="medium")

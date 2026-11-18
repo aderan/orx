@@ -2299,7 +2299,7 @@ capabilities = ["coding"]
     record = body["preflight"]
     axes = record["axes"]
     assert axes["trust"]["value"] is True
-    assert axes["force_yolo"]["value"] is False
+    assert axes["force_yolo"]["value"] is True
     assert axes["approval_mode"]["value"] == "allowlist"
     assert axes["approval_mode"]["shell_allow"] == ["Shell(ls)"]
     assert axes["sandbox"]["value"] == "disabled"

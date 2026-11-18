@@ -73,7 +73,7 @@ attempt/round/retry/Close/Done 的关系：
 2. **worker prompt**（host 与 CLI 同文）：Goal objective + **Goal constraints** + task objective + scope.allowed + acceptance + **preread 清单（"先读且只先读这些"）** + verification 列表 + prior_failure + 既有规则。host 停泊指派与 CLI 指派由同一函数产生。
 3. **verifier prompt**：Goal objective + **constraints** + task objective + **acceptance 全列** + 该条检查指令 + **该任务已记录的命令门禁结果** + **执行证据（log/evidence 路径）** + **prior issues（task_events 中最近失败原因）** + verdict 输出契约。
 4. **host/external 任务指派落盘**：`.orx/runs/<run>/assignments/<task>.md`（worker prompt 全文）；`orx run` 返回 payload 增加 prompt/prompt_file/preread/isolation。host verifier 指派同样落盘并在 `orx verify` 输出 prompt 与 prompt_file。
-5. **按角色沙箱**：codex 适配器 planner/verifier launch 用 `-s read-only`，worker 保持 `-s workspace-write`；`Launch.sandbox`（"read_only"|"workspace_write"|None）声明实际隔离。
+5. **按角色沙箱（历史行为）**：codex 适配器原先对 planner/verifier 用 `-s read-only`，对 worker 用 `-s workspace-write`。当前版本的 agent CLI 对三种角色统一使用 YOLO 等价模式，Codex launch 不再声明沙箱。参见 [任务授权 backlog](backlog.md)。
 6. **隔离记录**：attempts 表新增 `isolation TEXT`（migration v5）：CLI = launch.sandbox（"read_only"/"workspace_write"）；host = `"prompt_only"`（明确不是强制沙箱，仅为提示词纪律）；external = NULL（操作者自管，ORX 不作声明）；`attempt_create(..., isolation=None)` 向后兼容。补充（Stage 2 落地时修正）：`orx verify submit` 新增 `--reason`——fail 时审查问题进入 failure 状态，并自动出现在下一次 worker 与 verifier prompt（修复回环的问题回传通道）。
 7. **skill 安装**：`orx skill install [NAMES…]`——无参 = 安装默认集（orx-controller、orx-agent，行为不变）；显式名称 = 只装该 skill（名称按打包目录动态校验，未知名称报错并列出可用项）；`orx skill update` 只刷新 canonical 目录中已安装且仍打包的 skill。
 8. **空验证列表**：内核契约不变（完成即过）；PBV 计划由 skill 审核清单强制要求每片 ≥1 条命令门禁 + ≥1 条 agent 审查，空列表不满足 PBV 完成条件。

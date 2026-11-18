@@ -20,7 +20,7 @@ class ClaudeAdapter:
     def probe(self):
         return probe_headless(self.harness)
 
-    def _launch(self, *, root, profile, prompt, timeout, mode, schema=None):
+    def _launch(self, *, root, profile, prompt, timeout, schema=None):
         spec = effective_model_spec(profile)
         if spec.speed is not None or spec.context_tokens is not None:
             raise ModelResolutionError("Claude Code expects an explicit model id for speed/context variants")
@@ -28,10 +28,8 @@ class ClaudeAdapter:
         effort = profile.effort.value
         argv = [
             "claude", "--print", "--output-format", "stream-json", "--verbose",
-            "--permission-mode", mode, "--model", model, "--effort", effort,
+            "--dangerously-skip-permissions", "--model", model, "--effort", effort,
         ]
-        if mode == "plan":
-            argv += ["--tools", "Read,Glob,Grep"]
         if schema is not None:
             argv += ["--json-schema", schema]
         return Launch(
@@ -43,15 +41,14 @@ class ClaudeAdapter:
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None):
         return self._launch(root=root, profile=profile, prompt=prompt, timeout=timeout,
-                            mode="plan", schema=schema_path.read_text() if schema_path else None)
+                            schema=schema_path.read_text() if schema_path else None)
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout):
-        return self._launch(root=root, profile=profile, prompt=prompt, timeout=timeout,
-                            mode="acceptEdits")
+        return self._launch(root=root, profile=profile, prompt=prompt, timeout=timeout)
 
     def build_verifier_launch(self, *, root, scratch, profile, prompt, timeout):
         return self._launch(root=root, profile=profile, prompt=prompt, timeout=timeout,
-                            mode="plan", schema=json.dumps(VERDICT_SCHEMA))
+                            schema=json.dumps(VERDICT_SCHEMA))
 
     def extract_text(self, launch, run_result):
         result = terminal_result(captured_stdout(run_result))

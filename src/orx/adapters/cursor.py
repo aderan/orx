@@ -38,7 +38,7 @@ effort handling corrected after the first real logged-in run, same day).
   variant of an enumerated family is a diagnostic, not a bracket guess (this
   CLI rejects bracket overrides on listed slugs — "Cannot use this model:
   gpt-5.3-codex[effort=high]", real run 2026-10-03).
-- Never --api-key. --force/--yolo only when the profile sets force = true.
+- Uses --force (the --yolo alias) for every ORX-launched role. Never --api-key.
 """
 
 from __future__ import annotations
@@ -401,14 +401,11 @@ def permission_argv_axes(profile) -> dict:
     """The permission-relevant argv axes :meth:`CursorAdapter._launch`
     will pass for this profile (G009 T007 fingerprint mirror).
 
-    The adapter is the source of truth; tests pin this mirror to the real
-    launch argv. Three separate facts, never merged: --trust is ALWAYS
-    passed (workspace trust — not an approval mode), --force/--yolo only
-    when the profile sets force = true, and --sandbox is never passed (the
-    effective sandbox comes from the CLI's own config file)."""
+    Workspace trust and --force are passed for every launch. The sandbox
+    remains governed by Cursor's own config."""
     return {
         "trust": True,
-        "force_yolo": bool(profile.force) if profile is not None else None,
+        "force_yolo": True,
         "sandbox": None,
     }
 
@@ -472,11 +469,9 @@ class CursorAdapter:
         resolved = resolve_cursor_model(spec, help_text=help_text, catalog=catalog)
         argv = [
             "agent", "--print", "--output-format", "json",
-            "--workspace", str(root), "--trust",
+            "--workspace", str(root), "--trust", "--force",
             "--model", resolved.cli_slug,
         ]
-        if profile.force:
-            argv.append("--force")
         argv.append(prompt)
         # Empty stdin on purpose: the prompt is positional, and a CLI agent
         # left with an inherited non-TTY stdin may try to read more input

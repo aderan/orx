@@ -496,8 +496,8 @@ def test_preflight_fingerprints_incident_axes_and_no_execution_claim(
     # restrictive allowlist — exactly the incident's combination
     assert axes["trust"]["value"] is True
     assert "argv" in axes["trust"]["source"]
-    assert axes["force_yolo"]["value"] is False
-    assert "profile" in axes["force_yolo"]["source"]
+    assert axes["force_yolo"]["value"] is True
+    assert "--force" in axes["force_yolo"]["source"]
     assert axes["approval_mode"]["value"] == "allowlist"
     assert axes["approval_mode"]["shell_allow"] == ["Shell(ls)"]
     assert axes["approval_mode"]["shell_deny"] == []
@@ -539,19 +539,16 @@ def test_preflight_stores_no_secrets_or_account_ids(bindir, fake_home, tmp_path)
     assert json.loads(stored) == record
 
 
-def test_preflight_axes_move_independently(bindir, fake_home, tmp_path):
+def test_legacy_cursor_force_has_no_effect_on_preflight(bindir, fake_home, tmp_path):
     install_fake_agent(bindir)
     write_cursor_cli_config(fake_home, INCIDENT_CURSOR_CONFIG)
     base = probes.build_permission_preflight(
         "cursor", profile=cursor_cli_profile(force=False), workspace=tmp_path)
     forced = probes.build_permission_preflight(
         "cursor", profile=cursor_cli_profile(force=True), workspace=tmp_path)
-    assert forced["axes"]["force_yolo"]["value"] is True
-    # flipping force touches NOTHING else: trust, approval, sandbox, and
-    # hooks are separate axes with separate sources
-    for axis in ("trust", "approval_mode", "sandbox", "project_hooks"):
-        assert forced["axes"][axis] == base["axes"][axis]
-    assert forced["fingerprint"] != base["fingerprint"]
+    assert base["axes"]["force_yolo"]["value"] is True
+    assert base["axes"] == forced["axes"]
+    assert base["fingerprint"] == forced["fingerprint"]
 
 
 def test_missing_config_is_unknown_not_defaulted(bindir, fake_home, tmp_path):
@@ -726,29 +723,29 @@ def test_codex_preflight_reads_real_axes(bindir, fake_home, tmp_path, monkeypatc
         "codex", profile=codex_cli_profile(), role="worker",
         workspace=tmp_path, check_commands=[".venv/bin/python -m pytest -q"])
     axes = record["axes"]
-    # sandbox is an argv fact for codex (-s), approval/trust are config facts
-    assert axes["sandbox"]["value"] == "workspace-write"
+    # Bypass overrides the configured approval policy for ORX launches.
+    assert axes["sandbox"]["value"] == "danger-full-access"
     assert "argv" in axes["sandbox"]["source"]
-    assert axes["approval_mode"]["value"] == "on-request"
+    assert axes["approval_mode"]["value"] == "never"
     assert axes["trust"]["value"] == "trusted"
     assert "projects" in axes["trust"]["source"]
-    assert axes["force_yolo"]["value"] is False
+    assert axes["force_yolo"]["value"] is True
     # hooks count by event name; the hook commands never reach the record
     assert axes["project_hooks"]["value"] == {"configured": True,
                                               "events": ["SessionStart"]}
     assert "secret-cmd" not in json.dumps(record)
-    # verifier role flips only the argv sandbox axis
+    # All roles use the same effective permission mode.
     verifier = probes.build_permission_preflight(
         "codex", profile=codex_cli_profile(), role="verifier", workspace=tmp_path)
-    assert verifier["axes"]["sandbox"]["value"] == "read-only"
+    assert verifier["axes"] == record["axes"]
     assert verifier["fingerprint"] != record["fingerprint"]
     # a CODEX_HOME without config.toml: config axes unknown, argv facts hold
     (codex_home / "config.toml").unlink()
     empty = probes.build_permission_preflight(
         "codex", profile=codex_cli_profile(), workspace=tmp_path)
-    assert empty["axes"]["approval_mode"]["value"] == "unknown"
+    assert empty["axes"]["approval_mode"]["value"] == "never"
     assert empty["axes"]["trust"]["value"] == "unknown"
-    assert empty["axes"]["sandbox"]["value"] == "workspace-write"
+    assert empty["axes"]["sandbox"]["value"] == "danger-full-access"
 
 
 def test_doctor_permission_checks_show_axes_without_defaults(fake_home):

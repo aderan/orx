@@ -232,7 +232,7 @@ class Profile:
     executable: str | None = None
     args: tuple[str, ...] = ()
     prompt_transport: str = "file"
-    force: bool = False  # cursor harness only: allow --force/--yolo launch flags
+    force: bool = False  # Legacy Cursor field retained for existing profiles.
     # Host execution mode (driver = 'host' only): 'self' — the host session
     # does the work itself; 'subagent' — the host Controller must launch the
     # native agent named by agent_ref (e.g. a ZCode subagent definition).

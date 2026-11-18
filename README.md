@@ -51,36 +51,38 @@ Every command takes `--json` for a machine envelope:
   Workers may print `ORX_ACTUAL_EFFORT=<level>`; verifiers must print
   `ORX_VERDICT=pass|fail`.
 - `driver = "cli", harness = "codex"` — `codex exec --json -m <model> -C <root>
-  -s workspace-write --ephemeral --output-last-message <file> [-c
+  --dangerously-bypass-approvals-and-sandbox --ephemeral --output-last-message <file> [-c
   model_reasoning_effort=<validated>] <prompt>`; the model declaration is the
   same dual form, resolved strictly — effort validated against the local
   `codex debug models` catalog (see
   [model selection](docs/model-selection.md)).
 - `driver = "cli", harness = "cursor"` — `agent --print --output-format json
-  --workspace <root> --trust --model '<resolved>' <prompt>`. The model comes
+  --workspace <root> --trust --force --model '<resolved>' <prompt>`. The model comes
   from the profile's declaration — a legacy bare slug or a semantic `model`
   table (`family` / `version` / `effort` / `speed` / `context`) — and is
   resolved at launch against the refreshable local catalog into an
   enumerated variant slug, a bracket parameter string for unlisted
   families, or a pre-launch diagnostic that never substitutes another
-  model ([model selection](docs/model-selection.md)). `force = true` opts
-  into `--force`.
+  model ([model selection](docs/model-selection.md)). Existing profiles can
+  still contain `force`, which no longer controls agent launches.
 - `driver = "cli", harness = "claude"` — Claude Code print mode with explicit
-  `--model` and `--effort`. Set `model = "sonnet"` to let Claude Code
-  resolve its Sonnet alias, or use an explicit model ID when the project
+  `--dangerously-skip-permissions`, `--model` and `--effort`. Set `model = "sonnet"`
+  to let Claude Code resolve its Sonnet alias, or use an explicit model ID when the project
   needs to pin it. Planner and Verifier use native JSON schemas. ORX keeps
   the requested alias in the profile and records the reported model when
   the terminal result includes it.
-- `driver = "cli", harness = "zcode"` — ZCode headless edit/plan mode.
+- `driver = "cli", harness = "zcode"` — ZCode headless `--mode yolo`.
   For a built-in account provider, specify its qualified model ID (for
   example `account:bigmodel-individual-coding-plan/GLM-5.3`) and effort.
   The adapter writes a provider selection file for each launch and uses the
   existing CLI login. The result stream provides the session ID, model and
   usage when reported. Effective reasoning remains unknown if the CLI
   reports only the requested level.
-  Workers use `edit`, which permits workspace edits and may require
-  approval for shell commands. Headless runs deny Bash requests that need
-  interactive approval. Planner and Verifier use `plan`.
+
+All three ORX-launched agent roles (Planner, Worker and Verifier) use these
+permission settings. Run them in trusted projects or an externally isolated
+environment. Cursor `--force` honors explicit denies and leaves sandboxing to
+Cursor configuration. See the [task authorization backlog](docs/backlog.md).
 - `driver = "external"` — parked at `waiting_external`; you finish it.
 
 When a CLI verifier disconnects, times out, or returns an invalid result,
