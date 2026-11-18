@@ -9,6 +9,12 @@ The product boundary is the Goal execution control layer. See
 [职责与边界](docs/responsibilities.md) for what ORX executes, delegates, and
 excludes, and [CONTEXT.md](CONTEXT.md) for the shared domain vocabulary.
 
+See [Planning and model selection](CONTEXT.md#planning-and-model-selection)
+for the meaning of Plan Depth, Task Difficulty, Model Tier, Specialized Model
+(`S`), Effort, and Capability. The [0.5 migration plan](IMPLEMENTATION_PLAN.md)
+tracks rollout of the tier and effort conventions. See
+[model selection](docs/model-selection.md) for currently supported configuration.
+
 **M0 is complete.** The CLI drives the full lifecycle — Goal → Plan →
 Tasks (host, CLI, or external) → verification → Done — and the adapters
 implement the probed Codex / Cursor / shell launch surfaces. Automated tests
