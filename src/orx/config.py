@@ -36,7 +36,7 @@ from orx.records import ConfigError
 SCHEMA_VERSION = 1
 
 VALID_DRIVERS = "host | cli | external"
-VALID_HARNESSES = "zcode | codex | cursor | shell"
+VALID_HARNESSES = "zcode | codex | cursor | shell | claude"
 VALID_CLASSES = "frontier | strong | economy"
 VALID_EFFORTS = " | ".join(models.EFFORTS)
 VALID_TRANSPORTS = "stdin | argument | file"
@@ -618,14 +618,6 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
         harness == "shell" and not raw.get("executable")
     ):
         errors.append(f"{p} executable is required for harness = 'shell'")
-
-    # Harness -> adapter mapping: only shell/codex/cursor have launch adapters.
-    # `zcode` is a host harness; a cli-driver profile on it can never dispatch.
-    if driver == "cli" and harness == "zcode":
-        errors.append(
-            f"{p} driver = 'cli' has no adapter for harness = 'zcode'"
-            " (zcode work is done by the host; use driver = 'host')"
-        )
 
     args = raw.get("args", [])
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):

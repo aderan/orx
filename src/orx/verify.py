@@ -533,6 +533,47 @@ def reported_check_detail(delivery: dict, limit: int = 3) -> str:
     return f"reported checks: {detail}"
 
 
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "fail"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+    "additionalProperties": False,
+}
+
+
+def parse_agent_verdict(message: str) -> tuple[str, str] | None:
+    """Read one verdict from the adapter's result channel."""
+    message = message.strip()
+    if message.startswith("{"):
+        try:
+            fields = json.loads(message, object_pairs_hook=list)
+        except ValueError:
+            return None
+        if len(fields) != 2:
+            return None
+        value = dict(fields)
+        verdict, reason = value.get("verdict"), value.get("reason")
+        if (set(value) == {"verdict", "reason"} and verdict in ("pass", "fail")
+                and isinstance(reason, str) and reason.strip()):
+            return verdict, reason.strip()
+        return None
+
+    lines = [line.strip() for line in message.splitlines()]
+    verdicts = [line.removeprefix("ORX_VERDICT=") for line in lines
+                if line.startswith("ORX_VERDICT=")]
+    reasons = [line.removeprefix("ORX_REASON=").strip() for line in lines
+               if line.startswith("ORX_REASON=")]
+    if len(verdicts) != 1 or verdicts[0] not in ("pass", "fail") or len(reasons) > 1:
+        return None
+    reason = reasons[0] if reasons else ""
+    if verdicts[0] == "fail" and not reason:
+        return None
+    return verdicts[0], reason
+
+
 def evaluate(store: Store, revision_row_id: int, task: TaskRow) -> str:
     """'passed' | 'failed' | 'pending' (agent verdicts still outstanding).
 
@@ -548,13 +589,14 @@ def evaluate(store: Store, revision_row_id: int, task: TaskRow) -> str:
     if not items:
         return "passed"
     rows = store.verifications_current(revision_row_id, task.task_id)
+    pending = False
     for item in items:
         matches = [v for v in rows if v.command == item.raw and v.kind == item.kind]
         if not matches:
-            return "pending"
-        if not matches[-1].passed:  # id-ordered rows; the last is the latest
+            pending = True
+        elif not matches[-1].passed:  # id-ordered rows; the last is the latest
             return "failed"
-    return "passed"
+    return "pending" if pending else "passed"
 
 
 def pending_agent_entries(store: Store, revision_row_id: int, task: TaskRow) -> list[plan.VerificationItem]:

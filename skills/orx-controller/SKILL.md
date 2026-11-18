@@ -326,6 +326,11 @@ structured delivery statuses and the reason prefixes in steps 6–8.
     `--session` reference when available. `--discover-session` is for ZCode.
     An open attempt resurfaces with its original identity. Check the original
     executor before launching a replacement.
+    For a CLI result with `verdict: null`, inspect `error_kind` and the log.
+    A retryable verifier error leaves the delivery in `verifying`. Run
+    `orx verify --json` to retry the outstanding check. If the error recurs,
+    report its cause or fix the verifier configuration. A recorded `fail`
+    verdict uses the worker repair flow.
     A model mismatch prints a WARNING and is recorded — the verdict still
     counts, but never hide it.
 11. The run is Done only when `orx status --json` says `"run": {"status": "done"}`.

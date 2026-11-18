@@ -1265,7 +1265,7 @@ def _install_logged_fake(directory: Path, name: str, script: str, log: Path) -> 
 def test_agent_help_lists_subcommands():
     listed = invoke("agent", "--help")
     assert listed.exit_code == 0
-    for word in ("list", "info", "probe", "status", "host-only", "completion"):
+    for word in ("list", "info", "probe", "status", "zcode", "completion"):
         assert word in listed.stdout
     probed = invoke("agent", "probe", "--help")
     assert probed.exit_code == 0
@@ -1279,13 +1279,13 @@ def test_agent_usage_exits_2():
     assert invoke("agent", "nope").exit_code == 2
 
 
-def test_agent_list_marks_adapter_harnesses_and_host_only_zcode():
+def test_agent_list_lists_new_cli_harnesses():
     result = invoke("agent", "list", "--json")
     assert result.exit_code == 0, result.stdout
     body = payload(result)
     assert body["ok"] is True
     rows = {row["harness"]: row for row in body["harnesses"]}
-    assert list(rows) == ["codex", "cursor", "shell", "zcode"]
+    assert list(rows) == ["codex", "cursor", "shell", "zcode", "claude"]
     assert rows["codex"]["adapter"] is True and rows["codex"]["probeable"] is True
     assert rows["codex"]["binary"] == "codex" and rows["codex"]["host_only"] is False
     assert rows["cursor"]["adapter"] is True and rows["cursor"]["binary"] == "agent"
@@ -1293,14 +1293,14 @@ def test_agent_list_marks_adapter_harnesses_and_host_only_zcode():
     assert rows["shell"]["binary"] is None
     assert rows["zcode"] == {
         "harness": "zcode",
-        "binary": None,
-        "adapter": False,
-        "host_only": True,
-        "probeable": False,
+        "binary": "zcode",
+        "adapter": True,
+        "host_only": False,
+        "probeable": True,
     }
     human = invoke("agent", "list")
     assert human.exit_code == 0
-    assert "zcode" in human.stdout and "host-only" in human.stdout
+    assert "zcode" in human.stdout and "claude" in human.stdout
     assert "codex" in human.stdout and "adapter" in human.stdout
 
 
@@ -1473,17 +1473,16 @@ exit 99
     assert "not valid JSON" in info.stdout
 
 
-def test_agent_info_without_snapshot_and_host_only_contract():
+def test_agent_info_without_snapshot_and_cli_contract():
     result = invoke("agent", "info", "--json", "zcode")
     assert result.exit_code == 0, result.stdout
     body = payload(result)
     assert body["snapshot"] is None
-    assert body["host_only"] is True
-    assert body["adapter"] is False
-    assert body["launch"]["kind"] == "host"
-    assert "Host-only" in body["launch"]["summary"]
+    assert body["host_only"] is False
+    assert body["adapter"] is True
+    assert body["launch"]["kind"] == "adapter"
+    assert "stream-json" in body["launch"]["summary"]
     human = invoke("agent", "info", "zcode")
-    assert "host-only" in human.stdout
     assert "snapshot: (none)" in human.stdout
 
     shell = payload(invoke("agent", "info", "--json", "shell"))
@@ -1493,14 +1492,12 @@ def test_agent_info_without_snapshot_and_host_only_contract():
 
 
 def test_agent_probe_rejects_unprobeable_and_unknown():
-    for name in ("zcode", "shell", "nope"):
+    for name in ("shell", "nope"):
         result = invoke("agent", "probe", "--json", name)
         assert result.exit_code == 1, (name, result.stdout)
         body = payload(result)
         assert body["ok"] is False
         assert "error" in body
-    zcode = payload(invoke("agent", "probe", "--json", "zcode"))
-    assert "no probe" in zcode["error"]
     unknown = payload(invoke("agent", "info", "--json", "nope"))
     assert unknown["ok"] is False
     assert "unknown harness" in unknown["error"]

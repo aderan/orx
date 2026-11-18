@@ -22,7 +22,6 @@ from orx.adapters.base import (
     classify_failure,
     extract_cli_delivery,
     quota_reset_from,
-    scan_marker,
 )
 from orx import health
 from orx import config as config_mod
@@ -1802,6 +1801,7 @@ def _record_usage(store, adapter, launch, run_result, attempt, profile_name,
         obs = captured.usage
         session = captured.session_ref
         reason = captured.miss_reason
+        _record_reported_model(store, attempt.id, attempt.model, captured.actual_model)
     if session:
         store.attempt_update(attempt.id, session_ref=session)
     if obs:
@@ -4294,8 +4294,8 @@ def worker_prompt(goal: Goal, task: TaskRow, prior_failure: str = "",
    {failed_submission} so the Controller decides the next round.
 4. DELIVERY GATE: every prescribed command check above must pass (exit 0)
    before you may {passed_submission}.
-   A green self-check is necessary, not sufficient: it never replaces the
-   independent verifier — agent checks and independent acceptance still
+   A green self-check never replaces the independent verifier.
+   Agent checks and independent acceptance still
    judge the work afterwards.{delivery_block}"""
     return f"""{identity}You are an ORX worker for Goal {goal.id}: {goal.objective}
 
@@ -4325,7 +4325,8 @@ Rules:
 
 def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
                     evidence_lines: str = "", prior_issues: str = "",
-                    replan_context: str = "", identity: str = "") -> str:
+                    replan_context: str = "", identity: str = "",
+                    structured: bool = False) -> str:
     capabilities = ", ".join(item.capabilities) or "none"
     acceptance = "\n".join(f"  - {item!r}" for item in task.acceptance) or "  (none listed)"
     constraints = "\n".join(f"  - {c}" for c in goal.constraints) or "  (none)"
@@ -4347,18 +4348,12 @@ def verifier_prompt(goal: Goal, task: TaskRow, item, gate_summary: str = "",
         context_blocks += f"\nExecution evidence for this task:\n{evidence_lines}\n"
     if prior_issues:
         context_blocks += prior_issues
-    return f"""{identity}You are an ORX verifier for Goal {goal.id}: {goal.objective}
-
-Verify ONE acceptance check for task {task.task_id} ({task.objective}).
-
-Check to verify (exact instruction): {item.spec}
-Required capabilities: {capabilities}
-
-Goal constraints (the work must respect these):
-{constraints}
-Task acceptance criteria (judge against these, verbatim):
-{acceptance}{context_blocks}
-Look at the project workspace at the current working directory. Then print
+    result_contract = """Look at the project workspace. Return one JSON object:
+{"verdict":"pass","reason":"What you checked"}
+Use "fail" with a concrete unmet condition when the work fails the check.
+"""
+    if not structured:
+        result_contract = """Look at the project workspace at the current working directory. Then print
 EXACTLY two final lines, nothing after them:
 
 ORX_REASON=<one short line: what you checked, and for a fail what is missing>
@@ -4370,6 +4365,18 @@ A fail WITHOUT a reason line is an invalid verdict: the Controller cannot
 act on an unexplained failure. Nothing else counts as a verdict. Exit 0
 after printing both lines.
 """
+    return f"""{identity}You are an ORX verifier for Goal {goal.id}: {goal.objective}
+
+Verify ONE acceptance check for task {task.task_id} ({task.objective}).
+
+Check to verify (exact instruction): {item.spec}
+Required capabilities: {capabilities}
+
+Goal constraints (the work must respect these):
+{constraints}
+Task acceptance criteria (judge against these, verbatim):
+{acceptance}{context_blocks}
+{result_contract}"""
 
 
 def _gate_summary(store: Store, revision_id: int, task: TaskRow) -> str:
@@ -6279,11 +6286,21 @@ def verify_dispatch(project: Project) -> dict:
         if TaskStatus(task.status) is not TaskStatus.VERIFYING:
             continue  # a failed command gate already failed the task
         for index, item in enumerate(verify.pending_agent_entries(store, revision.id, task), start=1):
+            if store.task_get(revision.id, task.task_id).status != TaskStatus.VERIFYING.value:
+                break
             request = routing.RouteRequest(
                 role=Role.VERIFIER, required_capabilities=item.capabilities
             )
             existing = store.attempt_open_verifier_for_entry(revision.id, task.task_id, item.raw)
             if existing is not None:
+                if existing.driver == "cli":
+                    out["agent_required"].append({
+                        "task": task.task_id, "entry": item.raw,
+                        "attempt": existing.id, "profile": existing.profile,
+                        "required_capabilities": list(item.capabilities) or ["coding"],
+                        "error": "CLI verifier attempt is still open",
+                    })
+                    continue
                 # An open verifier retains its assignment when the Controller changes.
                 existing_profile = project.profiles.get(existing.profile)
                 error = (
@@ -6401,10 +6418,24 @@ def verify_dispatch(project: Project) -> dict:
 
 def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision,
                       task: TaskRow, item, profile, request, result) -> dict:
-    """Launch a CLI verifier. The deterministic verdict contract is one line
-    `ORX_VERDICT=pass` or `ORX_VERDICT=fail`; anything else is a failed
-    verification (a broken verifier must not hang the run forever)."""
+    """Commit a verdict only when the verifier executed and delivered it."""
     store = project.store
+
+    def execution_error(attempt, kind, reason, *, log=None, effort=None, retryable=False):
+        if log is not None:
+            store.evidence_add(attempt.id, "execution", log)
+        store.attempt_update(
+            attempt.id, ended_at=db_now(), result="failed",
+            failure_reason=f"{kind}: {reason}",
+            actual_effort=effort.actual if effort else None,
+            effort_source=effort.source if effort else None,
+        )
+        return {
+            "task": task.task_id, "entry": item.raw, "attempt": attempt.id,
+            "verdict": None, "error_kind": kind, "detail": reason,
+            "reason": reason,
+            "log": log, "retryable": retryable,
+        }
     # Startup gate (G010 T002): no CLI verifier may launch while the Goal
     # is paused (verify_dispatch's read covers the entry; this re-read
     # closes the launch race on this path).
@@ -6423,12 +6454,11 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
                 replan_context=_replan_reference_context(
                     store, project.root, revision.id, task.task_id, audience="verifier"
                 ),
+                structured=profile.harness.value in ("claude", "zcode"),
             ),
             timeout=project.config.command_timeout_sec,
         )
     except ModelResolutionError as exc:
-        # No verifier run, no substituted model: the diagnostic is the
-        # recorded failure and the verification entry fails on it.
         reason = str(exc)
         attempt = store.attempt_create(
             revision_row_id=revision.id,
@@ -6444,16 +6474,11 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
             started=True,
             isolation=None,
             run_id=run.id,
+            verify_entry=item.raw,
         )
         routing.persist_decision(store, request, result, attempt_id=attempt.id)
-        _fail_attempt_before_launch(store, attempt.id, reason, result="fail")
-        store.verification_add(
-            revision.id, task.task_id, "agent", item.raw, passed=False,
-            attempt_id=attempt.id, required_capabilities=list(item.capabilities),
-        )
-        verify.apply_verdict(store, revision.id, task, failure_hint=reason)
-        return {"task": task.task_id, "entry": item.raw, "verdict": "failed",
-                "reason": reason, "error_kind": "model_resolution"}
+        store.attempt_mark_usage_missing(attempt.id, "execution_failure")
+        return execution_error(attempt, "model_resolution", reason)
     attempt = store.attempt_create(
         revision_row_id=revision.id,
         role=Role.VERIFIER.value,
@@ -6468,21 +6493,15 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
         started=True,
         isolation=launch.sandbox,
         run_id=run.id,
+        verify_entry=item.raw,
     )
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     _record_model_resolution(
         project, run.id, f"verify-{task.task_id}-{attempt.id}", launch, attempt)
 
     if not probe.ok:
-        reason = f"capability_mismatch: {probe.detail}"
         store.attempt_mark_usage_missing(attempt.id, "execution_failure")
-        store.attempt_update(attempt.id, ended_at=db_now(), result="failed", failure_reason=reason)
-        store.verification_add(
-            revision.id, task.task_id, "agent", item.raw, passed=False,
-            attempt_id=attempt.id, required_capabilities=list(item.capabilities),
-        )
-        verify.apply_verdict(store, revision.id, task, failure_hint=item.raw)
-        return {"task": task.task_id, "entry": item.raw, "verdict": "failed", "reason": reason}
+        return execution_error(attempt, "capability_mismatch", probe.detail)
 
     launch = dataclass_replace(
         launch, stop_check=_goal_cancel_stop_check(project, goal))
@@ -6494,7 +6513,6 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     effort = adapter.effort_outcome(launch, run_result)
     _record_usage(store, adapter, launch, run_result, attempt, profile.name,
                   run_id=run.id, task_id=task.task_id)
-    _record_attempt_health(store, profile.name, run_result)
     if run_result.stop_requested:
         # G010 T003: the manageable verifier launch was stopped at ORX's own
         # request. The stop request, signal, and actual exit are the recorded
@@ -6527,19 +6545,18 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
             "log": log,
             "model_resolution": launch.model_resolution,
         }
-    # Scan the agent's extracted message FIRST: CLI agents wrap their output
-    # in a JSON envelope (Cursor) where newlines are escaped, so a verdict
-    # line inside the raw stdout never appears as a standalone line. The raw
-    # stream remains the fallback (shell workers print markers directly).
-    message = adapter.extract_text(launch, run_result)
-    streams = message + "\n" + run_result.stdout + "\n" + run_result.stderr
-    verdict_text = scan_marker(streams, "ORX_VERDICT")
-    reason_text = scan_marker(streams, "ORX_REASON")
-    if run_result.ok and verdict_text in ("pass", "fail"):
-        passed = verdict_text == "pass"
-    else:
-        passed = False
-        verdict_text = "no ORX_VERDICT line" if run_result.ok else _failure_excerpt(run_result)
+    if not run_result.ok:
+        _record_attempt_health(store, profile.name, run_result)
+        return execution_error(attempt, "transport_error", _failure_excerpt(run_result),
+                               log=log, effort=effort, retryable=True)
+    extract = getattr(adapter, "extract_verdict_text", adapter.extract_text)
+    verdict = verify.parse_agent_verdict(extract(launch, run_result))
+    if verdict is None:
+        return execution_error(attempt, "protocol_error", "missing or invalid verifier verdict",
+                               log=log, effort=effort, retryable=True)
+    _record_attempt_health(store, profile.name, run_result)
+    verdict_text, reason_text = verdict
+    passed = verdict_text == "pass"
     detail = verdict_text if not reason_text else f"{verdict_text}: {reason_text}"
     store.attempt_update(
         attempt.id, ended_at=db_now(),
@@ -6557,6 +6574,7 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     return {
         "task": task.task_id,
         "entry": item.raw,
+        "attempt": attempt.id,
         "verdict": "pass" if passed else "fail",
         "detail": detail,
         "log": log,
@@ -6668,6 +6686,8 @@ def verify_submit(
     discovery: dict | None = None
     usage_backfill: dict | None = None
     if bound is not None:
+        if bound.driver == "cli" and bound.verify_entry is not None:
+            raise ConflictError(f"attempt {bound.id} awaits its CLI verifier result")
         if session_ref is not None:
             store.attempt_update(bound.id, session_ref=session_ref)
         discovery: dict | None = None
@@ -6873,10 +6893,17 @@ _LAUNCH_CONTRACTS: dict[str, dict] = {
         ),
     },
     "zcode": {
-        "kind": "host",
+        "kind": "adapter",
         "summary": (
-            "Host-only harness. The host does the work; there is no CLI launch. "
-            "Submit through orx task claim and orx task complete."
+            "zcode --cwd <root> --mode edit|plan --output-format stream-json --prompt <prompt>. "
+            "Model and effort select a per-launch personal provider file."
+        ),
+    },
+    "claude": {
+        "kind": "adapter",
+        "summary": (
+            "claude --print --model <id> --effort <level> --output-format stream-json "
+            "--permission-mode acceptEdits|plan. Planner and Verifier use a JSON schema."
         ),
     },
 }
@@ -6901,7 +6928,7 @@ def _has_adapter(name: str) -> bool:
 
 
 def agent_list() -> list[dict]:
-    """Harnesses that have an adapter, plus the host-only zcode harness."""
+    """Describe the local harness adapter registry."""
     rows = []
     for name, spec in probes.HARNESSES.items():
         host_only = spec.host_only

@@ -69,7 +69,15 @@ T001 的 Worker 同时使用显式提交和最终消息，暴露了外层重复�
 
 **Tests**：以真实 CLI 输出建立 fixture。覆盖畸形结果、stderr 冲突、断连、超时、合法 fail、重复回执及只重验一条。对启用的 ZCode/Claude Code 运行真实非交互小任务。ZCode 显式验证一次 GLM 5.3 与一次 Flash 选择，使用能力范围内的 effort；未验证的 profile 暂停启用。
 
-**Status**：Not Started
+**Status**：Complete
+
+2026-11-18 实测环境为 ZCode 0.17.1 和 Claude Code 2.1.308。ZCode 每次启动使用独立的 provider selection 文件，分别确认 BigModel 账号的 GLM-5.3 和 GLM-5.3-Flash 实际模型，以及运行事件记录的请求档位 high 和 low。Claude Code 接受显式 `--model`、`--effort low` 和 `--json-schema`。本机 `sonnet` 别名实际解析为 `zcode/GLM-5.3[1m]`，验收时固定了这个已知模型 ID。两个 CLI 的观测都没有证明生效的上游推理强度。
+
+真实 G001/R001 由当前 Codex 会话推进。Claude Code 生成 Plan IR，T001 实现华氏转摄氏函数，T002 依赖 T001，提供命令行入口。首次 ZCode Worker 使用 edit 模式时，Python 检查命令被宿主权限拦截，随后超时。保留原 attempt，以 Codex CLI 完成两个实现任务，ZCode Flash 完成语义验证。T001 验收后解锁 T002，命令输入 212 输出 `100.0`，两项任务均为 `passed`，Run 为 `done`。
+
+回归通过可重复的替身调用注入断连、超时、畸形裁决和 stderr 伪裁决。下次 `orx verify` 只重新派发仍无裁决的条目，已通过的命令检查与语义检查继续有效。单独验证合法 `fail` 会触发任务失败。两份真实 CLI 输出的裁剪副本位于 `tests/fixtures/stage2-cli/`。
+
+全套 1186 项测试通过。之后补齐重复 JSON 字段和 ZCode 选模回退的校验，相关 109 项回归通过，并用真实 R001 的 ZCode 裁决日志重放确认通过。
 
 ## Stage 3: 迁移四级模型和专有模型配置
 

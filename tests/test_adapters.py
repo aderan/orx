@@ -352,9 +352,56 @@ def test_cli_completed_attempts_record_both_span_timestamps(tmp_path, bindir, mo
         project.close()
 
 
-def test_cli_verifier_without_verdict_line_fails(tmp_path, bindir, monkeypatch):
+@pytest.mark.parametrize(("first_output", "expected_error"), [
+    ("echo 'ORX_VERDICT=pass extra text'\n", "protocol_error"),
+    ("echo ORX_VERDICT=pass >&2\n", "protocol_error"),
+    ("echo connection-lost >&2; exit 1\n", "transport_error"),
+    ("sleep 2\n", "transport_error"),
+])
+def test_cli_verifier_retries_only_the_entry_without_a_verdict(
+    tmp_path, bindir, monkeypatch, first_output, expected_error,
+):
     make_bin(bindir, "fake-worker", "exit 0\n")
-    make_bin(bindir, "fake-verifier", "echo 'looks fine to me'\n")
+    make_bin(bindir, "fake-verifier", "cat > prompt.txt\n"
+             "if grep -q 'Check to verify (exact instruction): first check' prompt.txt; then\n"
+             "  echo ORX_VERDICT=pass; exit 0\nfi\n" + first_output)
+    project = make_cli_project(
+        tmp_path, monkeypatch=monkeypatch,
+        config_replacements=(("command_timeout_sec = 30", "command_timeout_sec = 1"),),
+    )
+    try:
+        goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
+        dispatch.submit_plan(project, ir_for(goal, [
+            task_spec("T001", acceptance=["a1"], verification=[
+                "true", "agent: first check", "agent: second check",
+            ]),
+        ]))
+        dispatch.run_slice(project)
+        verified = dispatch.verify_dispatch(project)
+        accepted, broken = verified["launched"]
+        assert accepted["verdict"] == "pass"
+        assert broken["verdict"] is None
+        assert broken["error_kind"] == expected_error
+        assert broken["retryable"] is True
+        assert dispatch.task_list(project)[0]["status"] == "verifying"
+
+        make_bin(bindir, "fake-verifier", "echo ORX_VERDICT=pass\n")
+        retried = dispatch.verify_dispatch(project)
+        assert [(row["entry"], row["verdict"]) for row in retried["launched"]] == [
+            ("agent: second check", "pass"),
+        ]
+        assert dispatch.status_data(project)["run"]["status"] == "done"
+        assert dispatch.status_data(project)["verification"] == {
+            "passed": 3, "failed": 0, "awaiting_agent": 0,
+        }
+    finally:
+        project.close()
+
+
+def test_cli_verifier_valid_fail_still_fails_delivery(tmp_path, bindir, monkeypatch):
+    make_bin(bindir, "fake-worker", "exit 0\n")
+    make_bin(bindir, "fake-verifier",
+             """printf '%s\\n' '{"verdict":"fail","reason":"criterion missing"}'\n""")
     project = make_cli_project(tmp_path, monkeypatch=monkeypatch)
     try:
         goal = dispatch.create_goal(project, "goal text", ["a1"])[0]
@@ -362,8 +409,8 @@ def test_cli_verifier_without_verdict_line_fails(tmp_path, bindir, monkeypatch):
             task_spec("T001", acceptance=["a1"], verification=["agent: check it"]),
         ]))
         dispatch.run_slice(project)
-        verified = dispatch.verify_dispatch(project)
-        assert verified["launched"][0]["verdict"] == "fail"
+        result = dispatch.verify_dispatch(project)["launched"][0]
+        assert result["verdict"] == "fail"
         assert dispatch.task_list(project)[0]["status"] == "failed"
     finally:
         project.close()
@@ -1044,7 +1091,9 @@ def test_cli_verifier_reads_verdict_from_json_envelope(tmp_path, bindir, monkeyp
 H
   exit 0
 fi
-echo {json.dumps(payload)}
+cat <<'ENVELOPE'
+{payload}
+ENVELOPE
 """)
     cursor_adapter.reset_caches()
     project = make_cli_project(
@@ -1365,9 +1414,8 @@ capabilities = ["coding"]
         project.close()
 
 
-def test_cursor_verifier_failure_keeps_verdict_and_persists_usage(tmp_path, bindir, monkeypatch):
-    """A non-zero exit is still a failed verdict even when the envelope text
-    says pass. Usage and session from that same stream are still stored."""
+def test_cursor_verifier_transport_error_persists_usage(tmp_path, bindir, monkeypatch):
+    """A non-zero exit leaves the entry pending and keeps usage and session."""
     make_bin(bindir, "fake-worker", "exit 0\n")
     install_cursor_stdout(bindir, _cursor_envelope(
         result="ORX_REASON=checked\nORX_VERDICT=pass\n",
@@ -1394,11 +1442,12 @@ capabilities = ["coding"]
         ]))
         dispatch.run_slice(project)
         verified = dispatch.verify_dispatch(project)
-        assert verified["launched"][0]["verdict"] == "fail"
+        assert verified["launched"][0]["verdict"] is None
+        assert verified["launched"][0]["error_kind"] == "transport_error"
         attempt = _role_attempt(project, "verifier")
         assert attempt.session_ref == SESSION
         assert _usage_row(project, attempt.id)["input_tokens"] == 10
-        assert dispatch.task_list(project)[0]["status"] == "failed"
+        assert dispatch.task_list(project)[0]["status"] == "verifying"
     finally:
         project.close()
 

@@ -100,6 +100,7 @@ class Harness(str, Enum):
     CODEX = "codex"
     CURSOR = "cursor"
     SHELL = "shell"
+    CLAUDE = "claude"
 
 
 class ModelClass(str, Enum):

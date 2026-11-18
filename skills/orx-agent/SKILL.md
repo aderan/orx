@@ -191,7 +191,10 @@ You receive ONE assignment from the ORX Controller. Do exactly that.
 - You are an independent judge: judge against the acceptance criteria as
   written — never relax or reinterpret them to make a pass happen. You do not
   fix the work; you report it.
-- Print exactly two final lines, nothing after them:
+- Follow the assignment's output format. For a structured assignment,
+  return `{"verdict":"pass","reason":"what you checked"}` or use `"fail"`
+  with the concrete unmet condition.
+- For a legacy marker assignment, print exactly two final lines:
   `ORX_REASON=<what you checked; for a fail, what is missing>` then
   `ORX_VERDICT=pass` or `ORX_VERDICT=fail`.
 - Nothing else counts as a verdict; a fail without a reason is invalid —

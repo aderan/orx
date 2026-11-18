@@ -575,6 +575,16 @@ class CursorAdapter:
                         return "\n".join(parts)
         return captured_stdout(run_result)
 
+    def extract_verdict_text(self, launch: Launch, run_result) -> str:
+        try:
+            data = json.loads(captured_stdout(run_result))
+        except ValueError:
+            return ""
+        if not isinstance(data, dict) or data.get("type") != "result" or data.get("is_error"):
+            return ""
+        text = data.get("result")
+        return text if isinstance(text, str) else ""
+
 
 def reset_caches() -> None:
     """Test hook: forget cached probes and the shared model catalog."""

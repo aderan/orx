@@ -475,6 +475,7 @@ def test_dispatch_three_roles_argv_effort_and_records(tmp_path, bindir,
         '```json\n{"status":"passed","summary":"done",'
         '"checks":[],"artifacts":[]}\n```')})
     verdict_envelope = json.dumps({
+        "type": "result", "subtype": "success",
         "result": "checked\nORX_VERDICT=pass\n"})
     stand_in = StandIn(bindir, tmp_path,
                        roles=(plan_envelope, worker_envelope, verdict_envelope))
@@ -846,9 +847,9 @@ def test_cli_probe_and_info_catalog_contract(tmp_path, bindir, monkeypatch):
     assert human.exit_code == 0
     assert "generation 2" in human.stdout
 
-    # usage and host-only exits keep the 0/1/2 contract
+    # usage and shell exits keep the 0/1/2 contract
     assert runner.invoke(app, ["agent", "probe"]).exit_code == 2
-    assert runner.invoke(app, ["agent", "probe", "zcode"]).exit_code == 1
+    assert runner.invoke(app, ["agent", "probe", "shell"]).exit_code == 1
     assert runner.invoke(app, ["agent", "info", "nope"]).exit_code == 1
 
     # a failed refresh renders as failure, never as a fake success

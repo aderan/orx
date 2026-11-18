@@ -363,6 +363,7 @@ class Capture:
     usage: dict | None = None
     session_ref: str | None = None
     miss_reason: str | None = None
+    actual_model: str | None = None
 
 
 # G009 T002: how a harness's WORKER communicates its final delivery. The

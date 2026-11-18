@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "success", "is_error": false, "result": "{\"reason\":\"protocol smoke\",\"verdict\":\"pass\"}", "structured_output": {"reason": "protocol smoke", "verdict": "pass"}, "usage": {"input_tokens": 14218, "cache_read_input_tokens": 64, "output_tokens": 53}, "modelUsage": {"zcode/GLM-5.3[1m]": {"inputTokens": 14218}}, "session_id": "claude_fixture"}

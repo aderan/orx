@@ -61,7 +61,7 @@ agent_app = typer.Typer(
     help=(
         "Discover agent harnesses without launching a completion, and show "
         "per-profile health. list shows adapter harnesses (codex, cursor, "
-        "shell) and marks zcode host-only. info reads the latest persisted "
+        "shell, zcode, claude). info reads the latest persisted "
         "capability snapshot (including the refreshed model catalog, its "
         "source, and discovery status) and the launch contract; it never "
         "probes. probe runs the shared local probes, refreshes the model "
@@ -397,16 +397,10 @@ def _render_agent_row(row: dict) -> str:
 @agent_app.command("list")
 @handle_errors
 def agent_list(json_out: bool = JsonOpt) -> None:
-    """List harnesses that have an adapter, plus host-only zcode.
+    """List installed-adapter contracts for codex, cursor, zcode, claude and shell.
 
-    codex, cursor, and shell have adapters. zcode is host-only: the host
-    does the work, and there is no CLI to probe. This command does not
-    probe and does not launch a completion.
-
-    --json field harnesses is a list of objects with harness, binary,
-    adapter, host_only, and probeable. binary is null when the harness
-    has no fixed CLI name. adapter is true for codex, cursor, and shell.
-    host_only is true only for zcode. probeable is true for codex and cursor.
+    Lists contracts without probing binaries or launching a completion.
+    --json returns harness, binary, adapter, host_only and probeable.
     """
     rows = dispatch.agent_list()
     _ok(json_out, harnesses=rows)
@@ -463,7 +457,7 @@ def _render_model_catalog_lines(snap: dict) -> list[str]:
 @agent_app.command("info")
 @handle_errors
 def agent_info(
-    harness: str = typer.Argument(..., metavar="HARNESS", help="codex, cursor, shell, or zcode."),
+    harness: str = typer.Argument(..., metavar="HARNESS", help="codex, cursor, zcode, claude, or shell."),
     json_out: bool = JsonOpt,
 ) -> None:
     """Show the latest capability snapshot and the launch contract.
@@ -471,8 +465,7 @@ def agent_info(
     Reads the snapshot written by `orx agent probe` from the user data
     directory (ORX_DATA_DIR, else $XDG_DATA_HOME/orx, else ~/.local/share/orx)
     at probes/<harness>.json. Does not run probes and does not launch a
-    completion. snapshot is null when no probe has been saved yet. shell
-    and zcode have a launch contract and no probe; zcode is host-only.
+    completion. snapshot is null when no probe has been saved yet.
     The snapshot's model catalog (when present) shows the discovered
     models, the local source command, generation, and timestamp, the
     current/default selection markers, and Cursor parameterized
@@ -526,8 +519,8 @@ def agent_probe(
     exit, timeout, unparseable output) records catalog_error and no
     catalog — an old catalog is never relabeled as a fresh success.
 
-    codex and cursor are probeable. shell and zcode exit 1 (nothing to
-    probe; zcode is host-only). An unknown harness exits 1. A missing
+    codex, cursor, zcode and claude are probeable. shell and unknown
+    harnesses exit 1. A missing
     HARNESS argument exits 2.
 
     --json fields: harness, snapshot, path. snapshot is the capability
@@ -2189,9 +2182,11 @@ def verify(
             if item.get("submit_pass"):
                 typer.echo(f"  pass: {item['submit_pass']}")
         for item in result["launched"]:
+            outcome = item["verdict"] or item["error_kind"]
+            next_step = "; run orx verify again" if item.get("retryable") else ""
             typer.echo(
                 f"verifier launched: task {item['task']} entry {item['entry']!r}"
-                f" -> {item['verdict']} ({item.get('detail')})"
+                f" -> {outcome} ({item.get('detail')}){next_step}"
             )
 
 

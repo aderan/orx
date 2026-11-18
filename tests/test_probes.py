@@ -136,9 +136,7 @@ def test_snapshot_not_logged_in(bindir):
     assert snap["models_discoverable"] is True
 
 
-def test_probe_rejects_host_only_and_generic(bindir):
-    with pytest.raises(ValueError, match="host-only|no probe"):
-        probes.capability_snapshot("zcode")
+def test_probe_rejects_generic_and_unknown(bindir):
     with pytest.raises(ValueError, match="no probe"):
         probes.capability_snapshot("shell")
     with pytest.raises(KeyError):
@@ -146,8 +144,8 @@ def test_probe_rejects_host_only_and_generic(bindir):
 
 
 def test_harness_registry_covers_documented_set():
-    assert set(probes.HARNESSES) == {"codex", "cursor", "shell", "zcode"}
-    assert probes.HARNESSES["zcode"].host_only is True
+    assert set(probes.HARNESSES) == {"codex", "cursor", "shell", "zcode", "claude"}
+    assert probes.HARNESSES["zcode"].host_only is False
 
 
 def test_doctor_checks_unchanged_through_shared_module(bindir):
@@ -155,7 +153,7 @@ def test_doctor_checks_unchanged_through_shared_module(bindir):
     install_fake_codex(bindir)
     install_fake_agent(bindir)
     triplets = probes.doctor_harness_checks()
-    assert [t[0] for t in triplets] == ["codex", "agent"]
+    assert [t[0] for t in triplets] == ["codex", "agent", "zcode", "claude"]
     codex = triplets[0]
     assert codex[1] == "ok"
     assert codex[2].startswith("found at ") and "flags present; auth logged_in; operational probe not_run" in codex[2]
@@ -183,6 +181,8 @@ def test_doctor_still_byte_compatible_when_binary_missing(bindir, monkeypatch):
     assert triplets == [
         ("codex", "warn", "not found on PATH (optional harness)"),
         ("agent", "warn", "not found on PATH (optional harness)"),
+        ("zcode", "warn", "not found on PATH (optional harness)"),
+        ("claude", "warn", "not found on PATH (optional harness)"),
     ]
 
 
@@ -404,8 +404,8 @@ exit 1
     assert catalog["models"][-1]["slug"] == "family-1099"
 
 
-def test_agent_list_marks_host_only_and_probeable(bindir):
-    """list output distinguishes adapter harnesses from host-only zcode."""
+def test_agent_list_marks_probeable_cli_harnesses(bindir):
+    """list output distinguishes coding harnesses from shell."""
     from orx import dispatch as dispatch_mod
 
     class FakeProject:
@@ -414,7 +414,7 @@ def test_agent_list_marks_host_only_and_probeable(bindir):
     # pure registry check; no project needed
     probeable = [h for h, spec in probes.HARNESSES.items()
                  if not spec.host_only and spec.harness != "shell"]
-    assert probeable == ["codex", "cursor"]
+    assert probeable == ["codex", "cursor", "zcode", "claude"]
 
 
 # -- G009 T007: execution-capability preflight and permission fingerprint ---

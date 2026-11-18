@@ -817,7 +817,7 @@ def test_planner_unresolvable_semantic_records_failed_attempt(tmp_path, bindir,
         project.close()
 
 
-def test_verifier_unresolvable_semantic_fails_the_entry(tmp_path, bindir,
+def test_verifier_unresolvable_semantic_leaves_the_entry_pending(tmp_path, bindir,
                                                         monkeypatch):
     install_agent(bindir)
     project = make_semantic_project(
@@ -837,15 +837,16 @@ def test_verifier_unresolvable_semantic_fails_the_entry(tmp_path, bindir,
         dispatch.run_slice(project)  # worker passes (no command checks)
         verified = dispatch.verify_dispatch(project)
         launched = verified["launched"][0]
-        assert launched["verdict"] == "failed"
+        assert launched["verdict"] is None
+        assert launched["error_kind"] == "model_resolution"
         assert "capability" in launched["reason"]
         task = dispatch.task_list(project)[0]
-        assert task["status"] == "failed"
+        assert task["status"] == "verifying"
         attempt = next(a for a in project.store.attempts_all()
                        if a.role == "verifier")
-        assert attempt.result == "fail"
+        assert attempt.result == "failed"
         rows = project.store.verifications_for(attempt.revision_id, "T001")
-        assert rows and rows[-1].passed is False
+        assert rows == []
     finally:
         project.close()
 

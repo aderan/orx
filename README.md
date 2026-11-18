@@ -64,7 +64,24 @@ Every command takes `--json` for a machine envelope:
   families, or a pre-launch diagnostic that never substitutes another
   model ([model selection](docs/model-selection.md)). `force = true` opts
   into `--force`.
+- `driver = "cli", harness = "claude"` — Claude Code print mode with explicit
+  `--model` and `--effort`. Use the model ID or alias that the local Claude
+  Code provider configuration accepts. Planner and Verifier use native JSON
+  schemas. ORX records the reported model when the terminal result includes it.
+- `driver = "cli", harness = "zcode"` — ZCode headless edit/plan mode.
+  For a built-in account provider, specify its qualified model ID (for
+  example `account:bigmodel-individual-coding-plan/GLM-5.3`) and effort.
+  The adapter writes a provider selection file for each launch and uses the
+  existing CLI login. The result stream provides the session ID, model and
+  usage when reported. Effective reasoning remains unknown if the CLI
+  reports only the requested level.
 - `driver = "external"` — parked at `waiting_external`; you finish it.
+
+When a CLI verifier disconnects, times out, or returns an invalid result,
+`orx verify --json` reports a verifier attempt error with a null verdict.
+Run `orx verify` again to retry pending entries. Previously accepted checks
+on the same worker delivery remain recorded. A valid `fail` verdict puts
+the task into the worker repair flow.
 
 ## Layout
 
@@ -102,13 +119,14 @@ orx agent info <harness> [--json]
 orx agent probe <harness> [--json]
 ```
 
-`list` shows the adapter harnesses (`codex`, `cursor`, `shell`) and the
-host-only `zcode` harness. `info` reads the latest capability snapshot (it
+`list` shows `codex`, `cursor`, `zcode`, `claude`, and `shell`. `info`
+reads the latest capability snapshot (it
 does not probe) and prints that harness's launch contract. `probe` runs the
 shared local checks — binary, version, help, auth, models — and writes
 `probes/<harness>.json` under the user data directory. A probe never
-launches a completion. Only `codex` and `cursor` are probeable; `shell` and
-host-only `zcode` exit 1. Unknown harness names exit 1; a missing argument
+launches a completion. Model catalogs are probed on Codex and Cursor.
+ZCode and Claude Code expose binary and interface probes. Shell and unknown
+harness names exit 1; a missing argument
 exits 2. `--json` uses the same envelope as the rest of the CLI.
 
 ## Agent health

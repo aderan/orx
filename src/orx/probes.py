@@ -131,15 +131,25 @@ HARNESSES: dict[str, HarnessSpec] = {
     ),
     "zcode": HarnessSpec(
         harness="zcode",
-        binary="",
-        required_flags=(),
-        help_argv=(),
+        binary="zcode",
+        required_flags=("--prompt", "--cwd", "--mode", "--json"),
+        help_argv=("zcode", "--help"),
         status_argv=(),
         logged_in_marker="",
-        version_argv=(),
+        version_argv=("zcode", "--version"),
         models_argv=None,
-        host_only=True,
-        note="host harness: work is done by the host, no CLI to probe",
+        note="headless CLI; authentication and provider selection checked at launch",
+    ),
+    "claude": HarnessSpec(
+        harness="claude",
+        binary="claude",
+        required_flags=("--print", "--output-format", "--model", "--effort",
+                        "--json-schema", "--permission-mode"),
+        help_argv=("claude", "--help"),
+        status_argv=("claude", "auth", "status", "--json"),
+        logged_in_marker="",
+        version_argv=("claude", "--version"),
+        models_argv=None,
     ),
 }
 
@@ -158,6 +168,22 @@ def _auth_from(status_text: str, marker: str) -> str:
     return "not_logged_in"
 
 
+def _probe_auth(spec: HarnessSpec) -> str:
+    if not spec.status_argv:
+        return "unknown"
+    _, status_text = probe_argv(list(spec.status_argv))
+    if spec.harness != "claude":
+        return _auth_from(status_text, spec.logged_in_marker)
+    try:
+        payload = json.loads(status_text)
+    except ValueError:
+        return "unknown"
+    logged_in = payload.get("loggedIn") if isinstance(payload, dict) else None
+    if isinstance(logged_in, bool):
+        return "logged_in" if logged_in else "not_logged_in"
+    return "unknown"
+
+
 def capability_snapshot(harness: str, persist: bool = True) -> dict:
     """Probe one harness and build its capability snapshot. Raises KeyError
     for unknown harness names; host-only/generic harnesses raise ValueError
@@ -173,7 +199,7 @@ def capability_snapshot(harness: str, persist: bool = True) -> dict:
     if spec.host_only or spec.harness == "shell":
         raise ValueError(
             f"harness '{harness}' has no probe ({spec.note}); "
-            "probes apply to codex and cursor"
+            "probes apply to headless coding harnesses"
         )
     binary_path = shutil.which(spec.binary)
     snapshot = {
@@ -212,15 +238,18 @@ def capability_snapshot(harness: str, persist: bool = True) -> dict:
         flags = [f for f in spec.required_flags if f in help_text]
         snapshot["features"]["headless"] = len(flags) == len(spec.required_flags)
         snapshot["features"]["json_output"] = "--json" in help_text or "--output-format" in help_text
-        snapshot["features"]["model_selection"] = "-m" in flags or "--model" in flags
+        snapshot["features"]["model_selection"] = (
+            "-m" in flags or "--model" in flags
+            or (harness == "zcode" and snapshot["features"]["headless"])
+        )
         snapshot["features"]["effort_selection"] = (
             "model_reasoning_effort" in help_text or "effort=" in help_text
+            or "--effort" in flags or (harness == "zcode" and snapshot["features"]["headless"])
         )
         snapshot["features"]["resume"] = "resume" in help_text.lower()
 
         if snapshot["features"]["headless"]:
-            code_s, status_text = probe_argv(list(spec.status_argv))
-            snapshot["auth"] = _auth_from(status_text, spec.logged_in_marker)
+            snapshot["auth"] = _probe_auth(spec)
 
         if spec.models_argv is not None:
             code_m, models_text = probe_argv(
@@ -312,7 +341,7 @@ def doctor_harness_checks() -> list[tuple[str, str, str]]:
     from orx.doctor import OK, WARN
 
     out: list[tuple[str, str, str]] = []
-    for harness in ("codex", "cursor"):
+    for harness in ("codex", "cursor", "zcode", "claude"):
         spec = HARNESSES[harness]
         path = shutil.which(spec.binary)
         if not path:
@@ -328,8 +357,7 @@ def doctor_harness_checks() -> list[tuple[str, str, str]]:
                         f"found at {path}; help is missing {missing}; "
                         "adapter would refuse (capability_mismatch)"))
         else:
-            code_s, status_text = probe_argv(list(spec.status_argv))
-            auth = _auth_from(status_text, spec.logged_in_marker)
+            auth = _probe_auth(spec)
             out.append((spec.binary, OK,
                         f"found at {path}; flags present; auth {auth}; "
                         "operational probe not_run"))
@@ -659,7 +687,7 @@ def build_permission_preflight(
     identifiers (only axis values, sources, and digests), and never
     touches quota/health state."""
     spec = HARNESSES[harness]
-    if spec.host_only or spec.harness == "shell":
+    if harness not in ("codex", "cursor"):
         raise ValueError(
             f"harness '{harness}' has no permission preflight ({spec.note}); "
             "preflights apply to codex and cursor"

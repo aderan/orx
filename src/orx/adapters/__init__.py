@@ -15,11 +15,15 @@ from .base import (  # re-exported vocabulary
 from .shell import ShellAdapter
 from .codex import CodexAdapter
 from .cursor import CursorAdapter
+from .claude import ClaudeAdapter
+from .zcode import ZCodeAdapter
 
 _ADAPTERS = {
     "shell": ShellAdapter(),
     "codex": CodexAdapter(),
     "cursor": CursorAdapter(),
+    "zcode": ZCodeAdapter(),
+    "claude": ClaudeAdapter(),
 }
 
 

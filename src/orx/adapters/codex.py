@@ -391,6 +391,11 @@ class CodexAdapter:
             return launch.last_message_path.read_text()
         return captured_stdout(run_result)
 
+    def extract_verdict_text(self, launch: Launch, run_result) -> str:
+        if launch.last_message_path and launch.last_message_path.is_file():
+            return launch.last_message_path.read_text()
+        return ""
+
 
 def reset_caches() -> None:
     """Test hook: forget cached probes and the shared model catalog."""

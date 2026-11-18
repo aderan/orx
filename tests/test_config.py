@@ -116,15 +116,13 @@ def test_invalid_max_parallel_rejected(tmp_path):
         load_config(tmp_path / ".orx" / "config.toml")
 
 
-def test_cli_driver_with_zcode_harness_rejected(tmp_path):
-    # driver=cli + harness=zcode can never dispatch: zcode is a host harness.
-    broken = HOST_PROFILES_TOML.replace(
+def test_cli_driver_with_zcode_harness_loads(tmp_path):
+    profiles = HOST_PROFILES_TOML.replace(
         'driver = "host"\nharness = "zcode"\nmodel = "m-planner"',
         'driver = "cli"\nharness = "zcode"\nmodel = "m-planner"', 1)
-    _write(tmp_path, profiles=broken)
-    with pytest.raises(ConfigError) as excinfo:
-        load_profiles(tmp_path / ".orx" / "profiles.toml")
-    assert "no adapter" in str(excinfo.value) and "zcode" in str(excinfo.value)
+    _write(tmp_path, profiles=profiles)
+    loaded = load_profiles(tmp_path / ".orx" / "profiles.toml")
+    assert loaded["host-planner"].driver.value == "cli"
 
 
 def test_force_profile_field_parses_and_validates(tmp_path):
