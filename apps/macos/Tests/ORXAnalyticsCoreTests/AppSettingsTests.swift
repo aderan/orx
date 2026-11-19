@@ -37,6 +37,34 @@ final class AppSettingsTests: XCTestCase {
                        "the default is not an explicit user choice")
     }
 
+    func testOlderSettingsFollowTheSystemAppearanceAndUseTheDefaultPanelLayout() {
+        defaults.set(60, forKey: "panel.refresh.interval")
+        let settings = UserDefaultsAppSettingsStore(defaults: defaults).load()
+
+        XCTAssertEqual(settings.appearance, .system)
+        XCTAssertEqual(settings.panelDensity, .compact)
+        XCTAssertEqual(settings.panelShortcuts, PanelShortcut.defaults)
+        XCTAssertEqual(settings.panelRefreshInterval, 60)
+    }
+
+    func testNewAppearanceChoicesAndEmptyShortcutsPersist() {
+        let store = UserDefaultsAppSettingsStore(defaults: defaults)
+        store.save(AppSettings(appearance: .dark, panelDensity: .detailed, panelShortcuts: []))
+
+        XCTAssertEqual(store.load().appearance, .dark)
+        XCTAssertEqual(store.load().panelDensity, .detailed)
+        XCTAssertEqual(store.load().panelShortcuts, [])
+    }
+
+    func testInvalidAppearanceAndObsoleteShortcutsAreHandled() {
+        defaults.set("unexpected", forKey: "appearance.theme")
+        defaults.set(["usage", "old-shortcut", "usage", "history"], forKey: "panel.shortcuts")
+
+        let settings = UserDefaultsAppSettingsStore(defaults: defaults).load()
+        XCTAssertEqual(settings.appearance, .system)
+        XCTAssertEqual(settings.panelShortcuts, [.usage, .history])
+    }
+
     func testInMemoryStoreStartsAtDefaults() {
         let store = InMemoryAppSettingsStore()
         XCTAssertEqual(store.load(), AppSettings.default)

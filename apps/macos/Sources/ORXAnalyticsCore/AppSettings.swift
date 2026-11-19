@@ -1,5 +1,20 @@
 import Foundation
 
+public enum AppAppearance: String, CaseIterable {
+    case system, light, dark
+}
+
+public enum PanelDensity: String, CaseIterable {
+    case compact, detailed
+}
+
+public enum PanelShortcut: String, CaseIterable, Identifiable {
+    case history, usage, routing, diagnostics, search, cache
+
+    public static let defaults: [Self] = [.history, .usage, .routing, .diagnostics]
+    public var id: String { rawValue }
+}
+
 /// User-facing runtime preferences (design §8/§9).
 ///
 /// Every default is the conservative choice:
@@ -16,6 +31,9 @@ public struct AppSettings: Equatable {
     /// says otherwise — 0.4.2 wrote it incidentally on every settings save.
     public static let legacyDefaultPanelRefreshInterval: TimeInterval = 5
 
+    public var appearance: AppAppearance
+    public var panelDensity: PanelDensity
+    public var panelShortcuts: [PanelShortcut]
     public var notificationsEnabled: Bool
     /// Explicit data-directory choice (设置页显式选择); nil = the shared
     /// default resolution (ORX_ANALYTICS_HOME env, else ~/.orx-analytics).
@@ -37,7 +55,14 @@ public struct AppSettings: Equatable {
     public init(notificationsEnabled: Bool = false,
                 dataDirectoryOverride: String? = nil,
                 panelRefreshInterval: TimeInterval = AppSettings.defaultPanelRefreshInterval,
-                panelRefreshIntervalChosen: Bool = false) {
+                panelRefreshIntervalChosen: Bool = false,
+                appearance: AppAppearance = .system,
+                panelDensity: PanelDensity = .compact,
+                panelShortcuts: [PanelShortcut] = PanelShortcut.defaults) {
+        self.appearance = appearance
+        self.panelDensity = panelDensity
+        var shortcuts = Set<PanelShortcut>()
+        self.panelShortcuts = panelShortcuts.filter { shortcuts.insert($0).inserted }
         self.notificationsEnabled = notificationsEnabled
         self.dataDirectoryOverride = dataDirectoryOverride
         self.panelRefreshInterval = panelRefreshInterval
@@ -78,6 +103,10 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
     private static let intervalKey = "panel.refresh.interval"
     private static let intervalChosenKey = "panel.refresh.interval.chosen"
 
+    private static let appearanceKey = "appearance.theme"
+    private static let densityKey = "panel.density"
+    private static let shortcutsKey = "panel.shortcuts"
+
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -94,7 +123,7 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         guard destination[marker] == nil else { return }
         let source = defaults.persistentDomain(forName: previous) ?? [:]
         let keys = [notificationsKey, dataDirectoryKey, intervalKey, intervalChosenKey,
-                    "orx.executable.path"]
+                    appearanceKey, densityKey, shortcutsKey, "orx.executable.path"]
         for key in keys where destination[key] == nil {
             destination[key] = source[key]
         }
@@ -123,13 +152,24 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
             effectiveInterval = AppSettings.defaultPanelRefreshInterval
             effectiveChosen = false
         }
+        let appearance = defaults.string(forKey: Self.appearanceKey).flatMap(AppAppearance.init(rawValue:))
+        let density = defaults.string(forKey: Self.densityKey).flatMap(PanelDensity.init(rawValue:))
+        let shortcuts = defaults.stringArray(forKey: Self.shortcutsKey)?
+            .compactMap(PanelShortcut.init(rawValue:))
+
         return AppSettings(notificationsEnabled: enabled,
                            dataDirectoryOverride: (override?.isEmpty ?? true) ? nil : override,
                            panelRefreshInterval: effectiveInterval,
-                           panelRefreshIntervalChosen: effectiveChosen)
+                           panelRefreshIntervalChosen: effectiveChosen,
+                           appearance: appearance ?? .system,
+                           panelDensity: density ?? .compact,
+                           panelShortcuts: shortcuts ?? PanelShortcut.defaults)
     }
 
     public func save(_ settings: AppSettings) {
+        defaults.set(settings.appearance.rawValue, forKey: Self.appearanceKey)
+        defaults.set(settings.panelDensity.rawValue, forKey: Self.densityKey)
+        defaults.set(settings.panelShortcuts.map(\.rawValue), forKey: Self.shortcutsKey)
         defaults.set(settings.notificationsEnabled, forKey: Self.notificationsKey)
         defaults.set(settings.dataDirectoryOverride ?? "", forKey: Self.dataDirectoryKey)
         defaults.set(settings.panelRefreshInterval, forKey: Self.intervalKey)

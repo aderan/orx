@@ -409,6 +409,17 @@ final class AppModelTests: XCTestCase {
                        "G012：面板/详情默认刷新间隔降为 30 秒")
     }
 
+    func testEnablingAnAlreadyPinnedShortcutKeepsItsPosition() {
+        let store = InMemoryAppSettingsStore()
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory),
+                             settingsStore: store)
+
+        model.setPanelShortcut(.history, enabled: true)
+
+        XCTAssertEqual(store.load().panelShortcuts, PanelShortcut.defaults)
+    }
+
     func testSettingMutationsPersistThroughTheStore() {
         let store = InMemoryAppSettingsStore()
         let model = AppModel(client: FakeEngineClient(),

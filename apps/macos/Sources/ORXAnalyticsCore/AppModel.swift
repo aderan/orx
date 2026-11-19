@@ -325,6 +325,25 @@ public final class AppModel: ObservableObject {
         settings = next
     }
 
+    public func setAppearance(_ appearance: AppAppearance) {
+        updateSettings { $0.appearance = appearance }
+    }
+
+    public func setPanelDensity(_ density: PanelDensity) {
+        updateSettings { $0.panelDensity = density }
+    }
+
+    public func setPanelShortcut(_ shortcut: PanelShortcut, enabled: Bool) {
+        guard settings.panelShortcuts.contains(shortcut) != enabled else { return }
+        updateSettings {
+            if enabled {
+                $0.panelShortcuts.append(shortcut)
+            } else {
+                $0.panelShortcuts.removeAll { $0 == shortcut }
+            }
+        }
+    }
+
     /// Refresh-preference setter (panel-open interval, seconds). An
     /// explicit choice from the settings page — marked as chosen so later
     /// upgrades keep it instead of migrating to a new default.
