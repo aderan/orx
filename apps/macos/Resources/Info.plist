@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>ORX</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.orxanalytics.macos</string>
+	<string>com.aderan.orx.development</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>

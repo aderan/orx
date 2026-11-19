@@ -120,15 +120,20 @@ def bundled_engine(app: Path, home: Path, data: Path, logfile: Path):
 
 
 def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
-                  new_archive: Path, new_wheel: Path, *, engine_only: bool) -> dict:
+                  new_archive: Path, new_wheel: Path, *, engine_only: bool,
+                  legacy_engine_only: bool = False) -> dict:
     if work.exists() and any(work.iterdir()):
         raise RuntimeError("the rehearsal needs an empty work directory")
     work.mkdir(parents=True, exist_ok=True)
     app_slot = work / "Applications"
     old_app, old_facts = checked_bundle(old_archive, app_slot)
     new_app, new_facts = checked_bundle(new_archive, work / "new-package")
-    if old_facts["bundle_id"] != new_facts["bundle_id"]:
-        raise RuntimeError("the migration changed the channel's Bundle ID")
+    if old_facts["channel"] != new_facts["channel"]:
+        raise RuntimeError("the App replacement must stay within one channel")
+    if old_facts["bundle_id"] not in {
+        new_facts["bundle_id"], new_facts.get("previous_bundle_id")
+    }:
+        raise RuntimeError("the new App does not declare the installed Bundle ID as its predecessor")
     old_cli = cli_install(old_wheel, work / "old-cli")
     new_cli = cli_install(new_wheel, work / "new-cli")
     data = work / "custom-data"
@@ -161,8 +166,9 @@ def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
         usage = result["usage"]
         return {"tokens": usage["tokens"], "coverage": usage["coverage"]}
 
-    launch = bundled_engine if engine_only else installed_app
-    with launch(old_app, work / "old-home", data, work / "old-app.log"):
+    launch_old = bundled_engine if engine_only or legacy_engine_only else installed_app
+    launch_new = bundled_engine if engine_only else installed_app
+    with launch_old(old_app, work / "old-home", data, work / "old-app.log"):
         cli(old_cli, "projects", "add", str(project), "--name", "Migration project")
         release.bundle_engine_refresh({"socket": socket}, db, str(project), 1)
         original_history = history()
@@ -176,8 +182,8 @@ def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
     installed_new_app = app_slot / new_app.name
     new_app.rename(installed_new_app)
 
-    with launch(installed_new_app, work / "new-home", data,
-                       work / "new-app.log") as (app_process, upgraded_pid):
+    with launch_new(installed_new_app, work / "new-home", data,
+                    work / "new-app.log") as (app_process, upgraded_pid):
         if cli(new_cli, "projects", "list") != registry_before or history() != original_history:
             raise RuntimeError("registry or usage changed on upgrade")
         cli_version = cli(new_cli, "--version").strip()
@@ -188,6 +194,8 @@ def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
             if not started.get("started") or started.get("engine_spawned"):
                 raise RuntimeError("watch did not share the installed App's engine")
             if app_process is not None:
+                if app_process.poll() is not None:
+                    raise RuntimeError("the new App already exited before the shutdown check")
                 app_process.terminate()
                 app_process.wait(timeout=10)
                 after_quit = json.loads(cli(new_cli, "watch", "status"))
@@ -218,7 +226,7 @@ def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
     installed_new_app.rename(work / installed_new_app.name)
     saved_old_app.rename(old_app)
 
-    with launch(old_app, work / "old-home", data, work / "rollback-app.log"):
+    with launch_old(old_app, work / "old-home", data, work / "rollback-app.log"):
         restored_version = version(db)
         if (cli(old_cli, "projects", "list") != registry_before
                 or history() != original_history or restored_version != old_version):
@@ -227,9 +235,11 @@ def run_rehearsal(work: Path, old_archive: Path, old_wheel: Path,
         raise RuntimeError("the rehearsed collections changed the ORX source")
 
     return {
-        "mode": "bundled-engine-only" if engine_only else "installed-app",
+        "mode": ("bundled-engine-only" if engine_only else
+                 "legacy-engine-new-app" if legacy_engine_only else "installed-app"),
         "old_app": old_facts["cf_bundle_version_string"],
         "new_app": new_facts["cf_bundle_version_string"],
+        "old_bundle_id": old_facts["bundle_id"],
         "bundle_id": new_facts["bundle_id"],
         "old_app_archive_sha256": release.sha256_file(old_archive),
         "new_app_archive_sha256": release.sha256_file(new_archive),
@@ -251,11 +261,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("work-dir", "old-archive", "old-wheel", "new-archive", "new-wheel"):
         parser.add_argument(f"--{name}", required=True, type=lambda value: Path(value).resolve())
-    parser.add_argument("--engine-only", action="store_true",
-                        help="exercise data with the archived engines; omit App process claims")
+    launch_mode = parser.add_mutually_exclusive_group()
+    launch_mode.add_argument("--engine-only", action="store_true",
+                             help="exercise data with archived engines")
+    launch_mode.add_argument("--legacy-engine-only", action="store_true",
+                             help="exercise the legacy bundled engine and the new App process")
     args = parser.parse_args()
     result = run_rehearsal(args.work_dir, args.old_archive, args.old_wheel,
-                           args.new_archive, args.new_wheel, engine_only=args.engine_only)
+                           args.new_archive, args.new_wheel, engine_only=args.engine_only,
+                           legacy_engine_only=args.legacy_engine_only)
     print(json.dumps(result, indent=2))
 
 

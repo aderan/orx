@@ -46,6 +46,9 @@ struct SettingsView: View {
             Toggle("启用异常通知", isOn: notificationBinding)
             LabeledContent("系统权限状态") { Text(authorizationText) }
                 .font(.caption)
+            if model.settings.notificationsEnabled && model.notificationAuth == .notDetermined {
+                Button("申请通知权限") { Task { await enableNotifications() } }
+            }
         } header: {
             Text("通知")
         } footer: {
@@ -60,10 +63,7 @@ struct SettingsView: View {
             set: { on in
                 Task { @MainActor in
                     if on {
-                        await model.enableNotifications()
-                        if model.settings.notificationsEnabled {
-                            RuntimeCoordinator.shared.activateNotificationRouting()
-                        }
+                        await enableNotifications()
                     } else {
                         model.disableNotifications()
                     }
@@ -71,10 +71,17 @@ struct SettingsView: View {
             })
     }
 
+    private func enableNotifications() async {
+        await model.enableNotifications()
+        if model.settings.notificationsEnabled {
+            RuntimeCoordinator.shared.activateNotificationRouting()
+        }
+    }
+
     private var authorizationText: String {
         switch model.notificationAuth {
         case .notDetermined:
-            return model.settings.notificationsEnabled ? "已开启，等待系统确认" : "未申请（默认关闭）"
+            return model.settings.notificationsEnabled ? "需要为当前应用授权" : "未申请（默认关闭）"
         case .granted:
             return "已授权"
         case .denied:

@@ -15,7 +15,7 @@ App 有两个互不混淆的分发渠道。**ad-hoc 签名的包只能是明确�
 | | 内部预览（internal-preview） | 正式分发（official） |
 |---|---|---|
 | 构建命令 | `apps/macos/scripts/build_app.sh dev` | `apps/macos/scripts/build_app.sh dist` |
-| 应用名 / Bundle ID | `ORX (Internal Preview)` / `org.orxanalytics.macos.dev`（独立 defaults 域） | `ORX` / `org.orxanalytics.macos` |
+| 应用名 / Bundle ID | `ORX (Internal Preview)` / `com.aderan.orx.dev`（独立 defaults 域） | `ORX` / `com.aderan.orx` |
 | 归档 | zip（`…-internal-preview-dev-macos13-arm64.zip`） | DMG（`…-official-dist-macos13-arm64.dmg`） |
 | 签名 | ad-hoc（无身份、未公证） | Developer ID Application ＋ hardened runtime（含内置 Python 与全部嵌套 Mach-O、安全时间戳、固定 entitlements） |
 | Gatekeeper | 首次打开被拦，需下述手动确认 | 公证＋装订后直接放行 |
@@ -227,3 +227,15 @@ App、释放 CLI watch 需求，并确认待替换引擎已停止。
   `ORX_ANALYTICS_SCAN_ROOTS` 可选，以系统路径分隔符（macOS 为冒号）列出扫描根目录；
   扫描沿用深度 4、目录预算 5000、不跟随目录符号链接、不进入依赖目录的现有约束。
   不配置扫描根时只读索引与已登记项目。索引缺失、损坏或发现异常会在 health.discovery 中报告。
+
+### 应用身份迁移
+
+正式版从 `org.orxanalytics.macos` 迁到 `com.aderan.orx`。内部预览
+从 `org.orxanalytics.macos.dev` 迁到 `com.aderan.orx.dev`。首次启动补入
+同渠道旧版的数据目录覆盖、刷新频率、通知偏好和 ORX 可执行文件路径。
+新版已有值优先，旧版偏好保留供回退。项目登记和历史用量继续从原数据目录读取。
+
+替换前在「系统设置 → 通用 → 登录项与扩展」移除旧应用的登录项。
+新版启动后可在 App 设置中重新开启登录启动。有旧通知偏好时，可在新版设置
+点击「申请通知权限」，由 macOS 为新应用授予权限。回退时先注销新版的
+登录项，退出并移走新版 App，再放回对应旧版。

@@ -84,6 +84,24 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         self.defaults = defaults
     }
 
+    /// Import only ORX preferences once. The previous domain is retained
+    /// for rollback, and the system manages its own state for each identity.
+    public static func migrateBundlePreferences(from previous: String, to current: String,
+                                                using defaults: UserDefaults = .standard) {
+        guard !previous.isEmpty, !current.isEmpty, previous != current else { return }
+        let marker = "migration.previous-bundle-id"
+        var destination = defaults.persistentDomain(forName: current) ?? [:]
+        guard destination[marker] == nil else { return }
+        let source = defaults.persistentDomain(forName: previous) ?? [:]
+        let keys = [notificationsKey, dataDirectoryKey, intervalKey, intervalChosenKey,
+                    "orx.executable.path"]
+        for key in keys where destination[key] == nil {
+            destination[key] = source[key]
+        }
+        destination[marker] = previous
+        defaults.setPersistentDomain(destination, forName: current)
+    }
+
     public func load() -> AppSettings {
         // bool(forKey:) is NO for a missing OR non-boolean value — an
         // unparseable value keeps notifications off, never on.

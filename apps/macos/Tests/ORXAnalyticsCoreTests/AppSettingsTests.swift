@@ -42,6 +42,40 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(store.load(), AppSettings.default)
     }
 
+    func testBundleMigrationCopiesMissingPreferencesOnceAndPreservesOldDomain() {
+        let legacy = suiteName + "-old"
+        defer { defaults.removePersistentDomain(forName: legacy) }
+        let prior: [String: Any] = [
+            "data.directory.override": "/tmp/old-data",
+            "panel.refresh.interval": 5.0,
+            "panel.refresh.interval.chosen": true,
+            "notifications.enabled": true,
+            "orx.executable.path": "/tmp/old-orx",
+            "NSStatusItem VisibleCC Item-0": false,
+            "login.enabled": true,
+        ]
+        defaults.setPersistentDomain(prior, forName: legacy)
+        defaults.setPersistentDomain(["orx.executable.path": "/tmp/new-orx"], forName: suiteName)
+
+        UserDefaultsAppSettingsStore.migrateBundlePreferences(
+            from: legacy, to: suiteName, using: defaults)
+        let current = defaults.persistentDomain(forName: suiteName)!
+        XCTAssertEqual(current["data.directory.override"] as? String, "/tmp/old-data")
+        XCTAssertEqual(current["panel.refresh.interval"] as? Double, 5)
+        XCTAssertEqual(current["panel.refresh.interval.chosen"] as? Bool, true)
+        XCTAssertEqual(current["notifications.enabled"] as? Bool, true)
+        XCTAssertEqual(current["orx.executable.path"] as? String, "/tmp/new-orx")
+        XCTAssertNil(current["NSStatusItem VisibleCC Item-0"])
+        XCTAssertNil(current["login.enabled"])
+        XCTAssertEqual(defaults.persistentDomain(forName: legacy)! as NSDictionary,
+                       prior as NSDictionary)
+
+        defaults.removeObject(forKey: "data.directory.override")
+        UserDefaultsAppSettingsStore.migrateBundlePreferences(
+            from: legacy, to: suiteName, using: defaults)
+        XCTAssertNil(defaults.persistentDomain(forName: suiteName)!["data.directory.override"])
+    }
+
     // MARK: G012 — lowered default + upgrade migration
 
     /// 新安装和未显式选择刷新偏好的升级用户采用新默认值。0.4.2 persisted

@@ -55,7 +55,14 @@ ORX/
 
 ## 阶段 4：验证安装升级、登录项和数据回退
 
-**应用身份。** 产品显示名称与安装包名称统一为 `ORX`，首个迁移版本优先沿用旧版各渠道的 Bundle ID。当前正式渠道为 `org.orxanalytics.macos`，预览渠道为 `org.orxanalytics.macos.dev`，预览继续标注 `Internal Preview`。签名身份或发行策略若要求更换 Bundle ID，发布前另定偏好、权限与登录项迁移，并跑完整替换测试。验证现有 bundle 位置、签名要求、实际 `SMAppService` 注册状态和通知授权，不能把同一 Bundle ID 当作这些状态自动继承的证明。预览版不能把另一渠道当成可自动接管的旧实例。
+**应用身份。** 产品显示名称与安装包名称统一为 `ORX`。正式渠道从
+`org.orxanalytics.macos` 切换到 `com.aderan.orx`，内部预览从
+`org.orxanalytics.macos.dev` 切换到 `com.aderan.orx.dev` 并继续标注
+`Internal Preview`。原预览身份在实际安装验收中被当前账户的 macOS
+控制中心屏蔽，结果见 [阶段四验收记录](diagnostics/analytics-monorepo/stage-4.md)。
+每个新 App 首次启动时仅从同渠道的旧偏好域补入数据目录、刷新设置、通知偏好
+和 ORX 可执行文件路径。现有新域值优先。旧偏好域和数据目录保留用于回退。
+在系统设置中确认并移除旧登录项，必要时在新版重新授权通知和开启登录启动。
 
 **升级演练。** 对每个拟发布渠道，用其真实旧版产物执行下列顺序。以测试账户和隔离数据目录先演练，再用实际分发包验证干净安装。
 

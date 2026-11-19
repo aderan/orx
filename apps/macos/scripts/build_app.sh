@@ -10,11 +10,11 @@
 # Channels (never blurred; gate logic in scripts/app_distribution.py):
 #   internal-preview (mode `dev`)
 #     "ORX (Internal Preview).app", bundle id
-#     org.orxanalytics.macos.dev (separate defaults domain), ad-hoc
+#     com.aderan.orx.dev (separate defaults domain), ad-hoc
 #     signature, zip archive. Clearly labeled internal preview —
 #     NOT a formal installer.
 #   official (mode `dist`)
-#     "ORX.app", org.orxanalytics.macos, DMG. Requires the
+#     "ORX.app", com.aderan.orx, DMG. Requires the
 #     FULL gate chain — Developer ID Application signing with hardened
 #     runtime (bundled Python and every nested Mach-O included),
 #     notarytool notarization, stapler, and a Gatekeeper install
@@ -165,6 +165,8 @@ cat > "$WORK/Info.plist" <<PLIST
 	<string>$APP_NAME</string>
 	<key>CFBundleIdentifier</key>
 	<string>$BUNDLE_ID</string>
+	<key>ORXAnalyticsPreviousBundleIdentifier</key>
+	<string>$PREVIOUS_BUNDLE_ID</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$VERSION</string>
 	<key>CFBundleVersion</key>

@@ -62,13 +62,13 @@ MODE_TO_CHANNEL = {
 }
 CHANNEL_TO_MODE = {"internal-preview": "dev", "official": "dist"}
 
-# Identity facts per channel (app name / bundle id mirror the pre-T005
-# dev/dist split so existing installs keep distinct defaults domains).
+# Keep channel identities and their predecessor preference domains together.
 CHANNEL_FACTS = {
     "internal-preview": {
         "mode": "dev",
         "app_name": "ORX (Internal Preview)",
-        "bundle_id": "org.orxanalytics.macos.dev",
+        "bundle_id": "com.aderan.orx.dev",
+        "previous_bundle_id": "org.orxanalytics.macos.dev",
         "archive_suffix": "zip",
         "signing": "ad-hoc",
         "audience": "internal testing only (内部测试)",
@@ -81,7 +81,8 @@ CHANNEL_FACTS = {
     "official": {
         "mode": "dist",
         "app_name": "ORX",
-        "bundle_id": "org.orxanalytics.macos",
+        "bundle_id": "com.aderan.orx",
+        "previous_bundle_id": "org.orxanalytics.macos",
         "archive_suffix": "dmg",
         "signing": "Developer ID Application + hardened runtime",
         "audience": "general users (正式分发)",
@@ -136,6 +137,7 @@ def emit_env(mode):
         "MODE": facts["mode"],
         "APP_NAME": facts["app_name"],
         "BUNDLE_ID": facts["bundle_id"],
+        "PREVIOUS_BUNDLE_ID": facts["previous_bundle_id"],
         "ARCHIVE_SUFFIX": facts["archive_suffix"],
         "AUDIENCE": facts["audience"],
         "GATEKEEPER_NOTICE": facts["gatekeeper_notice"],
@@ -497,6 +499,7 @@ def build_record(channel, mode, version, commit, archive_path, gates,
         "source_commit": commit,
         "app_name": CHANNEL_FACTS[channel]["app_name"],
         "bundle_id": CHANNEL_FACTS[channel]["bundle_id"],
+        "previous_bundle_id": CHANNEL_FACTS[channel]["previous_bundle_id"],
         "audience": CHANNEL_FACTS[channel]["audience"],
         "gatekeeper_limit": CHANNEL_FACTS[channel]["gatekeeper_notice"],
         "archive": Path(archive_path).name,

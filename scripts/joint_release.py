@@ -2748,6 +2748,8 @@ def gather_app_facts(app_dir: Path) -> dict:
     return {
         "app_name": app_dir.name,
         "bundle_id": info.get("CFBundleIdentifier"),
+        **({"previous_bundle_id": info["ORXAnalyticsPreviousBundleIdentifier"]}
+           if "ORXAnalyticsPreviousBundleIdentifier" in info else {}),
         "cf_bundle_version_string": info.get("CFBundleShortVersionString"),
         "cf_bundle_version": info.get("CFBundleVersion"),
         "build_flavor": info.get("ORXAnalyticsBuildFlavor"),
