@@ -13,7 +13,7 @@ App 有两个互不混淆的分发渠道。**ad-hoc 签名的包只能是明确�
 
 | | 内部预览（internal-preview） | 正式分发（official） |
 |---|---|---|
-| 构建命令 | `scripts/build_app.sh dev` | `scripts/build_app.sh dist` |
+| 构建命令 | `apps/macos/scripts/build_app.sh dev` | `apps/macos/scripts/build_app.sh dist` |
 | 应用名 / Bundle ID | `ORX Analytics (Internal Preview)` / `org.orxanalytics.macos.dev`（独立 defaults 域） | `ORX Analytics` / `org.orxanalytics.macos` |
 | 归档 | zip（`…-internal-preview-dev-macos13-arm64.zip`） | DMG（`…-official-dist-macos13-arm64.dmg`） |
 | 签名 | ad-hoc（无身份、未公证） | Developer ID Application ＋ hardened runtime（含内置 Python 与全部嵌套 Mach-O、安全时间戳、固定 entitlements） |
@@ -42,7 +42,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 版本号唯一来源是 `src/orxanalytics/__init__.py` 的 `__version__`，构建时
 写入 App 版本与 `Contents/Resources/orxanalytics-version.txt`。
 
-构建脚本固定内置运行时（版本与 SHA256 写死在 `scripts/build_app.sh`）：
+构建脚本固定内置运行时（版本与 SHA256 写死在 `apps/macos/scripts/build_app.sh`）：
 
 - python-build-standalone `cpython-3.12.8+20250115`（aarch64-apple-darwin，
   install_only），SHA256
@@ -114,7 +114,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 发布冻结候选或安装副本验证（面向发布前检查，日常使用不需要）：
 
 ```
-python3 scripts/check_runtime_seal.py --app </path/to/App.app> --evidence-dir <DIR>
+python3 apps/macos/scripts/check_runtime_seal.py --app </path/to/App.app> --evidence-dir <DIR>
 ```
 
 退出码 0＝封条完好；1＝封条破坏或缺证（含机器可读原因）；2＝用法错误。
@@ -181,13 +181,13 @@ bundle 内容快照（每个文件的 SHA-256、symlink 目标、目录）、前
 
 - `swift run`（apps/macos，无内置运行时）下引擎自动拉起不可用，面板会
   提示缺运行时。开发替代方案：
-  - 用 `scripts/build_app.sh dev` 产出内部预览版 App（渠道标注
+  - 用 `apps/macos/scripts/build_app.sh dev` 产出内部预览版 App（渠道标注
     internal-preview）再运行；
   - 或设 `ORX_ANALYTICS_ENGINE_PYTHON`（Python 解释器路径）＋可选
     `ORX_ANALYTICS_ENGINE_SERVE`（默认在解释器同目录或上级目录找
     `orx_engine_serve.py`，如仓库根的 `apps/macos/Resources/` 下）＋
     `ORX_ANALYTICS_ENGINE_PYTHONPATH`（指向仓库 `src/`）。
-- 冒烟：`scripts/smoke_macos_app.sh`（--smoke-test，合成引擎，无 GUI）。
+- 冒烟：`apps/macos/scripts/smoke_macos_app.sh`（--smoke-test，合成引擎，无 GUI）。
 
 ## 已知限制（如实声明）
 

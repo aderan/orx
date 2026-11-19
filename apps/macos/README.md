@@ -8,16 +8,16 @@ SwiftUI `MenuBarExtra` 常驻入口（图标 + 进行中 Run 数徽标）、`LSU
 ## 构建 / 测试 / 冒烟（不打开 Xcode）
 
 ```sh
-swift build                 # 或 ../../scripts/build_macos_app.sh
+swift build                 # 或 ./scripts/build_macos_app.sh
 swift test                  # 协议客户端、缓存、缓存优先、口径规则、详情模型单测
-../../scripts/smoke_macos_app.sh   # 构建后以 --smoke-test 自检并退出
-../../scripts/build_app.sh dev     # 可安装 Dev 版 .app + zip（内置 Python 运行时）
-../../scripts/build_app.sh dist    # 正式分发 .app + DMG
+./scripts/smoke_macos_app.sh   # 构建后以 --smoke-test 自检并退出
+./scripts/build_app.sh dev     # 可安装 Dev 版 .app + zip（内置 Python 运行时）
+./scripts/build_app.sh dist    # 正式分发 .app + DMG
 ```
 
 最低 macOS 13（`Package.swift` platforms）；Apple Silicon。可安装包的
 构建、内置运行时固定版本与校验和、dev/dist 区分、安装升级回退说明见
-[docs/app-installation.md](../../docs/app-installation.md)（Stage 5 / T012）。
+[docs/app-installation.md](../../tools/orx-analytics/docs/app-installation.md)（Stage 5 / T012）。
 
 ## 引擎由 App 启动管理（设计 §9）
 
@@ -75,5 +75,5 @@ analytics.db 需要跨版本打开，先备份再放行（升级保护）。引�
 - 关闭详情窗口应用继续驻留菜单栏，只有“退出”结束；清理显示缓存是设置里
   单独、明确的操作；退出/卸载不删除 ORX 项目数据（设计 §9）。
 
-引擎协议契约见 `src/orxanalytics/engine.py` 与 `src/orxanalytics/query_model.py`
+引擎协议契约见 `tools/orx-analytics/src/orxanalytics/engine.py` 与 `tools/orx-analytics/src/orxanalytics/query_model.py`
 （本仓 Python 侧，Stage 2 交付）。

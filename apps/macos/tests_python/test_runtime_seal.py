@@ -34,14 +34,9 @@ import textwrap
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CHECK_SCRIPT = REPO_ROOT / "scripts" / "check_runtime_seal.py"
-
-# The prescribed check runs pytest from the ORX repository root, where
-# neither the clone root nor its scripts/ package is importable (and the
-# ORX root has its own scripts/ that must not shadow the clone's).
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+APP_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+CHECK_SCRIPT = APP_SCRIPTS / "check_runtime_seal.py"
+sys.path.insert(0, str(APP_SCRIPTS))
 
 pytestmark = pytest.mark.skipif(
     shutil.which("codesign") is None,
@@ -220,7 +215,7 @@ def test_app_launch_environment_is_adversarial_never_masking(monkeypatch,
     steered outside the user's live dir, and the bytecode value set to
     "0" — a WRITE-ENABLE value on CPython 3.12, so a missing fix cannot
     hide behind it."""
-    from scripts.check_runtime_seal import app_launch_environment
+    from check_runtime_seal import app_launch_environment
 
     monkeypatch.setenv("ORX_ANALYTICS_ENGINE_PYTHON", "/dev/python")
     monkeypatch.setenv("ORX_ANALYTICS_ENGINE_SERVE", "/checkout/serve.py")
@@ -238,7 +233,7 @@ def test_app_launch_environment_is_adversarial_never_masking(monkeypatch,
 
 
 def test_snapshot_diff_classifies_added_bytecode():
-    from scripts.check_runtime_seal import snapshot_diff
+    from check_runtime_seal import snapshot_diff
 
     before = {
         "Contents/Info.plist": {"type": "file", "size": 1, "sha256": "a"},
@@ -265,7 +260,7 @@ def test_snapshot_diff_classifies_added_bytecode():
 
 
 def test_snapshot_diff_clean_when_identical():
-    from scripts.check_runtime_seal import snapshot_diff
+    from check_runtime_seal import snapshot_diff
 
     snapshot = {"Contents/Info.plist": {"type": "file", "size": 1,
                                         "sha256": "a"}}
@@ -408,7 +403,7 @@ def test_refuses_evidence_dir_inside_the_app(tmp_path):
     not write anything into the refused location."""
     import json
 
-    from scripts.check_runtime_seal import is_inside
+    from check_runtime_seal import is_inside
 
     app = tmp_path / "Guarded.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)

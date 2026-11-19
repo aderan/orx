@@ -1,0 +1,70 @@
+name: ORX packages and macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  orx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: ORX tests without external acceptance inputs
+        run: |
+          uv run --locked pytest -q --ignore=tests/test_joint_release.py \
+            --deselect=tests/test_m12_acceptance.py::test_dogfood_readonly_report \
+            --deselect=tests/test_m12_acceptance.py::test_dogfood_writes_only_temporary_artifacts
+      - name: ORX wheel installation and execution
+        run: uv run --locked python scripts/check_release.py
+
+  analytics:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.14"
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tools/orx-analytics
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -o addopts= -q
+      - run: python scripts/check_install.py
+
+  joint-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Swift tests, package installs, and bundled engine acceptance
+        run: |
+          uv run --locked python scripts/joint_release.py monorepo \
+            --work-dir "$RUNNER_TEMP/orx-candidate"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: joint-macos-evidence
+          path: |
+            ${{ runner.temp }}/orx-candidate/candidate.json
+            ${{ runner.temp }}/orx-candidate/SHA256SUMS.txt
+            ${{ runner.temp }}/orx-candidate/logs/

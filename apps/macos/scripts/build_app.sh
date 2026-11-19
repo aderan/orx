@@ -36,7 +36,9 @@
 # var/runtime-cache/ and its SHA256 is verified on EVERY use.
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$APP_DIR/../.." && pwd)"
+ANALYTICS_DIR="$ROOT/tools/orx-analytics"
 
 usage() {
   echo "usage: $0 [dev|dist|internal-preview|official]" \
@@ -65,7 +67,7 @@ esac
 command -v python3 >/dev/null 2>&1 \
   || { echo "build_app.sh: python3 is required (channel gates in scripts/app_distribution.py)" >&2; exit 1; }
 PY="$(command -v python3)"
-GATE="$ROOT/scripts/app_distribution.py"
+GATE="$APP_DIR/scripts/app_distribution.py"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/orx-build-app.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -92,13 +94,13 @@ eval "$("$PY" "$GATE" emit-env "$MODE_ARG")"
 # ---- app identity ---------------------------------------------------------
 # The software version has a single source of truth:
 # src/orxanalytics/__init__.py __version__ (CONTRIBUTING 发布检查).
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ROOT/src/orxanalytics/__init__.py")
+VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ANALYTICS_DIR/src/orxanalytics/__init__.py")
 [ -n "$VERSION" ] || { echo "build_app.sh: cannot read __version__" >&2; exit 1; }
 COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)
 BUILD=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "nogit")
 FLAVOR="$MODE"
 
-DIST_DIR="$ROOT/var/dist"
+DIST_DIR="${ORX_APP_DIST_DIR:-$ROOT/var/dist}"
 STAGE="$DIST_DIR/$MODE"
 APP="$STAGE/$APP_NAME.app"
 # Channel token precedes the mode token so both stay machine-greppable
@@ -139,7 +141,7 @@ PBS_PYTHON="cpython-3.12.8"
 PBS_NAME="${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only"
 PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${PBS_NAME}.tar.gz"
 PBS_SHA256="e29003b69465c33692830032d9d237d84ea43a2e8461db9134641640fb49f040"
-CACHE_DIR="$ROOT/var/runtime-cache"
+CACHE_DIR="${ORX_APP_RUNTIME_CACHE:-$ROOT/var/runtime-cache}"
 TARBALL="$CACHE_DIR/$PBS_NAME.tar.gz"
 
 mkdir -p "$CACHE_DIR" "$STAGE"
@@ -153,8 +155,8 @@ echo "$PBS_SHA256  $TARBALL" | shasum -a 256 -c - >/dev/null \
 echo "runtime: $PBS_NAME (sha256 verified)"
 
 # ---- 1. Swift release binary (SwiftPM, Xcode-free) ------------------------
-"$ROOT/scripts/build_macos_app.sh" release
-BIN="$ROOT/apps/macos/.build/release/ORXAnalyticsApp"
+"$APP_DIR/scripts/build_macos_app.sh" release
+BIN="$APP_DIR/.build/release/ORXAnalyticsApp"
 
 ARCH=$(lipo -info "$BIN" 2>/dev/null || file "$BIN")
 case "$ARCH" in
@@ -182,7 +184,7 @@ mv "$APP/Contents/Resources/python.tmp" "$APP/Contents/Resources/python"
 # runs `<bundled python> -m orxanalytics.engine` with PYTHONPATH here.
 rm -rf "$APP/Contents/Resources/orxanalytics"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-  "$ROOT/src/orxanalytics/" "$APP/Contents/Resources/orxanalytics/"
+  "$ANALYTICS_DIR/src/orxanalytics/" "$APP/Contents/Resources/orxanalytics/"
 [ -f "$APP/Contents/Resources/orxanalytics/__init__.py" ] \
   || { echo "build_app.sh: analytics package missing from staging" >&2; exit 1; }
 # The app's upgrade guard reads this to decide backup-before-migrate.
@@ -192,7 +194,7 @@ printf '%s\n' "$VERSION" > "$APP/Contents/Resources/orxanalytics-version.txt"
 # the engine's public serve API (acquire + start_server + supervisor).
 # `python -m orxanalytics.engine` currently never binds the socket —
 # see the wrapper's docstring and docs/app-installation.md.
-cp "$ROOT/apps/macos/Resources/orx_engine_serve.py" \
+cp "$APP_DIR/Resources/orx_engine_serve.py" \
    "$APP/Contents/Resources/orx_engine_serve.py"
 
 # In-app distribution manifest: channel, audience, Gatekeeper limit,

@@ -10,9 +10,10 @@ engine would over the socket. The Swift test
 `ORX_WIRE_FIXTURES` points at the output directory, proving the Swift
 payload models track the Python wire format.
 
-Usage (from the repository root, inside the repo virtualenv):
+Usage (from the repository root):
 
-    .venv/bin/python apps/macos/scripts/gen_wire_fixtures.py <out-dir>
+    uv run --no-project --with-editable './tools/orx-analytics[dev]' \
+        python apps/macos/scripts/gen_wire_fixtures.py <out-dir>
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO / "tests"))
+sys.path.insert(0, str(REPO / "tools" / "orx-analytics" / "tests"))
 
 from conftest import make_codex_rollout, make_orx_db, make_zcode_db  # noqa: E402
 from test_query_model import (  # noqa: E402

@@ -26,10 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts import app_distribution as ad
+APP_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(APP_SCRIPTS))
+import app_distribution as ad
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BUILD_APP = REPO_ROOT / "scripts" / "build_app.sh"
+BUILD_APP = APP_SCRIPTS / "build_app.sh"
 
 FULL_COMMIT = "07ab676e3f6499f8b636354c670de7b11ac15e69"
 DEVID_HASH = "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678"

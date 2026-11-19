@@ -8,9 +8,9 @@
 # status — no GUI session, no live engine, no real projects.
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-"$ROOT/scripts/build_macos_app.sh" debug
+"$APP_DIR/scripts/build_macos_app.sh" debug
 
-BIN="$ROOT/apps/macos/.build/debug/ORXAnalyticsApp"
+BIN="$APP_DIR/.build/debug/ORXAnalyticsApp"
 "$BIN" --smoke-test

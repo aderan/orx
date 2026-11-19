@@ -5,9 +5,8 @@
 # Usage: scripts/build_macos_app.sh [debug|release]
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-debug}"
-APP_DIR="$ROOT/apps/macos"
 BIN="$APP_DIR/.build/$CONFIG/ORXAnalyticsApp"
 
 cd "$APP_DIR"

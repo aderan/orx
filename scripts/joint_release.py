@@ -111,6 +111,7 @@ book; docs/package-acceptance.md §7 for the joint layer.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -1911,13 +1912,15 @@ def _evidence_json(marker: str, log_rel: str) -> str:
     })
 
 
-def engine_snapshot_count(analytics_db: Path, project_key: str) -> int:
+def engine_snapshot_count(analytics_db: Path, project_key: str, *,
+                          latest_id: bool = False) -> int:
     if not analytics_db.is_file():
         return 0
     conn = sqlite3.connect(f"file:{analytics_db}?mode=ro", uri=True)
     try:
+        aggregate = "COALESCE(MAX(snapshot_id), 0)" if latest_id else "COUNT(*)"
         row = conn.execute(
-            "SELECT COUNT(*) FROM orx_snapshots WHERE project_key = ?",
+            f"SELECT {aggregate} FROM orx_snapshots WHERE project_key = ?",
             (project_key,)).fetchone()
         return row[0]
     except sqlite3.Error:
@@ -2080,7 +2083,8 @@ def stop_all_engines() -> None:
 
 def bundle_engine_refresh(handle: dict, analytics_db: Path,
                           project_key: str, expect_snapshots: int,
-                          reason: str = "panel-open") -> dict:
+                          reason: str = "panel-open", *,
+                          latest_id: bool = False) -> dict:
     """Send one refresh.request through the socket and wait until the
     project's snapshot count reaches ``expect_snapshots`` (the engine's
     coalesced collect actually ran)."""
@@ -2092,8 +2096,10 @@ def bundle_engine_refresh(handle: dict, analytics_db: Path,
     client.close()
     deadline = time.monotonic() + _ENGINE_REFRESH_TIMEOUT_SEC
     while time.monotonic() < deadline:
-        if engine_snapshot_count(analytics_db, project_key) >= expect_snapshots:
-            return {"refresh": response, "snapshots": expect_snapshots}
+        position = engine_snapshot_count(analytics_db, project_key,
+                                         latest_id=latest_id)
+        if position >= expect_snapshots:
+            return {"refresh": response, "snapshots": position}
         time.sleep(0.3)
     raise StageFailure(
         "exercise", "engine-refresh-stalled",
@@ -2103,7 +2109,8 @@ def bundle_engine_refresh(handle: dict, analytics_db: Path,
 
 
 def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
-                    *, app_dir: Path, stand_in: bool) -> dict:
+                    *, app_dir: Path, stand_in: bool,
+                    bounded_snapshots: bool = False) -> dict:
     """The full joint exercise: installed-wheel CLI lifecycle on an
     isolated project + the app-bundle engine connection. ``stand_in``
     only changes HONESTY LABELING (the record says so); the machinery
@@ -2246,7 +2253,8 @@ def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
     files_before_collect_1 = sorted(
         p.name for p in (proj / ".orx").iterdir()
         if not re.match(r"state\.db-(wal|shm|journal)", p.name))
-    bundle_engine_refresh(handle, analytics_db, project_key, 1)
+    first_collect = bundle_engine_refresh(handle, analytics_db, project_key, 1,
+                                          latest_id=bounded_snapshots)
     overview_paused = EngineClient(handle["socket"]).request(
         {"op": "overview", "protocol_version": 1})
     _require(
@@ -2392,8 +2400,9 @@ def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
     files_before_collect_2 = sorted(
         p.name for p in (proj / ".orx").iterdir()
         if not re.match(r"state\.db-(wal|shm|journal)", p.name))
-    bundle_engine_refresh(handle, analytics_db, project_key, 2,
-                          reason="background")
+    next_snapshot = first_collect["snapshots"] + 1 if bounded_snapshots else 2
+    bundle_engine_refresh(handle, analytics_db, project_key, next_snapshot,
+                          reason="background", latest_id=bounded_snapshots)
     overview_final = EngineClient(handle["socket"]).request(
         {"op": "overview", "protocol_version": 1})
     stop_bundle_engine(handle)
@@ -2419,9 +2428,10 @@ def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
     _require(non_orx == 0,
              "engine mirrored real-session (zcode/codex/cursor) sources —"
              " isolation broken")
-    _require(snapshots == 2,
-             f"expected exactly 2 snapshots after repeated collection,"
-             f" found {snapshots}")
+    expected_snapshots = 1 if bounded_snapshots else 2
+    _require(snapshots == expected_snapshots,
+             f"expected {expected_snapshots} retained snapshots after repeated"
+             f" collection, found {snapshots}")
     _require({"paused", "done", "cancelled"} <= goals,
              f"engine never mirrored the exercised goal states verbatim:"
              f" {goals}")
@@ -3709,6 +3719,150 @@ def stage_self_test(work_dir: Path, log: StageLog) -> dict:
     return report
 
 
+def source_constant(checkout: Path, path: str, name: str):
+    tree = ast.parse((checkout / path).read_text())
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in statement.targets):
+            return ast.literal_eval(statement.value)
+    raise JointReleaseError(f"{path} does not declare {name}")
+
+
+def stage_monorepo(work_dir: Path, log: StageLog, commit: str, channel: str,
+                   decision: Path | None) -> dict:
+    checkout = clone_commit(REPO_ROOT, commit, work_dir / "checkout")
+    analytics = checkout / "tools" / "orx-analytics"
+    macos = checkout / "apps" / "macos"
+    dist = work_dir / "dist"
+    dist.mkdir()
+    env = isolated_env(work_dir / "home")
+    # An explicit cache only supplies the pinned, checksum-verified runtime.
+    if cache := os.environ.get("ORX_APP_RUNTIME_CACHE"):
+        env["ORX_APP_RUNTIME_CACHE"] = str(Path(cache).resolve())
+    if decision:
+        env["ORX_DISTRIBUTION_DECISION"] = str(decision.resolve())
+
+    checks = {}
+
+    def run(name: str, command: list[str], cwd: Path, **extra_env: str) -> None:
+        result = _run(command, cwd=cwd, env={**env, **extra_env},
+                      timeout=_BATTERY_TIMEOUT_SEC)
+        log.command(command, result, env_note=f"frozen monorepo: {name}")
+        checks[name] = result.returncode
+        _require(result.returncode == 0, f"{name} failed (see {log.rel})")
+
+    analytics_python = ["uv", "run", "--no-project", "--python", "3.12",
+                        "--with-editable", f"{analytics}[dev]", "python"]
+    run("orx_build", ["uv", "build", "--out-dir", str(dist)], checkout)
+    run("analytics_build", ["uv", "build", "--out-dir", str(dist)], analytics)
+    run("orx_install", ["uv", "run", "--locked", "python", "scripts/check_release.py"],
+        checkout)
+    run("analytics_install", [*analytics_python, "scripts/check_install.py"], analytics)
+    run("analytics_pytest", [*analytics_python, "-m", "pytest"], analytics)
+    run("app_packaging_pytest", ["uv", "run", "--locked", "pytest", "-q",
+                                "apps/macos/tests_python"], checkout)
+    wire = work_dir / "wire"
+    run("swift_wire_fixtures", [*analytics_python,
+                                str(macos / "scripts" / "gen_wire_fixtures.py"),
+                                str(wire)], checkout)
+    run("swift_test", ["swift", "test"], macos, ORX_WIRE_FIXTURES=str(wire))
+
+    mode = CHANNEL_APP_MODE[channel]
+    run("app_build", [str(macos / "scripts" / "build_app.sh"), mode], checkout,
+        ORX_APP_DIST_DIR=str(dist))
+    suffix = "zip" if mode == "dev" else "dmg"
+    paths = {}
+    for name, pattern in {
+            "orx_wheel": "orx_agent-*.whl",
+            "orx_sdist": "orx_agent-*.tar.gz",
+            "analytics_wheel": "orx_analytics-*.whl",
+            "analytics_sdist": "orx_analytics-*.tar.gz",
+            "app_archive": f"*-{mode}-macos13-arm64.{suffix}"}.items():
+        candidates = list(dist.glob(pattern))
+        _require(len(candidates) == 1, f"expected exactly one {name}")
+        paths[name] = candidates[0]
+    paths["app_build_record"] = Path(str(paths["app_archive"]) + ".json")
+    artifacts = {name: {"path": str(path.relative_to(work_dir)),
+                        "sha256": sha256_file(path)}
+                 for name, path in paths.items()}
+    bundles = {}
+    for package, distribution in (("orx", "orx-agent"),
+                                  ("analytics", "orx-analytics")):
+        wheel = wheel_metadata(paths[f"{package}_wheel"])
+        sdist = sdist_metadata(paths[f"{package}_sdist"])
+        _require(wheel == sdist and wheel["Name"] == distribution,
+                 f"{package} wheel/sdist metadata mismatch")
+        bundles[package] = wheel["Version"]
+
+    app_dir = extract_app_archive(paths["app_archive"], work_dir / "app")
+    facts = gather_app_facts(app_dir)
+    _require(facts["source_commit"] == commit and facts["channel"] == channel
+             and facts["cf_bundle_version_string"] == bundles["analytics"]
+             and facts["orxanalytics_version_txt"] == bundles["analytics"]
+             and facts["bundled_python_exit"] == 0,
+             "App provenance or runtime differs from the frozen candidate")
+    signature = signature_evidence(app_dir)
+    problems = candidate_signature_problems(signature, channel)
+    _require(not problems, "; ".join(problems))
+    info = plistlib.loads((app_dir / "Contents" / "Info.plist").read_bytes())
+    executable = app_dir / "Contents" / "MacOS" / info["CFBundleExecutable"]
+    run("app_smoke", [str(executable), "--smoke-test"], work_dir)
+    exercise = exercise_driver(work_dir, {"binding": {}, "artifacts": artifacts},
+                               log, app_dir=app_dir, stand_in=False,
+                               bounded_snapshots=True)
+    checks["exercise"] = 0
+    report = {
+        "format": "orx-monorepo-candidate-v1",
+        "source_commit": commit,
+        "channel": channel,
+        "versions": {**bundles, "app": facts["cf_bundle_version_string"]},
+        "contracts": {
+            "orx_schema": source_constant(checkout, "src/orx/state.py",
+                                          "CODE_SCHEMA_VERSION"),
+            "analytics_store": source_constant(analytics, "src/orxanalytics/store.py",
+                                                "STORE_VERSION"),
+            "engine_protocol": source_constant(
+                analytics, "src/orxanalytics/query_model.py", "PROTOCOL_VERSION"),
+        },
+        "artifacts": artifacts,
+        "app": facts,
+        "signature": signature,
+        "checks": checks,
+        "joint_exercise": exercise,
+    }
+    (work_dir / "SHA256SUMS.txt").write_text("".join(
+        f"{entry['sha256']}  {entry['path']}\n" for entry in artifacts.values()))
+    (work_dir / "candidate.json").write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def run_monorepo(args) -> int:
+    work_dir = (args.work_dir or REPO_ROOT / "dist" / "monorepo").resolve()
+    log = None
+    try:
+        commit = _git(REPO_ROOT, "rev-parse", "--verify", "--end-of-options",
+                      f"{args.commit}^{{commit}}")
+        _require(not work_dir.exists() or
+                 (work_dir.is_dir() and not any(work_dir.iterdir())),
+                 "monorepo candidate requires an empty work directory")
+        log = StageLog(work_dir, "monorepo")
+        report = stage_monorepo(work_dir, log, commit, args.channel, args.decision)
+        print(json.dumps(report, indent=2))
+        return 0
+    except StageFailure as exc:
+        print(json.dumps({"error": exc.message, "code": exc.code,
+                          "detail": exc.detail}), file=sys.stderr)
+        return 1
+    except (JointReleaseError, OSError, subprocess.TimeoutExpired) as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+    finally:
+        stop_all_engines()
+        if log is not None:
+            log.close()
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -3739,6 +3893,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="stage", required=True)
     sub.add_parser("self-test", parents=[common])
     sub.add_parser("freeze", parents=[common])
+    monorepo = sub.add_parser(
+        "monorepo", help="build and exercise a candidate from one ORX commit")
+    monorepo.add_argument("--work-dir", type=Path)
+    monorepo.add_argument("--commit", default="HEAD")
+    monorepo.add_argument("--channel", choices=CHANNELS, default="internal-preview")
+    monorepo.add_argument("--decision", type=Path)
     sub.add_parser("battery", parents=[common])
     build_p = sub.add_parser("build", parents=[common])
     build_p.add_argument("--build-app", action="store_true",
@@ -3775,6 +3935,8 @@ def main(argv: list[str] | None = None) -> int:
     gen_p.add_argument("--dest", type=Path,
                        default=REPO_ROOT / JOINT_FIXTURE_DIR)
     args = parser.parse_args(argv)
+    if args.stage == "monorepo":
+        return run_monorepo(args)
 
     # The candidate phase re-verifies a frozen candidate manifest
     # read-only; it shares nothing with the work-dir acceptance verify.
