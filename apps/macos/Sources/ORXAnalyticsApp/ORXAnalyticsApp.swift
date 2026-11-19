@@ -47,6 +47,7 @@ private enum AppRuntime {
 ///   implements no token math of its own.
 @main
 struct ORXAnalyticsApp: App {
+    @NSApplicationDelegateAdaptor(ORXApplicationDelegate.self) private var appDelegate
     @StateObject private var model: AppModel
 
     init() {
@@ -108,6 +109,19 @@ struct ORXAnalyticsApp: App {
             SettingsView()
                 .environmentObject(model)
         }
+    }
+}
+
+/// Finder reopens the existing application and brings its one main window forward.
+@MainActor
+private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        guard let open = RuntimeCoordinator.shared.windowActions.openRunDetail else {
+            return true
+        }
+        open()
+        return false
     }
 }
 
