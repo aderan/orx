@@ -1,8 +1,9 @@
 # ORX 安装、升级与回退（设计 §9）
 
 App 交付物是自带 Python 运行时的 `ORX.app`：干净、无开发环境的
-Mac（最低 macOS 13，Apple Silicon）无需预装 Python、uv 或 Homebrew，复制到
-「应用程序」后双击即出现菜单栏图标。本文是安装、升级、回退、卸载与缓存的
+Mac（最低 macOS 13，Apple Silicon）无需预装 Python、uv 或 Homebrew。
+应用复制到「应用程序」后，从 Finder 首次启动并确认菜单栏出现 ORX 图标。
+本文是安装、升级、回退、卸载与缓存的
 唯一操作说明；CLI 安装见 [installation.md](installation.md)。
 
 ## 分发渠道（G011 T005：内部预览 ≠ 正式分发）
@@ -68,7 +69,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 2. 首次双击会被 Gatekeeper 拦截（ad-hoc 签名、未公证是本渠道的如实
    属性，不是待修复缺陷）。右键点 App 选「打开」确认一次；若仍被拦，
    在终端执行
-   `xattr -dr com.apple.quarantine "/Applications/ORX Analytics (Internal Preview).app"`。
+   `xattr -dr com.apple.quarantine "/Applications/ORX (Internal Preview).app"`。
    **此绕过步骤只属于内部预览渠道，永远不得作为正式渠道的安装验证
    证据**（正式渠道的通过标准见下一节，与 quarantine 无关）。
 3. 菜单栏出现 ORX 图标即安装成功；「诊断 → 构建渠道」会显示内部预览
@@ -81,7 +82,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 2. 双击即可运行：包已 Developer ID 签名、公证并装订票证，Gatekeeper
    直接放行——**无需右键打开，也绝不需要清除 quarantine**。
 3. 安装验证（可选，面向发布前检查）：
-   `spctl --assess --type execute -vv "/Applications/ORX Analytics.app"`
+   `spctl --assess --type execute -vv "/Applications/ORX.app"`
    应输出 `accepted`（来源 `Developer ID`）。构建时已对副本做过同一
    评估并记录在构建记录里；清除 quarantine 不属于本渠道的任何步骤。
 
