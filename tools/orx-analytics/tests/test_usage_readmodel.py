@@ -9,6 +9,9 @@ structurally separate (no number mixes them).
 
 from __future__ import annotations
 
+from pathlib import Path
+import sqlite3
+
 import pytest
 
 from orxanalytics import correlate, metrics, registry, usage_readmodel
@@ -883,3 +886,29 @@ def test_cross_project_same_run_id_no_bleed(usage_world):
     assert r_b["tokens"]["input_tokens"] == 398699 + 1000 + 5000
     assert r_a["snapshot_id"] != r_b["snapshot_id"]
     assert r_b["books"]["unattributed_within_run"]["attempts"] == 0
+
+
+def test_task_detail_reports_the_original_model_request_and_linked_route(usage_world):
+    source = Path(usage_world["proj_a"]) / ".orx/state.db"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            "CREATE TABLE routing_decisions (id INTEGER PRIMARY KEY,"
+            " attempt_id INTEGER, selected TEXT, reason TEXT, created_at TEXT);"
+            "INSERT INTO routing_decisions VALUES"
+            " (1, 202, 'retry-profile', 'capacity fallback', '2026-10-04T12:08:00Z');"
+            "UPDATE attempts SET model='requested-model', actual_model='reported-model',"
+            " requested_effort='high', actual_effort='medium', fallback_used=1"
+            " WHERE id=202;"
+        )
+    store = usage_world["store"]
+    result = import_orx_project(store, usage_world["proj_a"])
+    assert "error" not in result
+    payload = usage_readmodel.task_usage(store, usage_world["proj_a"], "R001", 11, "T001")
+    attempts = {entry["attempt_id"]: entry for entry in payload["attempts"]}
+    assert attempts[202]["routing"] == {
+        "requested_model": "requested-model", "actual_model": "reported-model",
+        "requested_effort": "high", "actual_effort": "medium",
+        "fallback_used": True, "profile": "retry-profile",
+        "reason": "capacity fallback",
+    }
+    assert attempts[201]["routing"]["reason"] is None

@@ -47,6 +47,9 @@ struct QuickPanelView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text("ORX").font(.headline)
+                    if AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])?.isInternalPreview == true {
+                        Text("Internal Preview").font(.caption).foregroundStyle(.secondary)
+                    }
                     if model.isRefreshing {
                         ProgressView()
                             .controlSize(.small)

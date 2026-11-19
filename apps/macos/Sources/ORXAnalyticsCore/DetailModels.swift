@@ -210,6 +210,25 @@ public struct SessionLink: Codable, Equatable {
 /// One attempt row of `task_usage.attempts[]` — result, usage, session
 /// association, failure reason and missing-usage reason (the evidence
 /// the 尝试与证据 zone shows).
+public struct AttemptRouting: Codable, Equatable {
+    public let requestedModel: String?
+    public let actualModel: String?
+    public let requestedEffort: String?
+    public let actualEffort: String?
+    public let profile: String?
+    public let reason: String?
+    public let fallbackUsed: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case profile, reason
+        case requestedModel = "requested_model"
+        case actualModel = "actual_model"
+        case requestedEffort = "requested_effort"
+        case actualEffort = "actual_effort"
+        case fallbackUsed = "fallback_used"
+    }
+}
+
 public struct AttemptDetail: Codable, Equatable, Identifiable {
     public let attemptID: Int
     public let role: String?
@@ -221,6 +240,7 @@ public struct AttemptDetail: Codable, Equatable, Identifiable {
     public let endedAt: String?
     public let harness: String?
     public let model: String?
+    public private(set) var routing: AttemptRouting?
     public let usageMissingReason: String?
     public let observation: ObservationBlock?
     public let sessionLink: SessionLink?
@@ -228,7 +248,7 @@ public struct AttemptDetail: Codable, Equatable, Identifiable {
     public var id: Int { attemptID }
 
     enum CodingKeys: String, CodingKey {
-        case role, result, harness, model
+        case role, result, harness, model, routing
         case attemptID = "attempt_id"
         case revisionID = "revision_id"
         case taskID = "task_id"

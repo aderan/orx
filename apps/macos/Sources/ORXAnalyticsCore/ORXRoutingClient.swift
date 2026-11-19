@@ -40,6 +40,44 @@ public struct RoutingSelection: Decodable, Sendable {
     public let verifier: RoutingGroup
 }
 
+public enum RoutingValue: Codable, Equatable, Sendable {
+    case text(String)
+    case profiles([String])
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if let text = try? value.decode(String.self) {
+            self = .text(text)
+        } else {
+            self = .profiles(try value.decode([String].self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let text): try container.encode(text)
+        case .profiles(let names): try container.encode(names)
+        }
+    }
+}
+
+public struct RoutingEntry: Decodable, Sendable {
+    public let key: String
+    public let value: RoutingValue
+    public let origin: String
+}
+
+public struct RoutingRequest: Encodable, Sendable {
+    public let revision: String
+    public let changes: [String: RoutingValue]
+
+    public init(revision: String, changes: [String: RoutingValue]) {
+        self.revision = revision
+        self.changes = changes
+    }
+}
+
 public struct RoutingSnapshot: Decodable, Sendable {
     public let contract: Int
     public let orxVersion: String
@@ -48,6 +86,7 @@ public struct RoutingSnapshot: Decodable, Sendable {
     public let targetPath: String
     public let revision: String
     public let availableProfiles: [String]
+    public let values: [RoutingEntry]
     public let modelSelection: RoutingSelection
 }
 
@@ -103,12 +142,26 @@ public struct ORXRoutingClient: Sendable {
     }
 
     public func read(project: String?) async throws -> RoutingSnapshot {
+        try await execute(project: project, request: nil, apply: false)
+    }
+
+    public func preview(project: String?, request: RoutingRequest) async throws -> RoutingSnapshot {
+        try await execute(project: project, request: request, apply: false)
+    }
+
+    public func save(project: String?, request: RoutingRequest) async throws -> RoutingSnapshot {
+        try await execute(project: project, request: request, apply: true)
+    }
+
+    private func execute(project: String?, request: RoutingRequest?,
+                         apply: Bool) async throws -> RoutingSnapshot {
         try await Task.detached(priority: .userInitiated) {
-            try query(project: project)
+            try query(project: project, request: request, apply: apply)
         }.value
     }
 
-    private func query(project: String?) throws -> RoutingSnapshot {
+    private func query(project: String?, request: RoutingRequest?,
+                       apply: Bool) throws -> RoutingSnapshot {
         let fm = FileManager.default
         let scratch = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                  appropriateFor: fm.temporaryDirectory, create: true)
@@ -124,6 +177,12 @@ public struct ORXRoutingClient: Sendable {
         if let project {
             process.arguments?.append(contentsOf: ["--project-root", project])
         }
+        if let request {
+            let file = scratch.appendingPathComponent("request.json")
+            try JSONEncoder().encode(request).write(to: file, options: .atomic)
+            process.arguments?.append(contentsOf: ["--request", file.path])
+        }
+        if apply { process.arguments?.append("--apply") }
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
         let finished = DispatchSemaphore(value: 0)

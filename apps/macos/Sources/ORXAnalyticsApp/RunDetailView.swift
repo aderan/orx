@@ -711,8 +711,10 @@ struct RunDetailView: View {
                 Text(attempt.result ?? "进行中")
                     .font(.caption)
                     .foregroundStyle(attempt.result == "failed" ? .orange : .secondary)
-                Text(attempt.model ?? "模型 —").font(.caption)
-                    .foregroundStyle(.secondary)
+                if attempt.routing == nil {
+                    Text(attempt.model ?? "模型未知").font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text("\(DisplayTime.short(attempt.startedAt) ?? attempt.startedAt ?? "—") → \(DisplayTime.short(attempt.endedAt) ?? attempt.endedAt ?? "进行中")")
                     .font(.caption2)
@@ -730,6 +732,14 @@ struct RunDetailView: View {
                 }
             }
             .font(.caption)
+            if let routing = attempt.routing {
+                Text("请求  \(routing.requestedModel ?? "未知")  ·  推理 \(routing.requestedEffort ?? "未知")")
+                Text("实际  \(routing.actualModel ?? "未知")  ·  推理 \(routing.actualEffort ?? "未知")")
+                if let profile = routing.profile {
+                    Text("Profile  \(profile)\(routing.fallbackUsed == true ? " · 回退" : "")")
+                }
+                if let reason = routing.reason { Text(reason) }
+            }
             if let link = attempt.sessionLink {
                 Text("会话关联：\(link.sessionID ?? "—")（\(link.authority ?? "—") · \(link.confidence ?? "—")）")
                     .font(.caption2)

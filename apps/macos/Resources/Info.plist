@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>ORX Analytics</string>
+	<string>ORX</string>
 	<key>CFBundleDisplayName</key>
-	<string>ORX Analytics</string>
+	<string>ORX</string>
 	<key>CFBundleIdentifier</key>
 	<string>org.orxanalytics.macos</string>
 	<key>CFBundleShortVersionString</key>

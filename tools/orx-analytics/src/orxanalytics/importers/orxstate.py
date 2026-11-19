@@ -131,6 +131,12 @@ def import_orx_project(store: Store, project_key: str) -> dict:
                 ]
             if sv == "15":
                 tables += _V15_TABLES
+            # Older or minimal fixtures can lack the optional route journal.
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='routing_decisions'"
+            ).fetchone():
+                tables.append(("orx_routing_decisions", "routing_decisions",
+                               ["id", "attempt_id", "selected", "reason", "created_at"]))
             for mirror, src, cols in tables:
                 select_cols = ", ".join(cols)
                 n = 0

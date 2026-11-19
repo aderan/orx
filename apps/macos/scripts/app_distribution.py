@@ -67,7 +67,7 @@ CHANNEL_TO_MODE = {"internal-preview": "dev", "official": "dist"}
 CHANNEL_FACTS = {
     "internal-preview": {
         "mode": "dev",
-        "app_name": "ORX Analytics (Internal Preview)",
+        "app_name": "ORX (Internal Preview)",
         "bundle_id": "org.orxanalytics.macos.dev",
         "archive_suffix": "zip",
         "signing": "ad-hoc",
@@ -80,7 +80,7 @@ CHANNEL_FACTS = {
     },
     "official": {
         "mode": "dist",
-        "app_name": "ORX Analytics",
+        "app_name": "ORX",
         "bundle_id": "org.orxanalytics.macos",
         "archive_suffix": "dmg",
         "signing": "Developer ID Application + hardened runtime",

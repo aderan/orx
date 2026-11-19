@@ -118,12 +118,12 @@ def test_emit_env_is_eval_safe_shell():
         assert key.isidentifier() and key.isupper()
         assignments[key] = shlex.split(value)[0] if value else ""
     assert assignments["CHANNEL"] == "internal-preview"
-    assert assignments["APP_NAME"] == "ORX Analytics (Internal Preview)"
+    assert assignments["APP_NAME"] == "ORX (Internal Preview)"
     assert assignments["BUNDLE_ID"] == "org.orxanalytics.macos.dev"
     # Names contain spaces/parens: quoting must round-trip through a
     # real shell word-split.
     assert " ".join(shlex.split(
-        emitted.splitlines()[2].partition("=")[2])) == "ORX Analytics (Internal Preview)"
+        emitted.splitlines()[2].partition("=")[2])) == "ORX (Internal Preview)"
 
 
 def test_channel_facts_differ_in_every_visible_dimension():
@@ -494,8 +494,8 @@ def test_build_script_implements_the_official_gate_chain_for_real():
 def test_build_script_names_and_records_carry_the_channel():
     script = BUILD_APP.read_text(encoding="utf-8")
     # Archive names carry channel + mode tokens (joint-release glob
-    # contract: ORXAnalytics-*-<mode>-macos13-arm64.<suffix>).
-    assert "ORXAnalytics-${VERSION}-${CHANNEL}-${MODE}-macos13-arm64" in script
+    # contract: ORX-*-<mode>-macos13-arm64.<suffix>).
+    assert "ORX-${VERSION}-${CHANNEL}-${MODE}-macos13-arm64" in script
     # App-visible Info.plist channel keys and in-app manifest.
     assert "ORXAnalyticsChannel" in script
     assert "ORXAnalyticsSourceCommit" in script

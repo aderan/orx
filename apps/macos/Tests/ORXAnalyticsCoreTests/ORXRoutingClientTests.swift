@@ -22,6 +22,23 @@ final class ORXRoutingClientTests: XCTestCase {
             environment: ["PATH": "/usr/bin:/bin"]))
     }
 
+    func testUnsupportedInstallationIsReportedAsIncompatible() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tool = root.appendingPathComponent("orx")
+        try "#!/bin/sh\nexit 2\n".write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: tool.path)
+        do {
+            _ = try await ORXRoutingClient(executable: tool).read(project: nil)
+            XCTFail("Legacy executable unexpectedly returned an accepted routing contract")
+        } catch ORXRoutingError.incompatible(let path) {
+            XCTAssertEqual(path, tool.path)
+        }
+    }
+
     @MainActor
     func testTaskUsageOpensTheExactProjectWithoutClearingSelectedRun() {
         let model = AppModel(client: FakeEngineClient(), cache: OverviewCacheStore(directory: FileManager.default.temporaryDirectory))

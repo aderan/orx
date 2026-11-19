@@ -198,6 +198,14 @@ CREATE TABLE IF NOT EXISTS orx_attempts(
   nonce TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
+-- Optional routing facts are additive to store v4. Older readers ignore them.
+CREATE TABLE IF NOT EXISTS orx_routing_decisions(
+  snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL,
+  attempt_id INTEGER, selected TEXT, reason TEXT, created_at TEXT,
+  PRIMARY KEY(snapshot_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_orx_routing_attempt
+  ON orx_routing_decisions(snapshot_id, attempt_id);
 CREATE TABLE IF NOT EXISTS orx_verifications(
   snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL, revision_id INTEGER,
   task_id TEXT, attempt_id INTEGER, kind TEXT, command TEXT,
@@ -313,22 +321,23 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        meta = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+        row = (self.conn.execute(
+            "SELECT value FROM meta WHERE key='store_version'").fetchone() if meta else None)
+        version = row["value"] if row else None
+        if row and version != STORE_VERSION and version not in _MIGRATABLE_FROM:
+            self.conn.close()
+            raise RuntimeError(
+                f"analytics.db store_version {version} != {STORE_VERSION}; "
+                "this reader cannot open it")
         self.conn.executescript(SCHEMA)
-        cur = self.conn.execute(
-            "SELECT value FROM meta WHERE key='store_version'")
-        row = cur.fetchone()
         if row is None:
             self.conn.execute(
                 "INSERT INTO meta VALUES ('store_version', ?)", (STORE_VERSION,))
             self.conn.commit()
-        elif row["value"] == STORE_VERSION:
-            pass
-        elif row["value"] in _MIGRATABLE_FROM:
-            _migrate_store(self.conn, row["value"])
-        else:
-            raise RuntimeError(
-                f"analytics.db store_version {row['value']} != {STORE_VERSION}; "
-                "this reader cannot open it")
+        elif version in _MIGRATABLE_FROM:
+            _migrate_store(self.conn, version)
 
     # -- generic helpers -------------------------------------------------
     def upsert(self, table: str, row: dict[str, Any],

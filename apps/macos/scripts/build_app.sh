@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the ORX Analytics macOS app for ONE distribution channel
+# Build the ORX macOS app for ONE distribution channel
 # (design §9 / task T012; channel gates G011 T005).
 #
 # Bundles a PINNED python-build-standalone runtime plus this repo's
@@ -9,12 +9,12 @@
 #
 # Channels (never blurred; gate logic in scripts/app_distribution.py):
 #   internal-preview (mode `dev`)
-#     "ORX Analytics (Internal Preview).app", bundle id
+#     "ORX (Internal Preview).app", bundle id
 #     org.orxanalytics.macos.dev (separate defaults domain), ad-hoc
 #     signature, zip archive. Clearly labeled internal preview —
 #     NOT a formal installer.
 #   official (mode `dist`)
-#     "ORX Analytics.app", org.orxanalytics.macos, DMG. Requires the
+#     "ORX.app", org.orxanalytics.macos, DMG. Requires the
 #     FULL gate chain — Developer ID Application signing with hardened
 #     runtime (bundled Python and every nested Mach-O included),
 #     notarytool notarization, stapler, and a Gatekeeper install
@@ -97,7 +97,6 @@ eval "$("$PY" "$GATE" emit-env "$MODE_ARG")"
 VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ANALYTICS_DIR/src/orxanalytics/__init__.py")
 [ -n "$VERSION" ] || { echo "build_app.sh: cannot read __version__" >&2; exit 1; }
 COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)
-BUILD=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "nogit")
 FLAVOR="$MODE"
 
 DIST_DIR="${ORX_APP_DIST_DIR:-$ROOT/var/dist}"
@@ -105,8 +104,8 @@ STAGE="$DIST_DIR/$MODE"
 APP="$STAGE/$APP_NAME.app"
 # Channel token precedes the mode token so both stay machine-greppable
 # while remaining compatible with the joint-release archive contract
-# (ORXAnalytics-*-<mode>-macos13-arm64.<suffix>).
-ARCHIVE="$DIST_DIR/ORXAnalytics-${VERSION}-${CHANNEL}-${MODE}-macos13-arm64.${ARCHIVE_SUFFIX}"
+# (ORX-*-<mode>-macos13-arm64.<suffix>).
+ARCHIVE="$DIST_DIR/ORX-${VERSION}-${CHANNEL}-${MODE}-macos13-arm64.${ARCHIVE_SUFFIX}"
 
 # ---- 0. pre-build gates: decision fixed BEFORE building --------------------
 # Official builds REQUIRE the pre-fixed decision (channel + basis) and
@@ -223,7 +222,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleShortVersionString</key>
 	<string>$VERSION</string>
 	<key>CFBundleVersion</key>
-	<string>$VERSION+$FLAVOR+$BUILD</string>
+	<string>$VERSION</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>

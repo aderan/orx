@@ -1,4 +1,4 @@
-# ORX Analytics — macOS 菜单栏应用（apps/macos）
+# ORX — macOS 菜单栏应用（apps/macos）
 
 Swift Package（Xcode-free 构建链）承载设计稿 §7/§9 的原生外壳：
 SwiftUI `MenuBarExtra` 常驻入口（图标 + 进行中 Run 数徽标）、`LSUIElement`
@@ -77,3 +77,20 @@ analytics.db 需要跨版本打开，先备份再放行（升级保护）。引�
 
 引擎协议契约见 `tools/orx-analytics/src/orxanalytics/engine.py` 与 `tools/orx-analytics/src/orxanalytics/query_model.py`
 （本仓 Python 侧，Stage 2 交付）。
+
+## ORX 执行与配置
+
+菜单栏的「查看全部执行」打开一个 ORX 窗口。执行和用量沿用 Analytics
+引擎的历史、Run、Task 查询。从任务用量打开「模型与路由」时，页首选择器
+定位到该 Run 的完整项目路径。路由页也可选择用户默认或其他已登记项目。
+
+配置页优先在常见用户工具目录中查找 `orx`，并允许指定可执行文件绝对路径。
+页首显示实际使用的安装版本、目标层和文件路径。执行与用量仍由本地引擎
+提供，适用于只安装 Analytics 的环境。
+
+编辑规划深度或候选顺序后，点击「预览变更」核对目标层和新生效值，再点击
+「保存」。并发编辑导致预览失效时，重新载入后重做变更。ORX 按作用域
+校验 profile，并一次替换目标配置文件。后续派发读取新配置。已有尝试
+继续展示历史请求及可观测的实际模型、推理和已关联的路由记录。
+
+机器接口见 [桌面路由配置契约](../../docs/desktop-routing.md)。

@@ -203,16 +203,34 @@ def _observation(u: dict | None) -> dict | None:
                        "cached_input": u["cached_input"]}}
 
 
-def _attempt_details(atts: list[dict], canon: dict, links: list) -> list:
+def _attempt_details(store: Store, snap: int, atts: list[dict],
+                     canon: dict, links: list) -> list:
+    if not atts:
+        return []
+    ids = [a["id"] for a in atts]
+    placeholders = ",".join("?" for _ in ids)
+    routes = {row["attempt_id"]: row for row in store.conn.execute(
+        f"SELECT attempt_id, selected, reason FROM orx_routing_decisions "
+        f"WHERE snapshot_id=? AND attempt_id IN ({placeholders}) ORDER BY id",
+        (snap, *ids))}
     by_att = {l.attempt_id: l for l in links}
     out = []
     for a in atts:
+        route = routes.get(a["id"])
         d = {"attempt_id": a["id"], "role": a["role"],
              "revision_id": a["revision_id"], "task_id": a["task_id"],
              "result": a["result"], "failure_reason": a["failure_reason"],
              "started_at": a["started_at"], "ended_at": a["ended_at"],
              "harness": a["harness"],
              "model": a["actual_model"] or a["model"],
+             "routing": {
+                 "requested_model": a["model"], "actual_model": a["actual_model"],
+                 "requested_effort": a["requested_effort"], "actual_effort": a["actual_effort"],
+                 "profile": (route["selected"] if route is not None else None) or a["profile"],
+                 "reason": route["reason"] if route is not None else None,
+                 "fallback_used": (bool(a["fallback_used"])
+                                   if a["fallback_used"] is not None else None),
+             },
              "usage_missing_reason": a["usage_missing_reason"],
              "observation": _observation(canon.get(a["id"]))}
         link = by_att.get(a["id"])
@@ -271,7 +289,7 @@ def task_usage(store: Store, project_key: str, run_id: str,
                      "unassessed": len(atts) - observed - missing_recorded},
         "books": books,
         "normalized_processing": _normalized(rows, harness),
-        "attempts": _attempt_details(atts, canon, links),
+        "attempts": _attempt_details(store, snap, atts, canon, links),
         "attribution": {"rule": _RULE_TEXT["task"]},
     }
 
