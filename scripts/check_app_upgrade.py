@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -52,6 +53,16 @@ def checked_bundle(archive: Path, destination: Path) -> tuple[Path, dict]:
     return app, release.gather_app_facts(app)
 
 
+def engine_serving(path: Path) -> bool:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try:
+            probe.connect(str(path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            return False
+    return True
+
+
 @contextmanager
 def installed_app(app: Path, home: Path, data: Path, logfile: Path):
     """Launch the original signed executable. Own only its test engine child."""
@@ -60,8 +71,8 @@ def installed_app(app: Path, home: Path, data: Path, logfile: Path):
     env["ORX_ANALYTICS_HOME"] = str(data)
     env["PATH"] = "/usr/bin:/bin"
     executable = app / "Contents/MacOS/ORXAnalyticsApp"
-    socket = data / "engine.sock"
-    if socket.exists():
+    endpoint = data / "engine.sock"
+    if engine_serving(endpoint):
         raise RuntimeError("a previous engine still holds the rehearsal directory")
     with logfile.open("wb") as log:
         process = subprocess.Popen(
@@ -75,7 +86,7 @@ def installed_app(app: Path, home: Path, data: Path, logfile: Path):
             if process.poll() is not None:
                 raise RuntimeError(f"App quit with code {process.returncode} before serving, see {logfile}")
             try:
-                status = query(socket, "health")
+                status = query(endpoint, "health")
             except OSError:
                 time.sleep(0.2)
                 continue
@@ -100,10 +111,16 @@ def installed_app(app: Path, home: Path, data: Path, logfile: Path):
                     and str(data) in running.stdout):
                 os.kill(pid, signal.SIGTERM)
                 deadline = time.monotonic() + 10
-                while socket.exists() and time.monotonic() < deadline:
+                while time.monotonic() < deadline:
+                    state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                                           capture_output=True, text=True).stdout.strip()
+                    if not state or state.startswith("Z"):
+                        break
                     time.sleep(0.1)
-                if socket.exists():
-                    raise RuntimeError("the prior engine has not released its socket")
+                else:
+                    raise RuntimeError("the prior engine has not exited")
+                if engine_serving(endpoint):
+                    raise RuntimeError("an engine still serves the rehearsal directory")
 
 
 @contextmanager
