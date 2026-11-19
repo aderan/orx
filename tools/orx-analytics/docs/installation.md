@@ -8,8 +8,8 @@ macOS 菜单栏应用（自带内置 Python 运行时的可安装 `ORX Analytics
 的安装、升级、回退与卸载是独立流程，见
 [app-installation.md](app-installation.md)。
 
-当前包版本为 0.4.3，分发来源是本 GitHub 仓库。以下 `@main` 指主分支
-最新提交；需要可复现安装时用完整 commit SHA 替换 `main`。尚未发布到
+本目录的候选包版本为 0.4.4。已发布的历史版本及资产仍可从旧仓下载。
+以下 0.4.3 Git 示例用于安装历史版本。同仓候选使用下文的本地源码或 wheel。尚未发布到
 PyPI，不使用裸 `pip install orx-analytics` 作为本项目的安装方式。
 
 ## uv 工具环境（推荐）
@@ -18,7 +18,7 @@ PyPI，不使用裸 `pip install orx-analytics` 作为本项目的安装方式�
 安装 uv，再运行：
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@main'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 orx-analytics --version
 orx-analytics --help
 ```
@@ -31,10 +31,10 @@ uv 会为工具创建隔离环境；`--python 3.12` 明确指定满足最低要�
 同一仓库的 SSH 来源安装，不需要更改全局代理配置：
 
 ```sh
-uv tool install --python 3.12 'git+ssh://git@github.com/aderan/orx-analytics.git@main'
+uv tool install --python 3.12 'git+ssh://git@github.com/aderan/orx-analytics.git@v0.4.3'
 ```
 
-升级仍跟踪 main 的安装：
+已有旧仓 Git 安装可在其当前来源执行升级：
 
 ```sh
 orx-analytics watch stop
@@ -48,10 +48,10 @@ orx-analytics watch start
 命令也要使用同一个 `--data-dir` 或 `ORX_ANALYTICS_HOME`。从旧版独立
 watcher 升级到引擎协作语义的识别与停旧起新流程见
 [迁移指引](watch-migration.md)。
-从固定 commit 切换到 main，或明确重装来源时：
+重装历史版时：
 
 ```sh
-uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx-analytics.git@main'
+uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 ```
 
 卸载命令为 `uv tool uninstall orx-analytics`；先停止自己管理的 watcher。
@@ -61,7 +61,7 @@ uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx-ana
 已有 pipx 和 Python 3.11+ 时可以使用：
 
 ```sh
-pipx install --python python3.12 'git+https://github.com/aderan/orx-analytics.git@main'
+pipx install --python python3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 pipx ensurepath
 orx-analytics --version
 ```
@@ -78,7 +78,7 @@ uv 和 pipx 选一种管理同一个命令即可。
 ```sh
 python3.12 -m venv "$HOME/.venvs/orx-analytics"
 "$HOME/.venvs/orx-analytics/bin/python" -m pip install \
-  'git+https://github.com/aderan/orx-analytics.git@main'
+  'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 "$HOME/.venvs/orx-analytics/bin/orx-analytics" --version
 "$HOME/.venvs/orx-analytics/bin/python" -m orxanalytics --help
 ```
@@ -89,7 +89,7 @@ python3.12 -m venv "$HOME/.venvs/orx-analytics"
 
 ```sh
 "$HOME/.venvs/orx-analytics/bin/python" -m pip install --upgrade \
-  'git+https://github.com/aderan/orx-analytics.git@main'
+  'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 ```
 
 仅卸载包用该环境的 `python -m pip uninstall orx-analytics`。
@@ -97,8 +97,8 @@ python3.12 -m venv "$HOME/.venvs/orx-analytics"
 ## 从本地源码或 wheel 安装
 
 ```sh
-git clone https://github.com/aderan/orx-analytics.git
-cd orx-analytics
+git clone https://github.com/aderan/orx.git
+cd orx/tools/orx-analytics
 uv tool install --python 3.12 .
 ```
 
@@ -107,7 +107,7 @@ uv tool install --python 3.12 .
 
 维护者可以用 `python -m build` 生成源码包与 wheel。拿到构建好的 wheel
 后，在目标虚拟环境中用 `python -m pip install --no-index --no-deps
-/absolute/path/to/orx_analytics-0.4.3-py3-none-any.whl` 离线安装。构建工具与
+/absolute/path/to/orx_analytics-0.4.4-py3-none-any.whl` 离线安装。构建工具与
 源码包不是运行时依赖。项目的 `scripts/check_install.py` 会验证这个流程。
 
 ## 数据、配置和卸载后的保留

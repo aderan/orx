@@ -4,8 +4,8 @@
 保持零第三方依赖；`build` 仅用于验证可分发的源码包与 wheel。
 
 ```sh
-git clone https://github.com/aderan/orx-analytics.git
-cd orx-analytics
+git clone https://github.com/aderan/orx.git
+cd orx/tools/orx-analytics
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest -o addopts= -q
@@ -56,8 +56,7 @@ ORX schema、analytics store 版本和软件版本分别管理。
 
 提交前运行完整测试、安装检查和 `git diff --check`。GitHub CI 同样执行
 这些测试和安装检查；当前矩阵覆盖 Linux/Python 3.11、macOS/Python 3.12、
-Linux/Python 3.14。GitHub main 是当前分发来源；需要固定版本时记录
-commit SHA。PyPI 发布或 tag/release 流程另行安排，不属于现有 CI 的自动行为。
+Linux/Python 3.14。构建时记录 ORX 仓提交的完整 SHA。PyPI 发布或 tag/release 流程另行安排，不属于现有 CI 的自动行为。
 
 运行数据库、原始采集数据、证据包、虚拟环境和本地执行状态不进入 Git。
 使用 `var/` 或仓库外的数据目录保存这些产物；`reports/` 只保存经检查的

@@ -59,6 +59,8 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
+import tarfile
 
 import pytest
 
@@ -121,6 +123,19 @@ def chain(installed):
 
 # ---------------------------------------------------------------------------
 # Clean install: imports and resources come from the temporary package
+
+
+def test_orx_sdist_has_its_resources_and_excludes_other_products(tmp_path):
+    subprocess.run(["uv", "build", "--sdist", "--out-dir", str(tmp_path)],
+                   cwd=REPO_ROOT, check=True)
+    archive, = tmp_path.glob("*.tar.gz")
+    with tarfile.open(archive) as sdist:
+        paths = [name.partition("/")[2] for name in sdist.getnames()]
+    assert "agents/orx-worker.md" in paths
+    assert "skills/orx-controller/SKILL.md" in paths
+    assert not any(path.startswith(("apps/macos/", "tools/orx-analytics/",
+                                    "docs/diagnostics/analytics-monorepo/"))
+                   for path in paths)
 
 
 def test_probe_ran_outside_the_repo_from_temp_site_packages(installed):

@@ -1,6 +1,5 @@
 # orx-analytics
 
-[![Tests and installation](https://github.com/aderan/orx-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/aderan/orx-analytics/actions/workflows/ci.yml)
 
 跨项目、跨 coding agent 的只读执行观测：ORX（zcode/Codex/Cursor 派发）
 与非 ORX 项目（zcode/Codex/Cursor 原生会话）的用量、耗时、交付质量、
@@ -40,7 +39,7 @@ orx-analytics 通过只读契约消费这些事实，同时读取原生 agent �
 安装到独立工具环境；Git 来源安装还需要 `git`：
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@main'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 orx-analytics --version
 orx-analytics --help
 ```
@@ -153,12 +152,12 @@ orx-analytics bundle session sess_xxxx --dest mysessbundle ...
 互不混淆的分发渠道，构建与安装说明见
 [docs/app-installation.md](docs/app-installation.md)：
 
-- **内部预览**（`scripts/build_app.sh dev`）：ad-hoc 签名、未公证的
+- **内部预览**（`../../apps/macos/scripts/build_app.sh dev`）：ad-hoc 签名、未公证的
   zip，App 名 `ORX Analytics (Internal Preview)`，渠道/受众/Gatekeeper
   限制与完整来源提交标注在 Info.plist、包内 `distribution.json` 清单、
   归档名与逐归档构建记录里。**它是明确标注限制的内部预览，不是正式
   安装包。**
-- **正式分发**（`scripts/build_app.sh dist`）：要求 Developer ID
+- **正式分发**（`../../apps/macos/scripts/build_app.sh dist`）：要求 Developer ID
   Application 签名（含内置 Python 全部嵌套可执行文件）、hardened
   runtime、notarytool 公证、stapler 装订与 spctl 安装评估；凭据缺失
   或任一检查失败即**失败关闭**（机器可读原因、不产出归档、绝不静默
@@ -175,7 +174,6 @@ orx-analytics bundle session sess_xxxx --dest mysessbundle ...
 src/orxanalytics/   probe/dbutil/store/registry/importers/correlate/
                     metrics/bundle/findings/anomalies/watch/collect/cli
 docs/               metrics.md correlation.md source-probes.md（冻结契约与探测基线）
-reports/            R003-report.md climbo-basic.md closed-loop-demo.md final-report.md
 tests/              合成来源回归、CLI 入口、接收方复算与篡改检测
 scripts/            源码包与独立 wheel 安装验收
 legacy 对应物        orx_analytics.py（起点脚本，保留为对照口径）

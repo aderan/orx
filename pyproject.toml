@@ -26,6 +26,13 @@ dev = [
 # at build time so the two can never drift apart again.
 path = "src/orx/__init__.py"
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/apps/macos",
+    "/tools/orx-analytics",
+    "/docs/diagnostics/analytics-monorepo",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/orx"]
 

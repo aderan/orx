@@ -77,6 +77,10 @@ def check_install() -> None:
         env.pop("PYTHONPATH", None)
         env.pop("PYTHONHOME", None)
         env["PYTHONNOUSERSITE"] = "1"
+        home = work / "home"
+        home.mkdir()
+        env["HOME"] = str(home)
+        env["ORX_DATA_DIR"] = str(work / "orx-data")
         env["ORX_ANALYTICS_HOME"] = str(work / "data")
         env["ORX_ANALYTICS_NOTIFY"] = "0"
         artifacts = work / "dist"
@@ -147,8 +151,45 @@ def check_install() -> None:
         override = work / "override"
         run([str(cli), "--data-dir", str(override), "projects", "list"], work, env)
         require((override / "analytics.db").exists(), "--data-dir did not override the environment")
+        sessions = work / "codex-sessions"
+        sessions.mkdir()
+        rollout = sessions / "rollout-install-check.jsonl"
+        events = [
+            {"type": "session_meta",
+             "payload": {"id": "standalone-codex", "cwd": str(project)}},
+            {"type": "token_usage_record",
+             "payload": {"turn_id": "turn-1", "response_id": "response-1",
+                         "usage": {"input_tokens": 1000, "output_tokens": 100,
+                                   "total_tokens": 1100}}},
+        ]
+        source_events = "".join(json.dumps(event) + "\n" for event in events)
+        rollout.write_text(source_events)
+        check = json.loads(run([str(python), "-c", """
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+from orxanalytics.importers import import_codex
+from orxanalytics.store import Store
+
+assert importlib.util.find_spec("orx") is None
+store = Store(Path(sys.argv[1]))
+try:
+    result = import_codex(store, Path(sys.argv[2]))
+    totals = [tuple(row) for row in store.conn.execute(
+        "SELECT thread_id, input_tokens, output_tokens, total_tokens FROM cx_usage")]
+finally:
+    store.close()
+print(json.dumps({"result": result, "totals": totals}))
+""", str(work / "data"), str(sessions)], work, env))
+        require(check["result"].get("counts", {}).get("usage") == 1
+                and check["totals"] == [["standalone-codex", 1000, 100, 1100]],
+                "Independent install did not analyze the synthetic Codex session")
+        require(rollout.read_text() == source_events,
+                "Analysis changed the Codex source")
         print(f"PASS: orx-analytics {version}; sdist, wheel, metadata, both CLI entries, "
-              "registry, isolated collection and data-directory precedence")
+              "registry, isolated collection, data-directory precedence and standalone Codex usage")
 
 
 if __name__ == "__main__":

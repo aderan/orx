@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environments
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ORX runtime state (SQLite authority, run logs); project definition TOMLs
+# (.orx/config.toml, .orx/profiles.toml) are committed
+.orx/*
+!.orx/config.toml
+!.orx/profiles.toml
+
+# Delivery evidence workers write into the repo workdir (state.db references
+# these paths); runtime artifacts stay local, never committed
+tests/evidence_*
+
+# Isolated release workspaces (G011): full working clones of release
+# candidate repositories (e.g. orx-analytics) used for frozen builds and
+# joint acceptance. They keep their own git history and never enter this
+# repository's version control.
+.release-workspaces/
+
+# macOS
+.DS_Store
+
+# Analytics and App build/runtime output
+/apps/macos/.build/
+/var/
