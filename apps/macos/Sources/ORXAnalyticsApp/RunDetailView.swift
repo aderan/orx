@@ -721,12 +721,7 @@ struct RunDetailView: View {
             }
             .font(.caption)
             if let routing = attempt.routing {
-                Text("请求  \(routing.requestedModel ?? "未知")  ·  推理 \(routing.requestedEffort ?? "未知")")
-                Text("实际  \(routing.actualModel ?? "未知")  ·  推理 \(routing.actualEffort ?? "未知")")
-                if let profile = routing.profile {
-                    Text("Profile  \(profile)\(routing.fallbackUsed == true ? " · 回退" : "")")
-                }
-                if let reason = routing.reason { Text(reason) }
+                recordedDispatch(routing, attempt: attempt)
             }
             if let link = attempt.sessionLink {
                 Text("会话关联：\(link.sessionID ?? "—")（\(link.authority ?? "—") · \(link.confidence ?? "—")）")
@@ -740,6 +735,44 @@ struct RunDetailView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func recordedDispatch(_ routing: AttemptRouting, attempt: AttemptDetail) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("当次派发").font(.caption.weight(.semibold))
+            Text("Controller  \(routing.controllerHarness ?? "未记录")")
+            let profile = routing.profile.map { "\($0)\(routing.fallbackUsed == true ? " · 回退" : "")" }
+            let selection = [profile, RoutingLabels.execution(driver: attempt.driver, harness: attempt.harness)]
+                .compactMap { $0 }.joined(separator: "  ·  ")
+            if !selection.isEmpty { Text("执行配置  \(selection)") }
+            Text("请求模型  \(routing.requestedModel ?? "未记录")  ·  请求推理 \(routing.requestedEffort ?? "未记录")")
+            Text("实际模型  \(routing.actualModel ?? "未记录")  ·  推理 \(recordedEffort(routing))")
+            if let reason = routing.reason { Text("选中原因  \(RoutingLabels.reason(reason))") }
+            if let candidates = routing.candidates, !candidates.isEmpty {
+                DisclosureGroup("当次候选与过滤结果") {
+                    ForEach(Array(candidates.enumerated()), id: \.offset) { _, candidate in
+                        let outcome = candidate.rejectReason.map(RoutingLabels.reason)
+                            ?? (candidate.kept ? "通过筛选" : "已过滤")
+                        Text([candidate.profile, RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass),
+                              candidate.resourceStatus, outcome].compactMap { $0 }.joined(separator: "  ·  "))
+                    }
+                }
+            }
+        }
+        .font(.caption)
+        .textSelection(.enabled)
+    }
+
+    private func recordedEffort(_ routing: AttemptRouting) -> String {
+        guard let value = routing.actualEffort else { return "未记录" }
+        if value == "provider_default" || routing.effortSource == "provider_default" {
+            return "供应商默认（档位未观测）"
+        }
+        switch routing.effortSource {
+        case "reported": return "\(value)（工具报告）"
+        case "requested_validated": return "\(value)（请求参数已校验）"
+        default: return value
+        }
     }
 
     // MARK: shared

@@ -2,6 +2,25 @@ import XCTest
 @testable import ORXAnalyticsCore
 
 final class ORXRoutingClientTests: XCTestCase {
+    func testCandidateDecodesDeclaredHostAndSpecializedModelSeparately() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = Data("""
+            {"profile":"ocr","driver":"host","declared_harness":"current","harness":"codex",
+             "host_mode":"self","tier":"S","capabilities":["ocr"],"effort":"max","native_effort":"xhigh",
+             "model_spec":{"context":32000,"capabilities":["vision"]}}
+            """.utf8)
+        let candidate = try decoder.decode(RoutingCandidate.self, from: json)
+        XCTAssertEqual(candidate.declaredHarness, "current")
+        XCTAssertEqual(candidate.harness, "codex")
+        XCTAssertEqual(candidate.hostMode, "self")
+        XCTAssertEqual(candidate.tier, "S")
+        XCTAssertEqual(candidate.capabilities, ["ocr"])
+        XCTAssertEqual(candidate.nativeEffort, "xhigh")
+        XCTAssertEqual(candidate.modelSpec?.context, 32000)
+        XCTAssertEqual(candidate.modelSpec?.capabilities, ["vision"])
+    }
+
     func testFinderPathResolvesUserToolWithoutShellPath() throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -912,3 +912,40 @@ def test_task_detail_reports_the_original_model_request_and_linked_route(usage_w
         "reason": "capacity fallback",
     }
     assert attempts[201]["routing"]["reason"] is None
+
+
+def test_task_detail_keeps_the_dispatch_controller_candidates_and_effort_source(usage_world):
+    source = Path(usage_world["proj_a"]) / ".orx/state.db"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            "CREATE TABLE routing_decisions (id INTEGER PRIMARY KEY,"
+            " attempt_id INTEGER, selected TEXT, reason TEXT, created_at TEXT,"
+            " requested_json TEXT, candidates_json TEXT);"
+            "UPDATE attempts SET effort_source='requested_validated' WHERE id=202;"
+        )
+        connection.execute(
+            "INSERT INTO routing_decisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (1, 202, "chosen", "fallback", "2026-10-04T12:08:00Z",
+             '{"controller":{"harness":"zcode"}}',
+             '[{"profile":"first","kept":false,"tier":"S",'
+             '"reject_reason":"specialized_capability_required"},'
+             '{"profile":"chosen","kept":true,"tier":"T2"}]'),
+        )
+        connection.execute(
+            "INSERT INTO routing_decisions VALUES (2, 201, 'original', 'primary', NULL,"
+            " 'invalid json', 'invalid json')"
+        )
+    store = usage_world["store"]
+    before = source.read_bytes()
+    result = import_orx_project(store, usage_world["proj_a"])
+    assert "error" not in result
+    assert source.read_bytes() == before
+    details = usage_readmodel.task_usage(store, usage_world["proj_a"], "R001", 11, "T001")
+    routes = {attempt["attempt_id"]: attempt["routing"] for attempt in details["attempts"]}
+    assert routes[202]["controller_harness"] == "zcode"
+    assert routes[202]["effort_source"] == "requested_validated"
+    assert routes[202]["candidates"][0]["reject_reason"] == "specialized_capability_required"
+    assert routes[202]["candidates"][1]["tier"] == "T2"
+    assert routes[201]["profile"] == "original"
+    assert "controller_harness" not in routes[201]
+    assert "candidates" not in routes[201]

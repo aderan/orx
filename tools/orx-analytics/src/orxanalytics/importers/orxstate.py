@@ -94,6 +94,11 @@ _SOURCE_TO_MIRROR_COL = {
     "cached_input_tokens": "cached_input",
 }
 
+_OPTIONAL_SOURCE_COLUMNS = {
+    "attempts": ("effort_source",),
+    "routing_decisions": ("requested_json", "candidates_json"),
+}
+
 
 def import_orx_project(store: Store, project_key: str) -> dict:
     """Append one snapshot of the project's ORX state. Refuses unsupported
@@ -138,6 +143,9 @@ def import_orx_project(store: Store, project_key: str) -> dict:
                 tables.append(("orx_routing_decisions", "routing_decisions",
                                ["id", "attempt_id", "selected", "reason", "created_at"]))
             for mirror, src, cols in tables:
+                if optional := _OPTIONAL_SOURCE_COLUMNS.get(src):
+                    present = {row[1] for row in conn.execute(f"PRAGMA table_info({src})")}
+                    cols = [*cols, *(column for column in optional if column in present)]
                 select_cols = ", ".join(cols)
                 n = 0
                 for r in conn.execute(f"SELECT {select_cols} FROM {src}"):

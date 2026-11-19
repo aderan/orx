@@ -210,11 +210,30 @@ public struct SessionLink: Codable, Equatable {
 /// One attempt row of `task_usage.attempts[]` — result, usage, session
 /// association, failure reason and missing-usage reason (the evidence
 /// the 尝试与证据 zone shows).
+public struct DispatchCandidate: Codable, Equatable {
+    public let profile: String
+    public let kept: Bool
+    public let tier: String?
+    public let legacyClass: String?
+    public let resourceStatus: String?
+    public let rejectReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case profile, kept, tier
+        case legacyClass = "class"
+        case resourceStatus = "resource_status"
+        case rejectReason = "reject_reason"
+    }
+}
+
 public struct AttemptRouting: Codable, Equatable {
     public let requestedModel: String?
     public let actualModel: String?
     public let requestedEffort: String?
     public let actualEffort: String?
+    public let effortSource: String?
+    public let controllerHarness: String?
+    public let candidates: [DispatchCandidate]?
     public let profile: String?
     public let reason: String?
     public let fallbackUsed: Bool?
@@ -225,6 +244,9 @@ public struct AttemptRouting: Codable, Equatable {
         case actualModel = "actual_model"
         case requestedEffort = "requested_effort"
         case actualEffort = "actual_effort"
+        case effortSource = "effort_source"
+        case controllerHarness = "controller_harness"
+        case candidates
         case fallbackUsed = "fallback_used"
     }
 }
@@ -238,6 +260,7 @@ public struct AttemptDetail: Codable, Equatable, Identifiable {
     public let failureReason: String?
     public let startedAt: String?
     public let endedAt: String?
+    public let driver: String?
     public let harness: String?
     public let model: String?
     public private(set) var routing: AttemptRouting?
@@ -248,7 +271,7 @@ public struct AttemptDetail: Codable, Equatable, Identifiable {
     public var id: Int { attemptID }
 
     enum CodingKeys: String, CodingKey {
-        case role, result, harness, model, routing
+        case role, result, driver, harness, model, routing
         case attemptID = "attempt_id"
         case revisionID = "revision_id"
         case taskID = "task_id"

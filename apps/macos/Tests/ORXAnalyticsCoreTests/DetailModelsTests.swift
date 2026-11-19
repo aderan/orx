@@ -10,6 +10,28 @@ import XCTest
 /// drift from the engine's wire format these tests go red before the
 /// UI silently shows "—" everywhere.
 final class DetailModelsTests: XCTestCase {
+    func testDispatchFieldsAreOptionalOnHistoricalAttempts() throws {
+        let decoder = JSONDecoder()
+        let old = try decoder.decode(AttemptRouting.self, from: Data(
+            #"{"requested_model":"old","actual_model":"reported","profile":"original"}"#.utf8))
+        XCTAssertEqual(old.actualModel, "reported")
+        XCTAssertNil(old.controllerHarness)
+        XCTAssertNil(old.candidates)
+
+        let json = Data("""
+            {"controller_harness":"zcode","effort_source":"reported","profile":"chosen",
+             "candidates":[{"profile":"first","kept":false,"class":"strong",
+                            "reject_reason":"host_agent_unavailable:helper"},
+                           {"profile":"chosen","kept":true,"tier":"T2"}]}
+            """.utf8)
+        let current = try decoder.decode(AttemptRouting.self, from: json)
+        XCTAssertEqual(current.controllerHarness, "zcode")
+        XCTAssertEqual(current.effortSource, "reported")
+        XCTAssertEqual(current.candidates?.first?.legacyClass, "strong")
+        XCTAssertEqual(current.candidates?.first?.rejectReason, "host_agent_unavailable:helper")
+        XCTAssertEqual(current.candidates?.last?.tier, "T2")
+    }
+
 
     // MARK: - runs.get
 

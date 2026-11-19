@@ -4,16 +4,28 @@ public enum DesktopPage: Hashable {
     case execution, routing, usage
 }
 
+public struct RoutingModelSpec: Decodable, Sendable {
+    public let speed: String?
+    public let context: Int?
+    public let capabilities: [String]?
+}
+
 public struct RoutingCandidate: Decodable, Sendable {
     public let profile: String
     public let profileOrigin: String?
     public let driver: String?
     public let harness: String?
+    public let declaredHarness: String?
     public let model: String?
+    public let modelSpec: RoutingModelSpec?
     public let tier: String?
     public let legacyClass: String?
+    public let capabilities: [String]?
     public let effort: String?
     public let nativeEffort: String?
+    public let hostMode: String?
+    public let agentRef: String?
+    public let hostBlockedReason: String?
     public let error: String?
 }
 
@@ -26,10 +38,14 @@ public struct RoutingSelection: Decodable, Sendable {
     public struct Controller: Decodable, Sendable {
         public let origin: String
         public let candidate: RoutingCandidate
+        public let sessionHarness: String?
+        public let nativeAgents: [String]?
+        public let source: String?
     }
 
     public struct Planner: Decodable, Sendable {
         public let depth: String
+        public let effectiveDepth: String?
         public let depthOrigin: String
         public let depths: [String: RoutingGroup]
     }

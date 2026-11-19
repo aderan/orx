@@ -26,6 +26,7 @@ unattributed (a named bucket — never spread over tasks or time).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from . import correlate
@@ -203,6 +204,36 @@ def _observation(u: dict | None) -> dict | None:
                        "cached_input": u["cached_input"]}}
 
 
+def _route_json(raw: str | None) -> Any:
+    if raw is not None:
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            pass  # An optional journal field cannot invalidate the stored attempt.
+    return None
+
+
+def _dispatch_facts(route, effort_source: str | None) -> dict:
+    facts = {"effort_source": effort_source} if effort_source else {}
+    if route is None:
+        return facts
+    request = _route_json(route["requested_json"])
+    controller = request.get("controller") if isinstance(request, dict) else None
+    if isinstance(controller, dict) and isinstance(controller.get("harness"), str):
+        facts["controller_harness"] = controller["harness"]
+    rows = _route_json(route["candidates_json"])
+    if isinstance(rows, list):
+        candidates = [
+            {key: row[key] for key in ("profile", "tier", "class", "resource_status", "reject_reason")
+             if isinstance(row.get(key), str)} | {"kept": row["kept"]}
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("profile"), str)
+            and isinstance(row.get("kept"), bool)
+        ]
+        facts["candidates"] = candidates
+    return facts
+
+
 def _attempt_details(store: Store, snap: int, atts: list[dict],
                      canon: dict, links: list) -> list:
     if not atts:
@@ -210,7 +241,7 @@ def _attempt_details(store: Store, snap: int, atts: list[dict],
     ids = [a["id"] for a in atts]
     placeholders = ",".join("?" for _ in ids)
     routes = {row["attempt_id"]: row for row in store.conn.execute(
-        f"SELECT attempt_id, selected, reason FROM orx_routing_decisions "
+        f"SELECT attempt_id, selected, reason, requested_json, candidates_json FROM orx_routing_decisions "
         f"WHERE snapshot_id=? AND attempt_id IN ({placeholders}) ORDER BY id",
         (snap, *ids))}
     by_att = {l.attempt_id: l for l in links}
@@ -221,7 +252,7 @@ def _attempt_details(store: Store, snap: int, atts: list[dict],
              "revision_id": a["revision_id"], "task_id": a["task_id"],
              "result": a["result"], "failure_reason": a["failure_reason"],
              "started_at": a["started_at"], "ended_at": a["ended_at"],
-             "harness": a["harness"],
+             "driver": a["driver"], "harness": a["harness"],
              "model": a["actual_model"] or a["model"],
              "routing": {
                  "requested_model": a["model"], "actual_model": a["actual_model"],
@@ -230,6 +261,7 @@ def _attempt_details(store: Store, snap: int, atts: list[dict],
                  "reason": route["reason"] if route is not None else None,
                  "fallback_used": (bool(a["fallback_used"])
                                    if a["fallback_used"] is not None else None),
+                 **_dispatch_facts(route, a["effort_source"]),
              },
              "usage_missing_reason": a["usage_missing_reason"],
              "observation": _observation(canon.get(a["id"]))}

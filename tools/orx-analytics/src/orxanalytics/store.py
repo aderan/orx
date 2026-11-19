@@ -21,6 +21,12 @@ from typing import Any
 
 STORE_VERSION = "4"
 
+# Optional mirror fields. An older v4 reader can keep using its named columns.
+_DISPATCH_COLUMNS = {
+    "orx_attempts": ("effort_source",),
+    "orx_routing_decisions": ("requested_json", "candidates_json"),
+}
+
 _RECEIPTS_TABLE = """
 CREATE TABLE IF NOT EXISTS orx_receipts(
   snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL, attempt_id INTEGER NOT NULL,
@@ -192,13 +198,14 @@ CREATE TABLE IF NOT EXISTS orx_attempts(
   fallback_used INTEGER, started_at TEXT, ended_at TEXT, result TEXT,
   failure_reason TEXT, session_ref TEXT, run_id TEXT,
   usage_missing_reason TEXT, actual_model TEXT, model_source TEXT,
-  nonce TEXT,
+  nonce TEXT, effort_source TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
 -- Optional routing facts are additive to store v4. Older readers ignore them.
 CREATE TABLE IF NOT EXISTS orx_routing_decisions(
   snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL,
   attempt_id INTEGER, selected TEXT, reason TEXT, created_at TEXT,
+  requested_json TEXT, candidates_json TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_orx_routing_attempt
@@ -326,9 +333,9 @@ class Store:
 
     def _initialize_schema(self) -> None:
         tables = {row[0] for row in self.conn.execute(
-            "SELECT name FROM sqlite_master WHERE name IN ('meta', 'orx_routing_decisions')")}
+            "SELECT name FROM sqlite_master WHERE name='meta'")}
         version = self._stored_version() if "meta" in tables else None
-        if version == STORE_VERSION and "orx_routing_decisions" in tables:
+        if version == STORE_VERSION and not self._missing_dispatch_columns():
             return
         self._check_supported_version(version)
         with self.conn:
@@ -342,6 +349,15 @@ class Store:
                     "INSERT INTO meta VALUES ('store_version', ?)", (STORE_VERSION,))
             elif version in _MIGRATABLE_FROM:
                 _migrate_store(self.conn, version)
+            for table, column in self._missing_dispatch_columns():
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+
+    def _missing_dispatch_columns(self) -> list[tuple[str, str]]:
+        missing = []
+        for table, columns in _DISPATCH_COLUMNS.items():
+            present = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            missing.extend((table, column) for column in columns if column not in present)
+        return missing
 
     def _stored_version(self) -> str | None:
         row = self.conn.execute(
