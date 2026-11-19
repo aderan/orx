@@ -85,7 +85,7 @@ public struct EngineErrorPayload: Codable, Equatable {
         message = try c.decode(String.self, forKey: .message)
         requestedVersion = try c.decodeIfPresent(Int.self, forKey: .requested)
         if let ops = try? c.decodeIfPresent([String].self, forKey: .supported) {
-            supportedOps = ops ?? []
+            supportedOps = ops
             supportedVersion = nil
         } else {
             supportedVersion = try c.decodeIfPresent(Int.self, forKey: .supported)

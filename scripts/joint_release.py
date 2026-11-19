@@ -2432,7 +2432,12 @@ def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
     _require(snapshots == expected_snapshots,
              f"expected {expected_snapshots} retained snapshots after repeated"
              f" collection, found {snapshots}")
-    _require({"paused", "done", "cancelled"} <= goals,
+    # A bounded store drops the earlier mirror after the goal resumes.
+    # The first overview above independently proves the paused state.
+    expected_goals = {"done", "cancelled"}
+    if not bounded_snapshots:
+        expected_goals.add("paused")
+    _require(expected_goals <= goals,
              f"engine never mirrored the exercised goal states verbatim:"
              f" {goals}")
     read_only_ok = (
