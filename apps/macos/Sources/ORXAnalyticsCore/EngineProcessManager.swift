@@ -171,7 +171,7 @@ public struct EngineUpgradeGuard {
         try? String(contentsOf: Self.stampURL(dataDir: dataDir), encoding: .utf8)
     }
 
-    /// Copy `analytics.db` into `backups/` when needed, prune old
+    /// Snapshot `analytics.db` and its committed WAL changes into `backups/`, prune old
     /// backups beyond `keepBackups`, and stamp the version. Returns
     /// the backup URL, or nil when no backup was needed. Throws on IO
     /// failure — the caller MUST then NOT launch a different-version
@@ -194,7 +194,10 @@ public struct EngineUpgradeGuard {
         try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         let dest = dir.appendingPathComponent(
             Self.backupFileName(engineVersion: engineVersion, at: now()))
-        try fileManager.copyItem(at: db, to: dest)
+        let temporary = dir.appendingPathComponent(".backup-\(UUID().uuidString).db")
+        defer { try? fileManager.removeItem(at: temporary) }
+        try SQLiteBackup.create(from: db, to: temporary)
+        try fileManager.moveItem(at: temporary, to: dest)
         pruneBackups(dir: dir)
         try writeStamp(engineVersion)
         return dest

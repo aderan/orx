@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import ORXAnalyticsCore
 
@@ -111,23 +112,38 @@ final class EngineUpgradeGuardTests: XCTestCase {
                          .hasPrefix("analytics-pre-a-b-"), true)
     }
 
-    func testBackupGuardCopiesStampsAndSkipsSameVersion() throws {
+    func testBackupGuardIncludesCommittedWALAndSkipsSameVersion() throws {
         let dataDir = makeTempDir()
         let db = EngineUpgradeGuard.databaseURL(dataDir: dataDir)
-        try "existing data".write(to: db, atomically: true, encoding: .utf8)
+        var live: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(db.path, &live), SQLITE_OK)
+        defer { sqlite3_close(live) }
+        XCTAssertEqual(sqlite3_exec(live, """
+            PRAGMA journal_mode=WAL;
+            PRAGMA wal_autocheckpoint=0;
+            CREATE TABLE history(tokens INTEGER);
+            INSERT INTO history VALUES(1100);
+            """, nil, nil, nil), SQLITE_OK)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: db.path + "-wal"))
         let guard_ = EngineUpgradeGuard(dataDir: dataDir)
 
-        // New version over existing db -> one backup + stamp.
         let backup = try XCTUnwrap(guard_.backupIfNeeded(engineVersion: "0.5.0"))
-        XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8), "existing data")
+        var restored: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(backup.path, &restored, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(restored) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(restored, "SELECT tokens FROM history", -1,
+                                         &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 1100)
         XCTAssertEqual(try String(contentsOf: EngineUpgradeGuard.stampURL(dataDir: dataDir),
                                   encoding: .utf8), "0.5.0")
 
-        // Same version again -> no second backup.
         XCTAssertNil(try guard_.backupIfNeeded(engineVersion: "0.5.0"))
         let backups = try FileManager.default.contentsOfDirectory(
             atPath: EngineUpgradeGuard.backupsDir(dataDir: dataDir).path)
-        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(backups.filter { $0.hasSuffix(".db") }.count, 1)
     }
 
     func testPruneKeepsNewestThree() throws {
