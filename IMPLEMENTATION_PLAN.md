@@ -28,7 +28,7 @@
 **Success Criteria**: 当次 Controller、配置顺序和实际派发各按其来源展示，旧配置及历史可读。
 **Tests**: 无宿主与显式宿主、两种配置范围与预览保存、旧引擎响应、带路由日志的尝试。
 **Status**: Complete（[本机与隔离引擎验收](docs/diagnostics/analytics-monorepo/stage-3.md)；
-沿用现有共享采集，实时历史仍按当前引擎返回的字段展示）
+本机共享引擎切换和实际派发复验见[阶段四](docs/diagnostics/analytics-monorepo/stage-4.md)）
 
 ## Stage 4: 演练安装、升级与回退
 
@@ -37,7 +37,8 @@
 **Tests**: 干净安装、升级、系统实际状态、备份恢复、退出 App 后 CLI watch。
 **Status**: In Progress（[验收证据](docs/diagnostics/analytics-monorepo/stage-4.md)；
 已通过数据回退、Finder 主窗口、通知授权，以及 ChatGPT 菜单栏关闭时
-ORX 图标连续两次冷启动；实际注销重登及正式渠道验收仍待完成）
+ORX 图标连续两次冷启动。本机共享引擎升级、原 CLI watch 重连及实际历史验证通过；
+实际注销重登及正式渠道验收仍待完成）
 
 ## Stage 5: 切换发布来源并收口旧仓
 
