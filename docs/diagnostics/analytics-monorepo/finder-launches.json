@@ -1,0 +1,36 @@
+{
+  "first_cold_launch": {
+    "app_path": "/Applications/ORX (Internal Preview).app",
+    "bundle_id": "com.aderan.orx.dev",
+    "pid": 46493,
+    "window_number": 22923,
+    "window_title": "ORX",
+    "menu_item_blocked": true,
+    "verified_window_count": 1
+  },
+  "second_cold_launch": {
+    "app_path": "/Applications/ORX (Internal Preview).app",
+    "bundle_id": "com.aderan.orx.dev",
+    "pid": 61105,
+    "window_number": 22993,
+    "window_title": "ORX",
+    "menu_item_blocked": true,
+    "verified_window_count": 1
+  },
+  "source_commit": "42e2ff49eadb217aa4ec9c8c518ae12616e39c40",
+  "archive_sha256": "7edae969b6a237f1681f321eb75bfa5006c48287f675a2d45d59d229bdc66509",
+  "old_instance_exited_before_second_launch": true,
+  "isolated_cli_watch_retained_engine": true,
+  "normal_launch": {
+    "app_path": "/Applications/ORX (Internal Preview).app",
+    "bundle_id": "com.aderan.orx.dev",
+    "main_windows": 1,
+    "pid": 71421,
+    "window_number": 23020,
+    "window_title": "ORX"
+  },
+  "production_engine_pid_preserved": 98910,
+  "original_database_file_preserved": true,
+  "existing_backup_sha256_preserved": true,
+  "old_app_retained_for_rollback": true
+}
