@@ -1,15 +1,13 @@
 schema_version = 1
 
-# ZCode preset routing (user layer). Deep planning runs on GLM-5.3, which is
-# strong class — the downgrade is allowed EXPLICITLY here instead of faking
-# a frontier label (docs/zcode-subagent-analysis.md §4).
+# ZCode preset routing. The Controller chooses planning depth, and each
+# depth uses the configured ZCode host profile.
 
 [controller]
 profile = "zcode-controller"
 
 [plan]
-depth = "auto"
-allow_class_downgrade = true
+depth = "standard"
 
 [plan.light]
 profiles = ["zcode-controller"]

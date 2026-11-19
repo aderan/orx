@@ -19,6 +19,7 @@ from orx.adapters.base import (
     DELIVERY_CHANNEL_EXIT,
     DELIVERY_CHANNEL_MESSAGE,
     ModelResolutionError,
+    native_model_spec,
     classify_failure,
     extract_cli_delivery,
     quota_reset_from,
@@ -71,8 +72,7 @@ schema_version = 1
 profile = "orx-host"
 
 [plan]
-depth = "auto"
-allow_class_downgrade = false
+depth = "standard"
 
 [plan.light]
 profiles = ["orx-host"]
@@ -142,7 +142,7 @@ schema_version = 1
 driver = "host"
 harness = "zcode"
 model = "unconfigured"
-class = "frontier"
+tier = "T2"
 effort = "medium"
 capabilities = ["coding"]
 """
@@ -1944,6 +1944,9 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
         "nonce": attempt.nonce,
         "submit": "controller",
     }
+    if profile.tier is not None or profile.native_effort is not None:
+        spec["tier"] = profile.tier.value if profile.tier is not None else None
+        spec["native_effort"] = native_model_spec(profile).effort
     if controller is not None and (blocked := controller.rejection(profile)):
         spec["blocked_reason"] = blocked
     return spec
@@ -2917,7 +2920,9 @@ def _worker_inputs(project: Project, goal: Goal, revision: Revision, task: TaskR
         "harness": profile.harness.value,
         "driver": profile.driver.value,
         "requested_model": profile.model,
+        "tier": profile.tier.value if profile.tier is not None else None,
         "requested_effort": profile.effort.value,
+        "native_effort": profile.native_effort,
     }
 
 

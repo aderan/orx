@@ -7,7 +7,7 @@ import tempfile
 
 from .base import (
     Capture, DELIVERY_CHANNEL_MESSAGE, EffortOutcome, Launch, ModelResolutionError,
-    captured_stdout, effective_model_spec, identity_token, miss_without_usage, native_usage,
+    captured_stdout, effective_model_spec, native_model_spec, identity_token, miss_without_usage, native_usage,
 )
 from .headless import events, probe_headless, terminal_result
 
@@ -48,7 +48,9 @@ class ZCodeAdapter:
         provider, separator, model_id = model.partition("/")
         if not separator or not provider or not model_id or spec.speed is not None or spec.context_tokens is not None:
             raise ModelResolutionError("ZCode requires an explicit provider/model id")
-        effort = profile.effort.value
+        effort = native_model_spec(profile).effort
+        if (profile.tier is not None or profile.native_effort is not None) and effort not in ("low", "high", "max"):
+            raise ModelResolutionError(f"ZCode native effort {effort!r} unsupported (low | high | max)")
         selection = {"providerId": provider, "modelId": model_id,
                      "options": {"reasoningLevel": effort}}
         scratch.mkdir(parents=True, exist_ok=True)
@@ -68,9 +70,10 @@ class ZCodeAdapter:
                   "--cwd", str(root), "--mode", "yolo", "--output-format", "stream-json",
                   "--prompt", prompt],
             cwd=root, timeout=timeout, stdin_text="", label=f"zcode:{profile.name}",
-            planned_effort=EffortOutcome(effort, actual=""),
+            planned_effort=EffortOutcome(profile.effort.value, actual=""),
             model_resolution={"spec": spec.to_dict(), "cli_slug": model,
-                              "strategy": "isolated_provider_selection", "requested_effort": effort},
+                              "strategy": "isolated_provider_selection",
+                              "requested_effort": profile.effort.value, "native_effort": effort},
         )
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None):
@@ -100,7 +103,7 @@ class ZCodeAdapter:
             call = item.get("modelCall")
             reasoning = call.get("reasoning") if isinstance(call, dict) else None
             requested = reasoning.get("requestedLevel") if isinstance(reasoning, dict) else None
-            if requested not in (None, "", "unknown", selection["requested_effort"]):
+            if requested not in (None, "", "unknown", selection["native_effort"]):
                 return ""
         text = result.get("response")
         return text if isinstance(text, str) else ""

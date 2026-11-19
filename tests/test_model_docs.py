@@ -383,7 +383,7 @@ capabilities = ["coding", "vision"]
     assert outcomes["semantic"]["planner_deep"]["selected"] == "frontier-a"
     assert outcomes["semantic"]["verifier_vision"]["selected"] == \
         "verify-vision"
-    assert outcomes["semantic"]["deep_downgrade_blocked"]["downgrade_blocked"]
+    assert not outcomes["semantic"]["deep_downgrade_blocked"]["downgrade_blocked"]
 
 
 # ---------------------------------------------------------------------------
@@ -489,19 +489,12 @@ def test_readme_launch_description_matches_the_resolver():
     assert "pre-launch diagnostic" in text
 
 
-def test_routing_tiers_and_role_defaults_are_unchanged():
+def test_routing_defines_explicit_tiers_and_project_order():
     text = ROUTING.read_text()
-    # the tier table and the role defaults keep their adopted spelling
-    for pinned in (
-        "| `frontier` | latest flagships of codex / claude code |",
-        "| `strong` | other vendors' pro models |",
-        "| `economy` | flash / compose tiers |",
-        "| Controller (`[controller]`) | strong + max (`orx-host`) |",
-        "frontier + high (`codex-frontier`, `cursor-frontier`)",
-        "economy + medium (`cursor-economy`)",
-        "cursor-strong (strong+medium) → cursor-strong-high (strong+high)",
-    ):
-        assert pinned in text, pinned
+    for expected in ("| T0 |", "| T1 |", "| T2 |", "| T3 |", "| S |",
+                     "native_effort", "Deep accepts any general",
+                     "xhigh", "model-selection.md"):
+        assert expected in text
 
 
 def test_doc_declares_what_it_does_not_change():

@@ -70,7 +70,7 @@ ENV_OVERRIDES: dict[str, str] = {
 
 BUILTIN_DEFAULTS: dict = {
     "controller.profile": "orx-host",
-    "plan.depth": "auto",
+    "plan.depth": "standard",
     "plan.allow_class_downgrade": False,
     "plan.light.profiles": [],
     "plan.standard.profiles": [],
@@ -226,7 +226,7 @@ class Profile:
     driver: records.Driver
     harness: records.Harness
     model: str
-    model_class: records.ModelClass
+    model_class: records.ModelClass | None
     effort: records.Effort
     capabilities: tuple[str, ...] = ()
     executable: str | None = None
@@ -252,6 +252,8 @@ class Profile:
     # worker died on the same GLM account). Optional and informational: a
     # profile without it stays standalone, and nothing else changes.
     quota_domain: str | None = None
+    tier: records.ModelTier | None = None
+    native_effort: str | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -259,7 +261,7 @@ class Profile:
             "driver": self.driver.value,
             "harness": self.harness.value,
             "model": self.model,
-            "class": self.model_class.value,
+            "class": self.model_class.value if self.model_class is not None else None,
             "effort": self.effort.value,
             "capabilities": list(self.capabilities),
             "executable": self.executable,
@@ -272,6 +274,11 @@ class Profile:
         }
         if self.model_spec is not None:
             out["model_spec"] = self.model_spec.to_dict()
+        if self.tier is not None:
+            out["tier"] = self.tier.value
+            out.pop("class")
+        if self.native_effort is not None:
+            out["native_effort"] = self.native_effort
         return out
 
 
@@ -576,12 +583,22 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
         errors.append(f"{p} harness {harness!r} invalid ({VALID_HARNESSES})")
 
     klass = raw.get("class")
-    if records.parse_enum(records.ModelClass, klass) is None:
+    tier = raw.get("tier")
+    if "tier" in raw:
+        if records.parse_enum(records.ModelTier, tier) is None:
+            errors.append(f"{p} tier {tier!r} invalid (T0 | T1 | T2 | T3 | S)")
+        if "class" in raw:
+            errors.append(f"{p} declare tier or legacy class in one profile")
+    elif records.parse_enum(records.ModelClass, klass) is None:
         errors.append(f"{p} class {klass!r} invalid ({VALID_CLASSES})")
 
     effort = raw.get("effort")
-    if records.parse_enum(records.Effort, effort) is None:
-        errors.append(f"{p} effort {effort!r} invalid ({VALID_EFFORTS})")
+    effort_levels = models.ABSTRACT_EFFORTS if "tier" in raw else models.EFFORTS
+    if effort not in effort_levels:
+        errors.append(f"{p} effort {effort!r} invalid ({' | '.join(effort_levels)})")
+    native_effort = raw.get("native_effort")
+    if "native_effort" in raw and native_effort not in models.NATIVE_EFFORTS:
+        errors.append(f"{p} native_effort {native_effort!r} invalid ({' | '.join(models.NATIVE_EFFORTS)})")
 
     # G008: `model` is a bare string (legacy, opaque) or a semantic table
     # parsed by the shared contract. Table problems surface as errors that
@@ -609,6 +626,8 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
     caps = raw.get("capabilities", [])
     if not isinstance(caps, list) or not all(isinstance(c, str) and c.strip() for c in caps):
         errors.append(f"{p} capabilities must be a list of non-empty strings")
+    elif tier == "S" and not (set(caps) - records.GENERIC_CAPABILITIES):
+        errors.append(f"{p} S requires a named specialized capability, e.g. ocr or decision")
 
     transport = raw.get("prompt_transport", "file")
     if transport not in VALID_TRANSPORTS.split(" | "):
@@ -673,7 +692,7 @@ def _build_profile(name: str, raw: dict) -> Profile:
         driver=records.Driver(raw["driver"]),
         harness=records.Harness(raw["harness"]),
         model=model,
-        model_class=records.ModelClass(raw["class"]),
+        model_class=records.ModelClass(raw["class"]) if "class" in raw else None,
         effort=records.Effort(raw["effort"]),
         capabilities=tuple(raw.get("capabilities", [])),
         executable=raw.get("executable"),
@@ -683,6 +702,8 @@ def _build_profile(name: str, raw: dict) -> Profile:
         host_mode=raw.get("host_mode", "self"),
         agent_ref=raw.get("agent_ref"),
         model_spec=model_spec,
+        tier=records.ModelTier(raw["tier"]) if "tier" in raw else None,
+        native_effort=raw.get("native_effort"),
         quota_domain=(
             raw["quota_domain"].strip()
             if isinstance(raw.get("quota_domain"), str)
@@ -1509,7 +1530,9 @@ def migrate_profiles_to_user(project_profiles: Path,
     lines = ["schema_version = 1\n"]
     for name, entry in target_map.items():
         lines.append(f"\n[profiles.{name}]\n")
-        for key in ("driver", "harness", "model", "class", "effort"):
+        for key in ("driver", "harness", "model", "tier", "class", "effort", "native_effort"):
+            if key not in entry:
+                continue
             value = entry[key]
             if key == "model" and isinstance(value, dict):
                 # G008: semantic model tables migrate as TOML inline

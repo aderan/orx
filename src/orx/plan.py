@@ -27,8 +27,6 @@ from orx.records import (
 
 TASK_ID_RE = re.compile(r"^T\d+$")
 
-HIGH_RISK_TOKENS = ("architect", "migration", "migrate", "refactor", "public api", "breaking")
-SMALL_SCOPE_TOKENS = ("typo", "rename", "comment", "log line", "one line", "tiny")
 
 
 class Exploration(BaseModel):
@@ -767,8 +765,7 @@ def strict_json_schema(schema: dict) -> dict:
 
 
 def resolve_depth(goal_text: str, explicit: str | None = None) -> PlanDepth:
-    """--depth wins; otherwise deterministic keyword rules on the Goal text.
-    Never calls a model."""
+    """Use the Controller's explicit choice, otherwise standard planning."""
     if explicit:
         try:
             return PlanDepth(explicit)
@@ -776,11 +773,6 @@ def resolve_depth(goal_text: str, explicit: str | None = None) -> PlanDepth:
             raise records.ConfigError(
                 [f"--depth {explicit!r} invalid (expected light | standard | deep)"]
             ) from None
-    text = goal_text.lower()
-    if any(token in text for token in HIGH_RISK_TOKENS):
-        return PlanDepth.DEEP
-    if any(token in text for token in SMALL_SCOPE_TOKENS):
-        return PlanDepth.LIGHT
     return PlanDepth.STANDARD
 
 

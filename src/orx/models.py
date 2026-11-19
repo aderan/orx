@@ -56,10 +56,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-# The ORX effort vocabulary. Kept in lockstep with records.Effort (the
-# enum mirrors these values; config derives its message vocabulary from
-# here so there is exactly one list).
+# The readable effort vocabulary includes legacy xhigh. New tier profiles
+# validate against ABSTRACT_EFFORTS; native overrides use NATIVE_EFFORTS.
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+ABSTRACT_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+NATIVE_EFFORTS: tuple[str, ...] = (*EFFORTS, "ultra")
 
 # Speed dimension vocabulary: the "-fast" CLI variants map to "fast";
 # everything else is "standard". ``fast = <bool>`` is an accepted alias.
@@ -199,9 +200,9 @@ class ModelSpec:
             raise ModelSpecError("model.version requires model.family")
         if self.family is None and self.model_id is None:
             raise ModelSpecError("model must declare either family or id")
-        if self.effort is not None and self.effort not in EFFORTS:
+        if self.effort is not None and self.effort not in NATIVE_EFFORTS:
             raise ModelSpecError(
-                f"model.effort {self.effort!r} invalid (expected {' | '.join(EFFORTS)})"
+                f"model.effort {self.effort!r} invalid (expected {' | '.join(NATIVE_EFFORTS)})"
             )
         if self.speed is not None and self.speed not in SPEEDS:
             raise ModelSpecError(

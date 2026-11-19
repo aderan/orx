@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from orx import model_catalog
@@ -65,6 +66,7 @@ from orx.adapters.base import (
     captured_stdout,
     catalog_state,
     effective_model_spec,
+    native_model_spec,
     identity_token,
     identity_tokens,
     launch_failed,
@@ -163,7 +165,7 @@ def _bracket_keys(catalog, help_text: str) -> set[str]:
 
 
 def _resolve_enumerated(spec: ModelSpec, mapped: str | None,
-                        entries: list, catalog) -> ResolvedModel:
+                        entries: list, catalog, map_max: bool = False) -> ResolvedModel:
     """Pick the catalog entry satisfying the requested dimensions.
 
     Explicit context or capability dimensions have no channel on an
@@ -186,6 +188,10 @@ def _resolve_enumerated(spec: ModelSpec, mapped: str | None,
             "capability requirements cannot be verified against the cursor"
             " model catalog", spec, catalog,
         )
+    levels = {entry.effort for entry in entries}
+    if map_max and mapped == "max" and "max" not in levels and "xhigh" in levels:
+        mapped = "xhigh"
+        spec = replace(spec, effort=mapped)
     has_effort_variants = any(entry.effort is not None for entry in entries)
     pool = entries
     if has_effort_variants:
@@ -300,7 +306,7 @@ def _resolve_parameterized(spec: ModelSpec, mapped: str | None, token: str,
 
 
 def resolve_cursor_model(spec: ModelSpec, *, help_text: str,
-                         catalog) -> ResolvedModel:
+                         catalog, map_max: bool = False) -> ResolvedModel:
     """Resolve one semantic model declaration against the cursor catalog.
 
     The single resolution path for every role (worker/planner/verifier)
@@ -320,7 +326,7 @@ def resolve_cursor_model(spec: ModelSpec, *, help_text: str,
             spec=spec, cli_slug=token, strategy="verbatim_bracket",
             bracket_params=params, catalog_generation=None,
         )
-    mapped = EFFORT_MAP.get(spec.effort) if spec.effort else None
+    mapped = EFFORT_MAP.get(spec.effort, spec.effort)
     # Candidate spellings: the declared token, its dash-normalized twin,
     # and (family form only) the CLI's own cursor- prefixed spellings —
     # exact matches always win in this order.
@@ -337,7 +343,7 @@ def resolve_cursor_model(spec: ModelSpec, *, help_text: str,
             token = candidate
             break
     if entries:
-        return _resolve_enumerated(spec, mapped, entries, catalog)
+        return _resolve_enumerated(spec, mapped, entries, catalog, map_max)
     if spec.model_id is None:
         # Version policy across catalog evolution (family-form only; an id
         # is opaque and keeps the legacy ladder):
@@ -368,7 +374,7 @@ def resolve_cursor_model(spec: ModelSpec, *, help_text: str,
                     " versions (pin one)", spec, catalog,
                 )
             return _resolve_enumerated(
-                spec, mapped, next(iter(versions.values())), catalog)
+                spec, mapped, next(iter(versions.values())), catalog, map_max)
     return _resolve_parameterized(spec, mapped, token, help_text, catalog)
 
 
@@ -383,7 +389,7 @@ def planned_effort(resolved: ResolvedModel, requested: str) -> EffortOutcome:
     """
     bracket_effort = dict(resolved.bracket_params).get("effort")
     if resolved.strategy == "catalog_variant":
-        mapped = EFFORT_MAP.get(resolved.spec.effort) if resolved.spec.effort else None
+        mapped = EFFORT_MAP.get(resolved.spec.effort, resolved.spec.effort)
         if mapped is not None:
             return EffortOutcome(
                 requested=requested, actual=mapped,
@@ -465,8 +471,20 @@ class CursorAdapter:
         help_result = runtime.run_argv(["agent", "--help"], cwd=Path.cwd(), timeout=20)
         help_text = help_result.stdout + "\n" + help_result.stderr
         catalog = model_catalog.launch_catalog("cursor")
-        spec = effective_model_spec(profile)
-        resolved = resolve_cursor_model(spec, help_text=help_text, catalog=catalog)
+        spec = native_model_spec(profile)
+        resolved = resolve_cursor_model(
+            spec, help_text=help_text, catalog=catalog,
+            map_max=profile.tier is not None and profile.native_effort is None,
+        )
+        planned = planned_effort(resolved, profile.effort.value)
+        native_effort = resolved.spec.effort if planned.actual != EFFORT_PROVIDER_DEFAULT else None
+        if resolved.strategy == "verbatim_bracket":
+            native_effort = dict(resolved.bracket_params).get("effort")
+        if (profile.tier is not None or profile.native_effort is not None) and resolved.strategy == "verbatim_bracket":
+            if native_effort != spec.effort:
+                raise _resolution_error("model bracket effort conflicts with mapped native effort", spec, catalog)
+        if profile.native_effort is not None and native_effort is None:
+            raise _resolution_error("native_effort has no validated launch channel for this model", spec, catalog)
         argv = [
             "agent", "--print", "--output-format", "json",
             "--workspace", str(root), "--trust", "--force",
@@ -478,10 +496,13 @@ class CursorAdapter:
         # (Codex does; observed in a real run, 2026-10-03).
         return Launch(
             argv=argv, cwd=root, timeout=timeout,
-            planned_effort=planned_effort(resolved, profile.effort.value),
+            planned_effort=planned,
             label=f"cursor:{profile.name}",
             stdin_text="",
-            model_resolution=resolved.to_dict(),
+            model_resolution={**resolved.to_dict(),
+                              "spec": effective_model_spec(profile).to_dict(),
+                              "requested_effort": profile.effort.value,
+                              "native_effort": native_effort},
         )
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:

@@ -1,76 +1,76 @@
 # Routing strategy — model tiers, roles, and validation layers
 
-Status: active policy (adopted 2026-10-03). This document records *why* the
-routing tables look the way they do; `.orx/config.toml` and
-`~/.config/orx/profiles.toml` are the executed form. Terminology lives in
-[CONTEXT.md](../CONTEXT.md); the frozen M0 mechanics are in
-`docs/m0-plan.md`.
+Status updated 2026-11-19 for Stage 3. Project configuration declares the
+candidate order for each role and planning depth. Shared terms live in
+[CONTEXT.md](../CONTEXT.md); exact model resolution lives in
+[model selection](model-selection.md).
 
-## Model tiering convention
+## Model tiers and capabilities
 
-Three classes, mapped to vendors by product tier (not by benchmark):
+| Profile tier | Meaning |
+| --- | --- |
+| T0 | Frontier general model |
+| T1 | Advanced general model |
+| T2 | Strong general model |
+| T3 | Efficient general model |
+| S | Specialized model, such as OCR or a Decision Model classifier |
 
-| ORX class | Convention | Current members |
-|---|---|---|
-| `frontier` | latest flagships of codex / claude code | `gpt-6.1-sol` (codex 6.1), `claude-opus-5-5` (claude code 5.5, via cursor) |
-| `strong` | other vendors' pro models | glm 5.3 (the zcode host), `grok-4.7`, deepseek |
-| `economy` | flash / compose tiers | glm 5.3 flash, `composer-2.5` |
+Set `tier` explicitly for each new profile. Tier describes capability and
+does not reorder candidates. S profiles declare a specialized capability
+such as `ocr` or `decision`. Routing requires that capability in the task's
+requirements. Generic `coding`, `vision`, and `host_context` declarations
+alone cannot select an S profile.
 
-deepseek and glm 5.3 flash have no harness adapter yet — they are part of the
-convention but get no profile until a harness exists.
+Legacy `class = "frontier" | "strong" | "economy"` remains readable and has
+no inferred T0–T3 tier. New profiles declare either `tier` or legacy
+`class`. Explicitly classify models when migrating a project.
 
-Class ≠ effort. Effort (`low | medium | high | xhigh | max`) is the reasoning
-depth a profile requests; it makes a model use its existing ability more
-fully but never raises the model's ceiling. A `strong + max` profile does not
-become a frontier model.
+## Planning depth and effort
 
-**House rule:** GLM models default to `max` effort — the strong tier
-compensates with maximum reasoning depth (the host profile runs this way).
+The Controller assesses the planning work and calls `orx plan --depth`
+or `orx replan --depth`. Use `light` for a clear local change, `standard`
+for normal decomposition, and `deep` for key unknowns, cross-module effects,
+or recovery design. When the Controller omits the flag, project `plan.depth`
+applies. Its default is standard. Legacy auto also resolves to standard.
 
-### Effort vocabulary (renamed 2026-10-03)
+Every depth uses its configured list in order, subject to capability,
+host, budget, and resource availability checks. Deep accepts any general
+tier or legacy class in that list. Legacy `allow_class_downgrade` remains
+readable and has no routing effect.
 
-`quick | standard | deep | max` → `low | medium | high | xhigh | max`
-(`quick→low`, `standard→medium`, `deep→high`, `max` unchanged, `xhigh` new).
-Historical rows in `state.db` and pre-M2 docs keep the old words; nothing is
-back-written. Provider-facing levels map 1:1 today (`EFFORT_MAP` in
-`adapters/base.py` stays as the seam), and adapters still validate against
-each provider's catalog before passing a level.
+New tier profiles use `low | medium | high | max` effort. Effort is
+independent of tier, planning depth, and D1–D5 task difficulty.
+D1–D5 remains a Controller/Planner assessment guide.
 
-Plan depth (`light | standard | deep`) is a different axis — how much planning
-a Goal needs, not how hard a model thinks. It keeps its vocabulary.
+| Harness | New-profile effort mapping |
+| --- | --- |
+| Codex | Same native level when supported by the catalog. Max maps to xhigh when the selected model exposes xhigh and lacks max. |
+| Cursor | Same level via catalog or parameterized model. Max maps to xhigh when that family exposes xhigh and lacks max. |
+| ZCode | Low → low, Medium → high, High → high, Max → max. |
+| Claude Code | Low → low, Medium → medium, High → high, Max → max. |
 
-## Model declaration and resolution (mechanism, not policy)
+For a model that needs a different native setting, configure
+`native_effort = "xhigh"` or another supported native level. The
+requested abstract effort and native launch parameter are recorded
+separately. Catalog-confirmed launch parameters and upstream observed
+effort retain their existing sources. ZCode and Claude may leave effective
+upstream effort unknown.
 
-Since G008 (2026-10-07) a profile's `model` may be declared semantically
-(`model = { family = "grok", version = "4.7" }`) instead of a bare CLI slug.
-Both forms are equivalent at this policy layer: class, effort, and ladder
-order are properties of the profile, never of the spelling. Turning either
-form into the harness `--model` argument — baked slugs, bracket parameters,
-the refreshable catalog, evolution diagnostics — is mechanism and lives in
-[model selection](model-selection.md). The tier table and the role defaults
-below are unchanged by that layer.
+Legacy class profiles preserve their old effort behavior, including
+`xhigh`. Historical database rows are read as recorded. Models with no Cursor effort control keep the provider default, recorded
+with a null native effort. An explicit override requires a launch channel.
+The default templates and ZCode preset use the new vocabulary.
 
-## Role × class × effort defaults
+## Configuring roles
 
-| Stage | Default | Escalation |
-|---|---|---|
-| Controller (`[controller]`) | strong + max (`orx-host`) | escalate by moving work to a stronger class, not by deliberating more |
-| Plan, light depth | strong + medium (`cursor-strong`) | — |
-| Plan, standard/deep | frontier + high (`codex-frontier`, `cursor-frontier`) | deep keeps the frontier-only gate (`allow_class_downgrade = false`) |
-| Build (worker) | strong + medium (`cursor-strong`) | ladder in list order, see below |
-| Verify, structural | economy + medium (`cursor-economy`) | strong fallback (`cursor-strong`, `orx-host`) |
-| Verify, semantic | strong + medium (fallback rungs of `[verify]`) | pin a stronger profile for the retry |
-| Verify, visual | frontier + vision (`cursor-frontier`, `agent[vision]:`) | — |
-| Replan | frontier + high (planner pool) | — |
+The current ADE conversation serves as Controller. Choose Planner, Worker,
+and Verifier profiles and their order in project config. A model may serve
+different roles through different effort profiles. Controller strategy
+selects planning depth or escalation, and ORX records the profile selected
+by configured routing.
 
-The intelligence budget is deliberately asymmetric: **planning is
-intelligence-heavy, building is execution-heavy, verification is
-evidence-heavy, the controller is state-heavy.** M1 paid-run data backs this —
-see `docs/m1-report.md`: the frontier planner cost ~363k input tokens per
-draft, strong workers carried the builds, and the economy verifier ran every
-audit at high frequency for ~1/7 the input. The expensive mistake of M1 was
-not tiering but *planner drafts that were thrown away* (finding #5) — which
-is why planner runs are gated behind `replan` discipline, not made cheaper.
+The sections below retain the deployed legacy profile names used in prior
+Runs. They provide examples of ordered roles and failure handling.
 
 ### Worker escalation ladder
 

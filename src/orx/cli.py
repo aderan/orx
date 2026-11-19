@@ -340,7 +340,10 @@ def _model_selection(
             "driver": profile.driver.value,
             "harness": profile.harness.value,
             "model": profile.model,
+            "tier": profile.tier.value if profile.tier is not None else None,
+            "legacy_class": profile.model_class.value if profile.model_class is not None else None,
             "effort": profile.effort.value,
+            "native_effort": profile.native_effort,
             "host_mode": profile.host_mode if profile.driver.value == "host" else None,
             "agent_ref": profile.agent_ref,
             "host_blocked_reason": controller.rejection(profile) if controller and executor else None,
@@ -384,6 +387,10 @@ def _render_model_selection(selection: dict, root: Path | None) -> None:
             f"{name} · {detail} · {row['model']} / {row['effort']}"
             f" (profile: {row['profile_origin']})"
         )
+        if row["tier"]:
+            rendered += f" [{row['tier']}]"
+        if row["native_effort"]:
+            rendered += f" [native effort: {row['native_effort']}]"
         if row["host_blocked_reason"]:
             rendered += f" [{row['host_blocked_reason']}]"
         return rendered
@@ -1051,7 +1058,7 @@ def goal_cancel(json_out: bool = JsonOpt) -> None:
 @handle_errors
 def plan(
     ctx: typer.Context,
-    depth: Optional[str] = typer.Option(None, "--depth", help="light | standard | deep (overrides config and tokens)."),
+    depth: Optional[str] = typer.Option(None, "--depth", help="Controller's choice: light | standard | deep (overrides config)."),
     profile: Optional[str] = typer.Option(None, "--profile", help="Pin the planner profile; disables fallback."),
     session: Optional[str] = SessionOpt,
     json_out: bool = JsonOpt,
@@ -2375,9 +2382,10 @@ def profiles(json_out: bool = JsonOpt) -> None:
     _ok(json_out, profiles=rows)
     if not json_out:
         for row in rows:
+            classification = f"tier={row['tier']}" if row.get("tier") else f"class={row['class']}"
             typer.echo(
                 f"{row['name']:<24} driver={row['driver']:<8} harness={row['harness']:<6}"
-                f" class={row['class']:<8} layer={row['layer']:<8}"
+                f" {classification:<14} effort={row['effort']:<6} layer={row['layer']:<8}"
                 f" resource={row['resource_status']}"
             )
 

@@ -54,6 +54,7 @@ from orx.adapters.base import (
     captured_stdout,
     catalog_state,
     effective_model_spec,
+    native_model_spec,
     identity_token,
     identity_tokens,
     miss_without_usage,
@@ -91,7 +92,7 @@ def _resolution_error(detail: str, spec: ModelSpec, catalog) -> ModelResolutionE
 
 
 def resolve_codex_model(spec: ModelSpec, *, catalog,
-                        strict: bool) -> ResolvedModel:
+                        strict: bool, map_max: bool = False) -> ResolvedModel:
     """Resolve one model declaration against the local codex catalog.
 
     ``strict`` is true for semantic (model-table) declarations and false
@@ -141,7 +142,9 @@ def resolve_codex_model(spec: ModelSpec, *, catalog,
                 "capability requirements cannot be verified against the"
                 " codex model catalog", spec, catalog,
             )
-    mapped = EFFORT_MAP.get(spec.effort) if spec.effort else None
+    if map_max and spec.effort == "max" and "max" not in entry.efforts and "xhigh" in entry.efforts:
+        spec = replace(spec, effort="xhigh")
+    mapped = EFFORT_MAP.get(spec.effort, spec.effort)
     if mapped is not None and mapped in entry.efforts:
         return ResolvedModel(
             spec=spec, cli_slug=entry.slug, strategy="catalog_levels",
@@ -236,9 +239,12 @@ class CodexAdapter:
                    scratch: Path) -> tuple[list[str], EffortOutcome, Path, ResolvedModel]:
         catalog = model_catalog.launch_catalog("codex")
         resolved = resolve_codex_model(
-            effective_model_spec(profile), catalog=catalog,
-            strict=profile.model_spec is not None,
+            native_model_spec(profile), catalog=catalog,
+            strict=profile.model_spec is not None or profile.tier is not None or profile.native_effort is not None,
+            map_max=profile.tier is not None and profile.native_effort is None,
         )
+        if (profile.tier is not None or profile.native_effort is not None) and not resolved.bracket_params:
+            raise _resolution_error("requested native effort cannot be validated", resolved.spec, catalog)
         effort_args, effort = _effort_flag(resolved, profile.effort.value)
         scratch.mkdir(parents=True, exist_ok=True)
         last_message = scratch / "last-message.txt"
@@ -265,7 +271,10 @@ class CodexAdapter:
                       # input (observed in a real run, 2026-10-03); never let
                       # it inherit the controller's stdin.
                       stdin_text="",
-                      model_resolution=resolved.to_dict())
+                      model_resolution={**resolved.to_dict(),
+                                        "spec": effective_model_spec(profile).to_dict(),
+                                        "requested_effort": profile.effort.value,
+                                        "native_effort": dict(resolved.bracket_params).get(EFFORT_FLAG_KEY)})
 
     def build_worker_launch(self, *, root, scratch, profile, prompt, timeout) -> Launch:
         return self._launch(root=root, scratch=scratch, profile=profile,
