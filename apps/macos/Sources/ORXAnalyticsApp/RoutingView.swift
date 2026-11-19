@@ -3,6 +3,22 @@ import ORXAnalyticsCore
 
 /// Routing configuration has its own availability and never gates engine queries.
 struct RoutingView: View {
+    private enum Presentation: String, CaseIterable {
+        case candidates = "候选配置"
+        case topology = "派发拓扑"
+        case matrix = "等级与能力"
+    }
+
+    private struct CandidateInspection: Identifiable {
+        let candidate: RoutingCandidate
+        var id: String { candidate.profile }
+    }
+
+    @State private var presentation: Presentation = .candidates
+    @State private var filter = ""
+    @State private var tier = ""
+    @State private var inspection: CandidateInspection?
+
     @EnvironmentObject private var app: AppModel
     @AppStorage("orx.executable.path") private var savedExecutable = ""
     @State private var executable = ""
@@ -13,6 +29,8 @@ struct RoutingView: View {
     @State private var editing = false
     @State private var edits: [String: RoutingValue] = [:]
     @State private var preview: RoutingSnapshot?
+    @State private var previewedChanges: [String: RoutingValue]?
+    private var validPreview: RoutingSnapshot? { previewedChanges == edits ? preview : nil }
     @State private var saving = false
     @State private var message: String?
     @State private var loadID = UUID()
@@ -23,58 +41,132 @@ struct RoutingView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: ORXSpace.md) {
+                header
+                scopeControls
+                if let installedPath, let snapshot {
+                    ORXValueRow("ORX \(snapshot.orxVersion)", installedPath, monospaced: true)
+                        .textSelection(.enabled)
+                    ORXValueRow("目标配置文件", (validPreview ?? snapshot).targetPath, monospaced: true)
+                        .textSelection(.enabled)
+                }
+                if let error {
+                    ORXNotice(text: error, tone: .warning, symbol: "exclamationmark.triangle")
+                        .textSelection(.enabled)
+                }
+                if let message {
+                    ORXNotice(text: message, tone: .success, symbol: "checkmark.circle")
+                }
+            }
+            .padding(ORXSpace.lg)
+            .background(ORXColor.surface)
+            ORXRule()
+            if let snapshot {
+                let selection = (validPreview ?? snapshot).modelSelection
+                if !editing { presentationControls }
+                configuration(selection).disabled(saving)
+                if editing {
+                    ORXRule()
+                    actions(snapshot).padding(ORXSpace.lg).background(ORXColor.surface)
+                }
+            } else if loading {
+                ORXEmptyState("正在读取 ORX 配置", loading: true)
+            } else {
+                ORXEmptyState(error == nil ? "尚无路由配置" : "无法读取路由配置",
+                              detail: "使用兼容的 ORX 可执行文件，或调整顶栏路径后重新载入。",
+                              symbol: "point.3.connected.trianglepath.dotted")
+            }
+        }
+        .orxSurface()
+        .onAppear { executable = savedExecutable }
+        .task(id: app.routingProject) { await load(project: app.routingProject) }
+        .onChange(of: edits) { _ in clearPreview() }
+        .sheet(item: $inspection) { selected in
+            VStack(alignment: .leading, spacing: ORXSpace.lg) {
+                ORXPageHeader(selected.candidate.profile, detail: "配置是后续派发的候选。")
+                candidateFacts(selected.candidate)
+                Spacer(minLength: 0)
+                HStack {
+                    Spacer()
+                    Button("完成") { inspection = nil }
+                        .buttonStyle(ORXButtonStyle(variant: .primary))
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(ORXSpace.xl)
+            .frame(minWidth: ORXLayout.routingInspectorWidth)
+            .background(ORXColor.surface)
+        }
+    }
+
+    private var header: some View {
+        ORXPageHeader("模型与路由", detail: "检查生效配置和后续派发的候选顺序。") {
+            if editing {
+                ORXBadge(validPreview == nil ? "编辑中" : "预览中", tone: .warning)
+            }
+            Button {
+                Task { await load(project: app.routingProject) }
+            } label: {
+                Label("重新载入", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(ORXButtonStyle())
+            .disabled(loading || saving)
+            if snapshot != nil && !editing {
+                Button {
+                    editing = true
+                    message = nil
+                } label: {
+                    Label("编辑路由", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(ORXButtonStyle(variant: .primary))
+            }
+        }
+    }
+
+    private var scopeControls: some View {
+        HStack(alignment: .bottom, spacing: ORXSpace.md) {
+            ORXField("生效范围") {
                 Picker("生效范围", selection: Binding(get: { app.routingProject }, set: app.openRouting)) {
                     Text("用户默认").tag(String?.none)
                     ForEach(projects, id: \.self) { project in
                         Text(project).tag(Optional(project))
                     }
                 }
-                .disabled(saving)
-                Spacer()
-                Button("重新载入") { Task { await load(project: app.routingProject) } }
-                    .disabled(loading || saving)
+                .labelsHidden()
             }
-            HStack {
-                TextField("ORX 可执行文件路径", text: $executable,
-                          prompt: Text("自动查找"))
-                    .onSubmit { useExecutable() }
-                Button("使用此路径") { useExecutable() }
-                    .disabled(executable == savedExecutable || saving)
+            .frame(maxWidth: ORXLayout.routingScopeWidth)
+            .disabled(saving)
+            ORXField("ORX 可执行文件路径") {
+                ORXTextInput(title: "ORX 可执行文件路径", prompt: "自动查找", text: $executable, monospaced: true)
+                    .onSubmit { if !saving { useExecutable() } }
             }
-            if let installedPath, let snapshot {
-                Text("ORX \(snapshot.orxVersion)  ·  \(installedPath)")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Text("目标配置文件  \(snapshot.targetPath)")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Button("使用此路径", action: useExecutable)
+                .buttonStyle(ORXButtonStyle())
+                .disabled(executable == savedExecutable || saving)
+        }
+    }
+
+    private var presentationControls: some View {
+        HStack(spacing: ORXSpace.md) {
+            Picker("路由视图", selection: $presentation) {
+                ForEach(Presentation.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            if let error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            }
-            if let message {
-                Text(message).font(.callout).foregroundStyle(.secondary)
-            }
-            Divider()
-            if let snapshot {
-                configuration((preview ?? snapshot).modelSelection)
-                    .disabled(saving)
-                Divider()
-                actions(snapshot)
-            } else if loading {
-                ProgressView("正在读取 ORX 配置").frame(maxHeight: .infinity)
-            } else {
-                Text("配置可用后将在此显示。").foregroundStyle(.secondary)
-                Spacer()
+            .labelsHidden().pickerStyle(.segmented).fixedSize()
+            Spacer(minLength: ORXSpace.sm)
+            if presentation != .topology {
+                Picker("等级", selection: $tier) {
+                    Text("全部等级").tag("")
+                    ForEach(["T0", "T1", "T2", "T3", "S"], id: \.self) { Text($0).tag($0) }
+                }
+                .fixedSize()
+                ORXTextInput(title: "筛选候选", prompt: "配置名、模型或能力", text: $filter)
+                    .frame(maxWidth: ORXLayout.routingScopeWidth)
             }
         }
-        .padding(16)
-        .onAppear { executable = savedExecutable }
-        .task(id: app.routingProject) { await load(project: app.routingProject) }
-        .onChange(of: edits) { _ in preview = nil }
+        .padding(.horizontal, ORXSpace.lg)
+        .padding(.vertical, ORXSpace.sm)
+        .background(ORXColor.inset)
     }
 
     private func useExecutable() {
@@ -91,7 +183,7 @@ struct RoutingView: View {
         error = nil
         editing = false
         edits = [:]
-        preview = nil
+        clearPreview()
         message = nil
         defer { if id == loadID { loading = false } }
         do {
@@ -108,166 +200,292 @@ struct RoutingView: View {
 
     private func configuration(_ selection: RoutingSelection) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: ORXSpace.lg) {
                 controllerContext(selection.controller)
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("配置候选").font(.headline)
-                    Text("顺序来自配置。派发时 ORX 会检查任务能力、宿主与资源状态。")
-                        .font(.callout).foregroundStyle(.secondary)
+                if editing || presentation == .candidates {
+                    candidateGroups(selection)
+                } else if presentation == .topology {
+                    topology(selection)
+                } else {
+                    matrix(selection)
                 }
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Planner").font(.headline)
-                    let depth = selection.planner.depth
-                    let depthLabel = depth == "auto"
-                        ? "默认（\(selection.planner.effectiveDepth ?? "standard")）" : depth
-                    Text("默认规划深度  \(depthLabel)  ·  \(originLabel(selection.planner.depthOrigin))")
-                        .font(.callout).foregroundStyle(.secondary)
-                    if editing {
-                        Picker("默认规划深度", selection: textBinding("plan.depth", initial: depth)) {
-                            Text("默认（standard）").tag("auto")
-                            Text("light").tag("light")
-                            Text("standard").tag("standard")
-                            Text("deep").tag("deep")
-                        }
-                    }
-                    ForEach(["light", "standard", "deep"], id: \.self) { depth in
-                        if let group = selection.planner.depths[depth] {
-                            self.group(depth, origin: group.origin, candidates: group.candidates,
-                                       key: "plan.\(depth).profiles")
-                        }
-                    }
-                }
-                Divider()
-                group("Worker", origin: selection.worker.origin, candidates: selection.worker.candidates,
-                      key: "worker.profiles")
-                Divider()
-                group("Verifier", origin: selection.verifier.origin, candidates: selection.verifier.candidates,
-                      key: "verify.profiles")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(ORXSpace.lg)
+        }
+    }
+
+    private func candidateGroups(_ selection: RoutingSelection) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.lg) {
+            Text("配置候选").font(ORXType.title).accessibilityAddTraits(.isHeader)
+            let depth = selection.planner.depth
+            let depthLabel = depth == "auto"
+                ? "默认（\(selection.planner.effectiveDepth ?? "standard")）" : depth
+            HStack(spacing: ORXSpace.md) {
+                Label("Planner", systemImage: "list.bullet.rectangle").font(ORXType.section)
+                Text("默认规划深度 \(depthLabel) · \(originLabel(selection.planner.depthOrigin))")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                Spacer()
+                if editing {
+                    Picker("默认规划深度", selection: textBinding("plan.depth", initial: depth)) {
+                        Text("默认（standard）").tag("auto")
+                        Text("light").tag("light")
+                        Text("standard").tag("standard")
+                        Text("deep").tag("deep")
+                    }
+                    .fixedSize()
+                }
+            }
+            ForEach(["light", "standard", "deep"], id: \.self) { depth in
+                if let group = selection.planner.depths[depth] {
+                    self.group(depth, origin: group.origin, candidates: group.candidates,
+                               key: "plan.\(depth).profiles")
+                }
+            }
+            group("Worker", origin: selection.worker.origin, candidates: selection.worker.candidates,
+                  key: "worker.profiles")
+            group("Verifier", origin: selection.verifier.origin, candidates: selection.verifier.candidates,
+                  key: "verify.profiles")
+        }
+    }
+
+    private func topology(_ selection: RoutingSelection) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.md) {
+            Text("派发拓扑").font(ORXType.title).accessibilityAddTraits(.isHeader)
+            Text("各角色显示配置顺序。派发时 ORX 按任务能力、宿主和资源状态筛选。")
+                .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            HStack(alignment: .top, spacing: ORXSpace.md) {
+                topologyStage("Controller", profiles: [selection.controller.candidate.profile])
+                topologyArrow
+                let depth = selection.planner.effectiveDepth ?? selection.planner.depth
+                topologyStage("Planner · \(depth)", profiles: selection.planner.depths[depth]?.candidates.map(\.profile) ?? [])
+                topologyArrow
+                topologyStage("Worker", profiles: selection.worker.candidates.map(\.profile))
+                topologyArrow
+                topologyStage("Verifier", profiles: selection.verifier.candidates.map(\.profile))
+            }
+        }
+    }
+
+    private var topologyArrow: some View {
+        Image(systemName: "arrow.right")
+            .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            .padding(.top, ORXSpace.md)
+            .accessibilityHidden(true)
+    }
+
+    private func topologyStage(_ label: String, profiles: [String]) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            Text(label).font(ORXType.section)
+            if profiles.isEmpty {
+                Text("未配置候选").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            }
+            ForEach(Array(profiles.enumerated()), id: \.offset) { index, profile in
+                Label(profile, systemImage: index == 0 ? "arrow.forward.circle" : "arrow.turn.down.right")
+                    .font(ORXType.code).help(profile)
+            }
+        }
+        .orxCard(padding: ORXSpace.md)
+    }
+
+    private func matrix(_ selection: RoutingSelection) -> some View {
+        let planners = ["light", "standard", "deep"].flatMap { selection.planner.depths[$0]?.candidates ?? [] }
+        let candidates = planners + selection.worker.candidates + selection.verifier.candidates
+        let unique = candidates.reduce(into: [RoutingCandidate]()) { rows, candidate in
+            if !rows.contains(where: { $0.profile == candidate.profile }) { rows.append(candidate) }
+        }
+        let visible = unique.filter(matchesFilter)
+        return VStack(alignment: .leading, spacing: ORXSpace.md) {
+            Text("等级与能力").font(ORXType.title).accessibilityAddTraits(.isHeader)
+            if visible.isEmpty {
+                ORXNotice(text: "没有匹配的配置候选", symbol: "magnifyingglass")
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: ORXSpace.lg, verticalSpacing: ORXSpace.sm) {
+                    GridRow {
+                        Text("执行配置")
+                        Text("模型")
+                        Text("等级")
+                        Text("请求推理")
+                        Text("执行能力")
+                    }
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                    ORXRule().gridCellUnsizedAxes(.horizontal)
+                    ForEach(visible, id: \.profile) { candidate in
+                        GridRow {
+                            Button(candidate.profile) { inspection = CandidateInspection(candidate: candidate) }
+                                .buttonStyle(ORXButtonStyle(variant: .quiet))
+                            Text(configuredModel(candidate))
+                            Text(RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) ?? "—")
+                            Text(candidate.effort ?? "—")
+                            Text(candidate.capabilities?.joined(separator: "、") ?? "—")
+                        }
+                        .font(ORXType.label)
+                    }
+                }
+                .orxCard()
+            }
         }
     }
 
     private func controllerContext(_ controller: RoutingSelection.Controller) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Controller 会话").font(.headline)
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            HStack {
+                Label("Controller 会话", systemImage: "terminal").font(ORXType.section)
+                Spacer()
+                ORXBadge(originLabel(controller.origin))
+            }
             if let host = controller.sessionHarness {
                 let origin = controller.source == "environment" ? "查询环境中的宿主" : "配置查询声明的宿主"
-                Text("\(origin)  \(host)")
+                ORXValueRow(origin, host)
                 if let agents = controller.nativeAgents, !agents.isEmpty {
-                    Text("已声明的原生代理  \(agents.joined(separator: "、"))")
+                    ORXValueRow("已声明的原生代理", agents.joined(separator: "、"))
                 }
             } else {
-                Text("本次配置查询没有声明宿主。执行详情显示派发时记录的 Controller。")
+                Text("本次配置查询未声明宿主。Run 详情记录当次派发的 Controller。")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
-            Text("兼容配置  \(controller.candidate.profile)  ·  \(originLabel(controller.origin))")
-                .font(.caption)
+            ORXValueRow("兼容配置", controller.candidate.profile, monospaced: true)
             if let error = controller.candidate.error {
-                Text(error).foregroundStyle(.orange)
+                Text(error).font(ORXType.caption).foregroundStyle(ORXColor.warningText)
             }
         }
-        .font(.callout)
-        .foregroundStyle(.secondary)
+        .orxCard(padding: ORXSpace.md)
     }
 
-    private func group(_ title: String, origin: String,
-                       candidates: [RoutingCandidate], key: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func group(_ title: String, origin: String, candidates: [RoutingCandidate], key: String) -> some View {
+        let visible = editing ? candidates : candidates.filter(matchesFilter)
+        return VStack(alignment: .leading, spacing: ORXSpace.sm) {
             HStack {
-                Text(title).font(.headline)
-                Text(originLabel(origin)).font(.caption).foregroundStyle(.secondary)
+                Text(title).font(ORXType.section)
+                ORXBadge(originLabel(origin))
+                Spacer()
             }
             if candidates.isEmpty {
-                Text("未配置候选").foregroundStyle(.secondary)
+                Text("未配置候选").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            } else if visible.isEmpty {
+                Text("没有匹配的候选").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
-            if !editing || preview != nil || key == nil {
+            if !editing || validPreview != nil {
                 ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
-                    candidateRow(candidate, position: index + 1)
+                    if editing || matchesFilter(candidate) {
+                        ORXRule()
+                        candidateRow(candidate, position: index + 1)
+                    }
                 }
             }
-            if editing, let key {
-                profileOrder(key, initial: candidates.map(\.profile))
-                    .disabled(saving)
-            }
+            if editing { profileOrder(key, initial: candidates.map(\.profile)) }
         }
+        .orxCard(padding: ORXSpace.md)
     }
 
     private func candidateRow(_ candidate: RoutingCandidate, position: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(position). \(candidate.profile)").font(.body.weight(.medium))
+        Button {
+            inspection = CandidateInspection(candidate: candidate)
+        } label: {
+            HStack(alignment: .top, spacing: ORXSpace.md) {
+                Text("\(position)").font(ORXType.number).foregroundStyle(ORXColor.secondary)
+                VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                    Text(candidate.profile).font(ORXType.section)
+                    if let error = candidate.error {
+                        Text(error).font(ORXType.caption).foregroundStyle(ORXColor.warningText)
+                    } else {
+                        Text([configuredModel(candidate), candidateExecution(candidate),
+                              candidate.profileOrigin.map(originLabel)].compactMap { $0 }.joined(separator: " · "))
+                            .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                        if let reason = candidate.hostBlockedReason {
+                            Label(RoutingLabels.reason(reason), systemImage: "exclamationmark.triangle")
+                                .font(ORXType.caption).foregroundStyle(ORXColor.warningText)
+                        }
+                    }
+                }
+                Spacer(minLength: ORXSpace.sm)
+                if let level = RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) {
+                    ORXBadge(level)
+                }
+                if let effort = candidate.effort { ORXBadge(effort) }
+                Image(systemName: "chevron.right").font(ORXType.badge)
+                    .foregroundStyle(ORXColor.secondary).accessibilityHidden(true)
+            }
+            .padding(.vertical, ORXSpace.sm)
+            .padding(.horizontal, ORXSpace.xs)
+        }
+        .buttonStyle(ORXRowButtonStyle())
+        .help("查看 \(candidate.profile) 的配置与能力")
+    }
+
+    private func candidateFacts(_ candidate: RoutingCandidate) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            ORXValueRow("执行方式", candidateExecution(candidate) ?? "—")
+            ORXValueRow("配置模型", configuredModel(candidate), monospaced: true)
+            ORXValueRow("来源", candidate.profileOrigin.map(originLabel) ?? "—")
+            ORXValueRow("等级", RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) ?? "—")
+            ORXValueRow("请求推理", candidate.effort ?? "—")
+            if let effort = candidate.nativeEffort { ORXValueRow("原生推理覆盖", effort) }
+            if let ref = candidate.agentRef { ORXValueRow("原生代理", ref) }
+            if let skills = candidate.capabilities { ORXValueRow("执行能力", skills.joined(separator: "、")) }
+            if let spec = candidate.modelSpec {
+                if let speed = spec.speed { ORXValueRow("速度", speed) }
+                if let size = spec.context { ORXValueRow("上下文", "\(MetricsFormat.countText(size)) tokens") }
+                if let skills = spec.capabilities { ORXValueRow("模型能力要求", skills.joined(separator: "、")) }
+            }
+            if let reason = candidate.hostBlockedReason {
+                ORXNotice(text: RoutingLabels.reason(reason), tone: .warning, symbol: "exclamationmark.triangle")
+            }
             if let error = candidate.error {
-                Text(error).foregroundStyle(.orange)
-            } else {
-                Text([RoutingLabels.execution(driver: candidate.driver, harness: candidate.harness,
-                                              declaredHarness: candidate.declaredHarness,
-                                              hostMode: candidate.hostMode),
-                      candidate.agentRef.map { "原生代理 \($0)" },
-                      candidate.profileOrigin.map(originLabel)].compactMap { $0 }.joined(separator: "  ·  "))
-                    .foregroundStyle(.secondary)
-                let model = candidate.driver == "host" && candidate.model == "unconfigured"
-                    ? "沿用会话模型" : candidate.model
-                Text([model.map { "配置模型 \($0)" },
-                      RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass),
-                      candidate.effort.map { "请求推理 \($0)" },
-                      candidate.nativeEffort.map { "原生覆盖 \($0)" }]
-                    .compactMap { $0 }.joined(separator: "  ·  "))
-                if let capabilities = candidate.capabilities, !capabilities.isEmpty {
-                    Text("执行能力  \(capabilities.joined(separator: "、"))")
-                }
-                if let spec = candidate.modelSpec {
-                    let requirements = (spec.capabilities ?? []).joined(separator: "、")
-                    let summary = [
-                        spec.speed.map { "速度 \($0)" },
-                        spec.context.map { "上下文 \(MetricsFormat.countText($0)) tokens" },
-                        requirements.isEmpty ? nil : "模型能力要求 \(requirements)",
-                    ].compactMap { $0 }.joined(separator: "  ·  ")
-                    if !summary.isEmpty { Text(summary) }
-                }
-                if let reason = candidate.hostBlockedReason {
-                    Text(RoutingLabels.reason(reason)).foregroundStyle(.orange)
-                }
+                ORXNotice(text: error, tone: .warning, symbol: "exclamationmark.triangle")
             }
         }
-        .font(.callout)
         .textSelection(.enabled)
     }
 
-    @ViewBuilder
-    private func actions(_ snapshot: RoutingSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if editing {
-                Text(preview == nil
-                     ? "先预览目标配置文件及生效值，再保存。"
-                     : "正在预览保存后的生效配置。")
-                    .font(.callout)
-                Text("变更由后续派发读取，已有尝试的模型和路由记录仍按当次事实显示。")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("取消") {
-                        editing = false
-                        preview = nil
-                        edits = [:]
-                        error = nil
-                    }
-                    Spacer()
-                    if saving { ProgressView().controlSize(.small) }
-                    Button("预览变更") { Task { await send(snapshot, apply: false) } }
-                        .disabled(edits.isEmpty)
-                    Button("保存") { Task { await send(snapshot, apply: true) } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(preview == nil)
-                }
-                .disabled(saving)
-            } else {
-                Button("编辑路由") { editing = true }
-            }
+    private func candidateExecution(_ candidate: RoutingCandidate) -> String? {
+        RoutingLabels.execution(driver: candidate.driver, harness: candidate.harness,
+                                declaredHarness: candidate.declaredHarness, hostMode: candidate.hostMode)
+    }
+
+    private func configuredModel(_ candidate: RoutingCandidate) -> String {
+        if candidate.driver == "host" && candidate.model == "unconfigured" {
+            return "沿用会话模型"
         }
+        return candidate.model ?? "模型未配置"
+    }
+
+    private func matchesFilter(_ candidate: RoutingCandidate) -> Bool {
+        guard tier.isEmpty || candidate.tier == tier else { return false }
+        let term = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keys = [candidate.profile, configuredModel(candidate)] + (candidate.capabilities ?? [])
+        return term.isEmpty || keys.contains { $0.localizedCaseInsensitiveContains(term) }
+    }
+
+    private func actions(_ snapshot: RoutingSnapshot) -> some View {
+        HStack(alignment: .center, spacing: ORXSpace.sm) {
+            VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                Text(validPreview == nil ? "编辑后预览，确认生效配置再保存。" : "正在预览保存后的生效配置。")
+                    .font(ORXType.section)
+                Text("变更用于后续派发；已有尝试仍按当次事实显示。")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            }
+            Spacer()
+            if saving { ProgressView().controlSize(.small).accessibilityLabel("正在处理配置") }
+            Button("取消") {
+                editing = false
+                clearPreview()
+                edits = [:]
+                error = nil
+            }
+            .buttonStyle(ORXButtonStyle(variant: .quiet))
+            Button("预览变更") { Task { await send(snapshot, apply: false) } }
+                .buttonStyle(ORXButtonStyle())
+                .disabled(edits.isEmpty)
+            Button("保存") { Task { await send(snapshot, apply: true) } }
+                .buttonStyle(ORXButtonStyle(variant: .primary))
+                .disabled(validPreview == nil)
+        }
+        .disabled(saving)
     }
 
     @MainActor
     private func send(_ base: RoutingSnapshot, apply: Bool) async {
-        guard !saving, let installedPath else { return }
+        guard !saving, !edits.isEmpty, !apply || validPreview != nil, let installedPath else { return }
         let project = app.routingProject
         let client = ORXRoutingClient(executable: URL(fileURLWithPath: installedPath))
         let request = RoutingRequest(revision: base.revision, changes: edits)
@@ -279,17 +497,25 @@ struct RoutingView: View {
             if apply {
                 snapshot = try await client.save(project: project, request: request)
                 editing = false
-                preview = nil
+                clearPreview()
                 edits = [:]
                 message = "已保存"
                 snapshot = try await client.read(project: project)
             } else {
-                preview = try await client.preview(project: project, request: request)
+                let result = try await client.preview(project: project, request: request)
+                guard request.changes == edits else { return }
+                preview = result
+                previewedChanges = request.changes
             }
         } catch {
-            preview = nil
+            clearPreview()
             self.error = error.localizedDescription
         }
+    }
+
+    private func clearPreview() {
+        preview = nil
+        previewedChanges = nil
     }
 
     private func textBinding(_ key: String, initial: String) -> Binding<String> {
@@ -308,17 +534,18 @@ struct RoutingView: View {
     private func profileOrder(_ key: String, initial: [String]) -> some View {
         let order = orderedProfiles(key, initial: initial)
         let available = (snapshot?.availableProfiles ?? []).filter { !order.contains($0) }
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
             ForEach(Array(order.enumerated()), id: \.offset) { index, name in
                 HStack {
-                    Text("\(index + 1). \(name)").frame(minWidth: 140, alignment: .leading)
+                    Text("\(index + 1). \(name)").font(ORXType.code)
+                    Spacer()
                     Button { move(index, to: index - 1, key: key, order: order) } label: {
-                        Image(systemName: "arrow.up")
+                        Label("上移 \(name)", systemImage: "arrow.up").labelStyle(.iconOnly)
                     }
                     .disabled(index == 0)
                     .help("上移 \(name)")
                     Button { move(index, to: index + 1, key: key, order: order) } label: {
-                        Image(systemName: "arrow.down")
+                        Label("下移 \(name)", systemImage: "arrow.down").labelStyle(.iconOnly)
                     }
                     .disabled(index + 1 == order.count)
                     .help("下移 \(name)")
@@ -327,10 +554,11 @@ struct RoutingView: View {
                         next.remove(at: index)
                         edits[key] = .profiles(next)
                     } label: {
-                        Image(systemName: "minus")
+                        Label("移除 \(name)", systemImage: "minus").labelStyle(.iconOnly)
                     }
                     .help("移除 \(name)")
                 }
+                .buttonStyle(ORXButtonStyle(variant: .quiet))
             }
             Menu("添加候选") {
                 ForEach(available, id: \.self) { profile in

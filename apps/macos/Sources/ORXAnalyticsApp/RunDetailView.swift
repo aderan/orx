@@ -1,58 +1,71 @@
 import SwiftUI
 import ORXAnalyticsCore
 
-/// Host of the "执行详情" window: the selected run's four-zone detail,
-/// or the history query (查看全部执行) when no run is selected. The
-/// HistoryModel lives on the AppModel, so filters and the current page
-/// survive navigating into a detail and back.
+/// Keeps the history viewport mounted so back navigation preserves its scroll position.
 struct RunDetailHostView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var historyWasShown = false
+
     let openSettings: () -> Void
+    var openDiagnostics: () -> Void = {}
+
+    private var showsHistory: Bool { model.mainPage != .routing && model.selectedRun == nil }
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .trailing) {
-                Picker("页面", selection: $model.mainPage) {
-                    Text("执行").tag(DesktopPage.execution)
-                    Text("模型与路由").tag(DesktopPage.routing)
-                    Text("用量分析").tag(DesktopPage.usage)
+            navigation
+            ORXRule()
+            ZStack {
+                if showsHistory || historyWasShown {
+                    HistoryQueryView(history: model.historyModel, page: model.mainPage)
+                        .opacity(showsHistory ? 1 : 0)
+                        .allowsHitTesting(showsHistory)
+                        .disabled(!showsHistory)
+                        .accessibilityHidden(!showsHistory)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 400)
-                .frame(maxWidth: .infinity)
-                Menu {
-                    Button("设置…", action: openSettings)
-                    Button("退出 ORX") { NSApp.terminate(nil) }
-                } label: {
-                    Label("应用选项", systemImage: "gearshape")
-                        .labelStyle(.iconOnly)
+                if model.mainPage == .routing {
+                    RoutingView()
+                } else if let selection = model.selectedRun {
+                    RunDetailView(identity: selection, client: model.client, page: model.mainPage)
+                        .id(selection)
                 }
-                .help("应用选项")
-                .padding(.trailing, 16)
             }
-            .padding(.vertical, 10)
-            Divider()
-            switch model.mainPage {
-            case .execution:
-                execution(page: .execution)
-            case .usage:
-                execution(page: .usage)
-            case .routing:
-                RoutingView()
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 800, minHeight: 615)
+        .orxSurface()
+        .frame(minWidth: ORXLayout.windowMinWidth, minHeight: ORXLayout.windowMinHeight)
+        .onAppear { historyWasShown = showsHistory }
+        .onChange(of: showsHistory) { shown in
+            if shown { historyWasShown = true }
+        }
     }
 
-    @ViewBuilder
-    private func execution(page: DesktopPage) -> some View {
-        if let selection = model.selectedRun {
-            RunDetailView(identity: selection, client: model.client, page: page)
-                .id(selection)
-        } else {
-            HistoryQueryView(history: model.historyModel, page: page)
+    private var navigation: some View {
+        HStack(spacing: ORXSpace.lg) {
+            Label("ORX", systemImage: "circle.grid.2x2").font(ORXType.title)
+            Picker("当前页面", selection: $model.mainPage) {
+                Text("执行历史").tag(DesktopPage.execution)
+                Text("用量分析").tag(DesktopPage.usage)
+                Text("模型与路由").tag(DesktopPage.routing)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: ORXSpace.md)
+            Menu {
+                Button("设置…", action: openSettings)
+                Button("来源诊断…", action: openDiagnostics)
+                Button("退出 ORX") { NSApp.terminate(nil) }
+            } label: {
+                Label("应用选项", systemImage: "gearshape").labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("应用选项")
         }
+        .padding(.horizontal, ORXSpace.lg)
+        .padding(.vertical, ORXSpace.sm)
+        .background(ORXColor.inset)
     }
 }
 
@@ -87,22 +100,28 @@ struct RunDetailView: View {
     var body: some View {
         Group {
             if let envelope = model.detail, envelope.found, let run = envelope.run {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                GeometryReader { geometry in
+                    VStack(spacing: 0) {
                         toolbar(run: run)
-                        if page == .execution {
-                            factsZone(envelope, run)
-                            Divider()
+                        ORXRule()
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: ORXSpace.lg) {
+                                if let failure = model.lastFailureText {
+                                    ORXNotice(text: "刷新失败 · 正在显示上次成功的数据。\(failure)",
+                                              tone: .warning, symbol: "exclamationmark.triangle")
+                                }
+                                if page == .usage {
+                                    consumptionZone(envelope)
+                                    taskListZone(envelope, run)
+                                    evidenceZone(envelope)
+                                } else {
+                                    factsZone(envelope, run)
+                                    executionWorkspace(envelope, run, wide: geometry.size.width >= ORXLayout.splitBreakpoint)
+                                }
+                            }
+                            .padding(ORXSpace.lg)
                         }
-                        taskListZone(envelope, run)
-                        Divider()
-                        if page == .usage {
-                            consumptionZone(envelope)
-                            Divider()
-                        }
-                        evidenceZone(envelope)
                     }
-                    .padding(16)
                 }
             } else if let envelope = model.detail, !envelope.found {
                 notFound(envelope)
@@ -110,7 +129,7 @@ struct RunDetailView: View {
                 loading
             }
         }
-        .frame(minWidth: 660, minHeight: 560)
+        .orxSurface()
         .onAppear {
             Task { await model.load() }
             // G012: the detail window follows the app's SHARED refresh
@@ -127,68 +146,85 @@ struct RunDetailView: View {
         }
     }
 
-    // MARK: toolbar
-
-    private func toolbar(run: RunFacts) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            // Back to the history query that led here (filters and page
-            // are kept); closing the window still keeps the app resident.
-            Button {
-                app.openAllRuns(page: page)
-            } label: {
-                Label("历史查询", systemImage: "chevron.backward")
-            }
-            .help("返回历史查询（保留过滤条件与结果页）")
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(QuickPanelView.projectName(run.project)) / \(run.goal?.objective ?? run.runID)")
-                    .font(.title3)
-                Text("\(run.project) · Run \(run.runID)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if model.isLoading {
-                ProgressView().controlSize(.small)
-                    .help("正在异步刷新（不阻塞界面）")
-            }
-            Button {
-                Task { await model.refresh() }
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
-            }
-            .help("异步刷新（不阻塞界面）")
+    @ViewBuilder
+    private func executionWorkspace(_ envelope: RunDetailEnvelope, _ run: RunFacts, wide: Bool) -> some View {
+        let layout = wide
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: ORXSpace.lg))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: ORXSpace.lg))
+        layout {
+            taskListZone(envelope, run)
+                .frame(width: wide ? ORXLayout.taskColumn : nil)
+            evidenceZone(envelope)
         }
     }
 
-    private var loading: some View {
-        VStack(spacing: 10) {
-            ProgressView()
-            Text("正在加载执行详情…").foregroundStyle(.secondary)
-            if let failure = model.lastFailureText {
-                Text(failure).font(.caption).foregroundStyle(.secondary)
+    // MARK: Toolbar
+
+    private func toolbar(run: RunFacts) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            HStack(spacing: ORXSpace.sm) {
+                Button {
+                    app.openAllRuns(page: page)
+                } label: {
+                    Label("历史查询", systemImage: "chevron.left")
+                }
+                .buttonStyle(ORXButtonStyle())
+                .help("返回并保留历史查询条件、当前页和滚动位置")
+                Text("\(QuickPanelView.projectName(run.project)) / \(run.runID)")
+                    .font(ORXType.code)
+                    .foregroundStyle(ORXColor.secondary)
+                Spacer()
+                if model.isLoading { ProgressView().controlSize(.small).accessibilityLabel("正在刷新") }
+                if page == .execution {
+                    Button {
+                        app.mainPage = .usage
+                    } label: {
+                        Label("此 Run 用量", systemImage: "chart.bar")
+                    }
+                    .buttonStyle(ORXButtonStyle())
+                }
+                Button {
+                    app.openRouting(project: run.project)
+                } label: {
+                    Label("项目路由", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .buttonStyle(ORXButtonStyle())
+                Button {
+                    Task { await model.refresh() }
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(ORXButtonStyle())
             }
-            if model.detail == nil, model.lastFailureText != nil {
-                Button("重试") { Task { await model.load() } }
-            }
+            ORXPageHeader(page == .usage ? "用量分析" : (run.goal?.objective ?? run.runID),
+                          detail: page == .usage
+                            ? "\(run.goal?.objective ?? run.runID) · 全部计划版本"
+                            : run.project)
         }
-        .padding(30)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(ORXSpace.lg)
+        .background(ORXColor.surface)
+    }
+
+    @ViewBuilder
+    private var loading: some View {
+        if let failure = model.lastFailureText {
+            ORXEmptyState("执行详情加载失败", detail: failure, symbol: "exclamationmark.triangle") {
+                Button("重试") { Task { await model.load() } }
+                    .buttonStyle(ORXButtonStyle())
+                Button("返回历史") { app.openAllRuns(page: page) }
+                    .buttonStyle(ORXButtonStyle(variant: .quiet))
+            }
+        } else {
+            ORXEmptyState("正在加载执行详情", loading: true)
+        }
     }
 
     private func notFound(_ envelope: RunDetailEnvelope) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: "questionmark.square.dashed")
-                .font(.largeTitle)
-            Text("未找到该执行").font(.title3)
-            Text(envelope.reason ?? "原因未知")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            if let failure = model.lastFailureText {
-                Text(failure).font(.caption).foregroundStyle(.secondary)
-            }
+        ORXEmptyState("未找到该执行", detail: envelope.reason ?? model.lastFailureText ?? "原因未知",
+                      symbol: "questionmark.square.dashed") {
+            Button("返回历史") { app.openAllRuns(page: page) }
+                .buttonStyle(ORXButtonStyle())
         }
-        .padding(30)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: zone 1 — 执行概况
@@ -200,59 +236,46 @@ struct RunDetailView: View {
                 health: app.cachedOverview
                     .flatMap { PanelModel.build($0.envelope).health(for: run.project) },
                 snapshots: envelope.snapshots, project: run.project)
-            HStack(spacing: 8) {
-                dimensionChip("执行状态", dims.executionStatus)
-                dimensionChip("目标控制", dims.goalControl)
+            HStack(spacing: ORXSpace.sm) {
+                dimensionChip("执行状态", dims.executionStatus, tone: .execution(run.status.raw))
+                dimensionChip("Goal 控制态", dims.goalControl, tone: run.goal?.status?.raw == "paused" ? .warning : .neutral)
                 dimensionChip("关注事项", dims.attentionSummary)
                 dimensionChip("数据健康", dims.dataHealth)
             }
-            keyValue("项目", run.project)
-            keyValue("Run", run.runID)
-            if let objective = run.goal?.objective {
-                keyValue("目标", objective)
-            }
-            // G011 分层：目标控制层（goals.status 原文的展示）与 Run 执行
-            // 事实分立呈现——暂停/取消中是控制态，执行状态不被改写
-            if let control = run.goal?.status {
-                keyValue("目标状态",
-                         "\(control.display)（raw: \(control.raw ?? "—")）")
-            }
-            keyValue("开始时间", DisplayTime.full(run.startedAt) ?? run.startedAt ?? "—")
-            keyValue("结束时间", DisplayTime.full(run.completedAt) ?? run.completedAt ?? "—")
-            keyValue("经过时长", DisplayTime.elapsed(from: run.startedAt,
-                                                     to: run.completedAt) ?? "—")
-            // 数据更新时间：来源快照拍摄时刻（§4：与任务进展时间分立）
-            keyValue("数据更新时间", DisplayTime.full(run.dataAsOf) ?? run.dataAsOf ?? "—")
-            if let snap = envelope.snapshots[run.project] {
-                keyValue("数据来源", "快照 #\(snap.snapshotID.map(String.init) ?? "—")"
-                         + " · schema \(snap.schemaVersion ?? "—")"
-                         + (snap.supported == false ? "（版本不支持）" : ""))
-                if let taken = DisplayTime.full(snap.takenAt) {
-                    keyValue("快照拍摄时间", taken)
+            Grid(alignment: .topLeading, horizontalSpacing: ORXSpace.xl, verticalSpacing: ORXSpace.sm) {
+                GridRow {
+                    fact("目标状态", run.goal?.status.map { "\($0.display) · raw \($0.raw ?? "—")" } ?? "—")
+                    fact("开始时间", DisplayTime.full(run.startedAt) ?? run.startedAt ?? "—")
+                    fact("结束时间", DisplayTime.full(run.completedAt) ?? run.completedAt ?? "—")
+                    fact("经过时长", DisplayTime.elapsed(from: run.startedAt, to: run.completedAt) ?? "—")
+                }
+                GridRow {
+                    fact("数据更新时间", DisplayTime.full(run.dataAsOf) ?? run.dataAsOf ?? "—")
+                    if let snap = envelope.snapshots[run.project] {
+                        fact("数据来源", "快照 #\(snap.snapshotID.map(String.init) ?? "—") · schema \(snap.schemaVersion ?? "—")"
+                             + (snap.supported == false ? "（不支持）" : ""))
+                        fact("快照拍摄时间", DisplayTime.full(snap.takenAt) ?? snap.takenAt ?? "—")
+                    }
+                    if let field = run.timeBasis?.field, field != "started_at" {
+                        fact("时间排序依据", field)
+                    }
                 }
             }
-            if let field = run.timeBasis?.field, field != "started_at" {
-                keyValue("时间依据", "该执行无 started_at，按 \(field) 排序与显示")
-            }
-            if let failure = model.lastFailureText {
-                Text("最近一次刷新失败（仍显示上次成功数据）：\(failure)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+
         }
     }
 
-    /// One independent dimension chip. Text always carries the meaning —
-    /// color is decoration, never the only signal (design §4).
-    private func dimensionChip(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 4) {
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.caption.weight(.semibold))
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.primary.opacity(0.08)))
+    private func dimensionChip(_ label: String, _ value: String, tone: ORXTone = .neutral) -> some View {
+        ORXBadge("\(label) · \(value)", tone: tone)
+    }
+
+    private func fact(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            Text(label).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            Text(value).font(ORXType.body.monospacedDigit()).textSelection(.enabled)
         }
-        .help("\(label)：\(value)")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: zone 2 — 任务列表（Revision 默认收起）
@@ -265,7 +288,7 @@ struct RunDetailView: View {
                 ($0.revision ?? 0, $0.revisionID) < ($1.revision ?? 0, $1.revisionID)
             }
             if ordered.isEmpty {
-                Text("暂无计划任务").font(.caption).foregroundStyle(.secondary)
+                Text("暂无计划任务").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
             ForEach(ordered) { revision in
                 let tasks = (byRevision[revision.revisionID] ?? [])
@@ -274,46 +297,42 @@ struct RunDetailView: View {
                 let revConsumption = envelope.usage?.perRevision?
                     .first { $0.revisionID == revision.revisionID }
                 DisclosureGroup(isExpanded: binding(for: revision.revisionID)) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: ORXSpace.xs) {
                         ForEach(tasks) { task in
                             taskRow(task, isCurrent: isCurrent)
                         }
                     }
-                    .padding(.top, 2)
+                    .padding(.top, ORXSpace.xxs)
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
+                    VStack(alignment: .leading, spacing: ORXSpace.xxs) {
+                        HStack(spacing: ORXSpace.xs) {
                             Text("Revision \(revision.revision.map(String.init) ?? "—")")
-                                .font(.callout.weight(isCurrent ? .semibold : .regular))
+                                .font(isCurrent ? ORXType.section : ORXType.body)
                             if isCurrent {
-                                Text("当前计划")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.accentColor.opacity(0.18)))
+                                ORXBadge("当前计划")
                             } else {
                                 Text("历史计划")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(ORXType.caption)
+                                    .foregroundStyle(ORXColor.secondary)
                             }
                             Text("\(MetricsFormat.countText(revision.taskCount)) 任务")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(ORXType.caption)
+                                .foregroundStyle(ORXColor.secondary)
                         }
                         // 当前计划显示任务进度；历史计划只显示其已归账消耗
                         // （进度与消耗分开表达，§3）。
                         if isCurrent {
                             Text("任务 \(MetricsFormat.progressText(run.progress))（已完成/当前计划任务数）")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(ORXType.caption)
+                                .foregroundStyle(ORXColor.secondary)
                         } else if let book = revConsumption?.book {
                             Text("该版本已观测 token \(MetricsFormat.tokenText(book.tokens?.inputTokens)) 输入 / \(MetricsFormat.tokenText(book.tokens?.outputTokens)) 输出（保留计入 Run 汇总，不因重规划丢失）")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(ORXType.caption)
+                                .foregroundStyle(ORXColor.secondary)
                         } else {
                             Text("该版本消耗：—")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(ORXType.caption)
+                                .foregroundStyle(ORXColor.secondary)
                         }
                     }
                 }
@@ -338,39 +357,37 @@ struct RunDetailView: View {
             Task { await model.select(task: task) }
         } label: {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: ORXSpace.xxs) {
+                    HStack(spacing: ORXSpace.xs) {
                         Text(task.objective ?? task.taskID)
-                            .font(.callout)
-                            .lineLimit(1)
-                        Text(task.status.display)
-                            .font(.caption)
-                            .foregroundStyle(task.status.known ? .primary : .secondary)
+                            .font(ORXType.body)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                        ORXBadge(task.status.display, tone: .execution(task.status.raw))
                         if model.selectedTask?.id == task.id {
                             Image(systemName: "arrow.turn.down.right")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .font(ORXType.caption)
+                                .foregroundStyle(ORXColor.secondary)
                         }
                     }
-                    HStack(spacing: 8) {
-                        Text("执行次数 \(MetricsFormat.countText(task.attemptCount))")
-                        Text("已观测 token \(MetricsFormat.tokenText(task.consumption?.observedTotal))（ORX 已记录）")
-                        Text(MetricsFormat.coverageText(task.consumption?.coverage))
+                    VStack(alignment: .leading, spacing: ORXSpace.xxs) {
+                        Text("尝试 \(MetricsFormat.countText(task.attemptCount)) · \(MetricsFormat.coverageText(task.consumption?.coverage))")
+                        Text("已观测 token \(MetricsFormat.tokenText(task.consumption?.observedTotal))")
+                            .help("ORX 已记录用量")
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption.monospacedDigit())
+                    .foregroundStyle(ORXColor.secondary)
                     if let failure = task.failureReason, !failure.isEmpty {
                         Label("异常提示：\(failure)", systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                            .font(ORXType.caption)
+                            .foregroundStyle(ORXColor.warningText)
                     }
                 }
                 Spacer()
             }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
+            .padding(ORXSpace.sm)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ORXRowButtonStyle(selected: model.selectedTask?.id == task.id))
         .help("查看该任务的尝试、验证与用量")
     }
 
@@ -381,12 +398,12 @@ struct RunDetailView: View {
             Button("查看此项目的模型与路由") {
                 app.openRouting(project: identity.project)
             }
-            .buttonStyle(.link)
+            .buttonStyle(ORXButtonStyle(variant: .quiet))
             // 两个口径并排：ORX 已记录用量 / 原生会话预览。
             // 结构上不相加——两组行各自来自引擎，没有混合总数。
             let calibers = DetailCalibers(usage: envelope.usage,
                                           preview: envelope.nativePreview)
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: ORXSpace.md) {
                 caliberBox(title: "ORX 已记录用量（主口径）",
                            subtitle: "来源快照 \(envelope.usage?.asOf ?? "—")",
                            rows: calibers.orxRows)
@@ -394,19 +411,15 @@ struct RunDetailView: View {
                            subtitle: nativeSubtitle(envelope.nativePreview),
                            rows: calibers.nativeRows)
             }
-            if let preview = envelope.nativePreview, preview.neverSumWith != nil {
-                Text("说明：两口径可能描述同一批 token，任何视图都不将其相加（engine 标记 never_sum_with = \(preview.neverSumWith ?? "—")）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            ORXNotice(text: "口径独立 · 两组数字可能覆盖相同 token，禁止相加。", symbol: "equal.circle")
 
             controllerPreviewSection(envelope.nativePreview)
 
-            Divider()
+            ORXRule()
 
             // 角色分账（engine 归属账本：任务/planner/controller/未归属）
             Text("角色分账（engine 归属，未按任务数或时间摊分）")
-                .font(.subheadline.weight(.semibold))
+                .font(ORXType.section)
             let books = envelope.usage?.books
             bookRow("任务账本（worker＋verifier 等可归属尝试）", books?.tasks)
             bookRow("规划开销（planner，归 Run）", books?.planner)
@@ -414,14 +427,14 @@ struct RunDetailView: View {
             bookRow("未归属（Run 内，绝不摊分）", books?.unattributedWithinRun)
             if let rule = envelope.usage?.attribution?.rule {
                 Text("归属规则：\(rule)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
 
-            Divider()
+            ORXRule()
 
             // 覆盖与缺失说明
-            Text("覆盖与缺失说明").font(.subheadline.weight(.semibold))
+            Text("覆盖与缺失说明").font(ORXType.section)
             keyValue("用量覆盖", MetricsFormat.coverageText(envelope.usage?.coverage))
             keyValue("字段缺失", MetricsFormat.missingText(envelope.usage?.missingFields))
             if let accuracy = envelope.usage?.accuracy {
@@ -434,28 +447,28 @@ struct RunDetailView: View {
                          + MetricsFormat.partialSuffix(normalized))
             }
 
-            Divider()
+            ORXRule()
 
             // 模型分布：按尝试计数（不在此层重算 token 归属）
-            Text("模型分布").font(.subheadline.weight(.semibold))
+            Text("模型分布").font(ORXType.section)
             if let selected = model.selectedTask,
                let attempts = model.taskDetail?.usage?.attempts {
                 let dist = ModelDistribution(attempts: attempts)
                 Text("当前所选任务 \(selected.taskID)（跨模型 token 分账见各角色账本与尝试列表）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
                 ForEach(dist.entries) { entry in
                     HStack {
                         Text(entry.model)
                         Spacer()
                         Text("尝试 \(MetricsFormat.countText(entry.attempts)) 次")
                     }
-                    .font(.callout)
+                    .font(ORXType.body)
                 }
             } else {
                 Text("在任务列表选择任务后，按该任务的尝试显示模型分布。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
         }
     }
@@ -488,29 +501,29 @@ struct RunDetailView: View {
     /// ORX 口径相加。
     private func controllerPreviewSection(_ preview: NativePreview?) -> some View {
         let p = ControllerUsagePresentation.build(preview: preview)
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: ORXSpace.xs) {
             Text("controller 会话（原生预览 · model_usage 请求口径，独立显示）")
-                .font(.subheadline.weight(.semibold))
+                .font(ORXType.section)
             keyValue("归属状态", p.statusText)
             if let session = p.sessionText {
                 keyValue("controller 会话", session)
             }
             if let reason = p.reasonText, !reason.isEmpty {
                 Text("原因：\(reason)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
             ForEach(p.lines) { line in
                 HStack {
-                    Text(line.label).font(.caption)
-                    Spacer(minLength: 8)
-                    Text(line.text).font(.callout.monospacedDigit())
+                    Text(line.label).font(ORXType.caption)
+                    Spacer(minLength: ORXSpace.sm)
+                    Text(line.text).font(ORXType.number)
                 }
             }
             if let shared = p.sharedCaveatText {
                 Text(shared)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.warningText)
             }
             if let source = p.sourceText {
                 keyValue("来源", source)
@@ -526,65 +539,63 @@ struct RunDetailView: View {
             }
             if let evidence = p.evidenceText {
                 Text("关联依据：\(evidence)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
             if let caveat = p.caveatText {
                 Text("数据说明：\(caveat)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
             if let note = p.noteText, !note.isEmpty {
                 Text(note)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
             Text("该数字属于原生预览口径（controller 自身请求，不含 worker/verifier 后代，不叠加 turn_usage），与左侧 ORX 已记录口径不相加。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(ORXType.caption)
+                .foregroundStyle(ORXColor.secondary)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8)
-            .fill(Color.primary.opacity(0.04)))
+        .padding(ORXSpace.md)
+        .background(ORXColor.inset, in: RoundedRectangle(cornerRadius: ORXRadius.row))
     }
 
     private func caliberBox(title: String, subtitle: String,
                             rows: [DetailCalibers.Row]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.callout.weight(.semibold))
-            Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            Text(title).font(ORXType.section)
+            Text(subtitle).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             ForEach(rows) { row in
                 HStack {
-                    Text(row.label).font(.caption)
+                    Text(row.label).font(ORXType.caption)
                     Spacer()
-                    Text(row.text).font(.callout.monospacedDigit())
+                    Text(row.text).font(ORXType.number)
                 }
             }
         }
-        .padding(10)
+        .padding(ORXSpace.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8)
-            .fill(Color.primary.opacity(0.04)))
+        .background(ORXColor.inset, in: RoundedRectangle(cornerRadius: ORXRadius.row))
     }
 
     private func bookRow(_ label: String, _ book: UsageBook?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: ORXSpace.xxs) {
             HStack {
-                Text(label).font(.callout)
+                Text(label).font(ORXType.body)
                 Spacer()
                 Text("输入 \(MetricsFormat.tokenText(book?.tokens?.inputTokens)) · 输出 \(MetricsFormat.tokenText(book?.tokens?.outputTokens)) · 缓存 \(MetricsFormat.tokenText(book?.tokens?.cachedTokens))")
-                    .font(.caption.monospacedDigit())
+                    .font(ORXType.caption.monospacedDigit())
             }
-            HStack(spacing: 8) {
+            HStack(spacing: ORXSpace.sm) {
                 Text(MetricsFormat.coverageText(book?.coverage))
                 if let note = book?.note {
                     Text(note).lineLimit(1)
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(ORXType.caption)
+            .foregroundStyle(ORXColor.secondary)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, ORXSpace.xxs)
     }
 
     // MARK: zone 4 — 尝试与证据
@@ -595,26 +606,26 @@ struct RunDetailView: View {
                 Button("查看此项目的模型与路由") {
                     app.openRouting(project: identity.project)
                 }
-                .buttonStyle(.link)
+                .buttonStyle(ORXButtonStyle(variant: .quiet))
             }
             if let selected = model.selectedTask {
                 if let taskDetail = model.taskDetail, taskDetail.found {
                     taskBreakdown(selected, taskDetail)
                 } else if model.isTaskLoading {
-                    HStack(spacing: 6) {
+                    HStack(spacing: ORXSpace.xs) {
                         ProgressView().controlSize(.small)
                         Text("正在加载任务 \(selected.taskID) 的尝试与证据…")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(ORXColor.secondary)
                     }
                 } else {
                     Text("任务 \(selected.taskID) 的详情加载失败：\(model.taskFailureText ?? "原因未知")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(ORXType.caption)
+                        .foregroundStyle(ORXColor.secondary)
                 }
             } else {
                 Text("在任务列表点击任务，查看其每次尝试的结果、用量、会话关联、失败原因与来源。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
         }
     }
@@ -622,28 +633,25 @@ struct RunDetailView: View {
     @ViewBuilder
     private func taskBreakdown(_ selected: SelectedTaskRef,
                                _ taskDetail: TaskDetailEnvelope) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            HStack(spacing: ORXSpace.sm) {
                 Text("任务 \(selected.taskID)：\(selected.objective ?? "—")")
-                    .font(.callout.weight(.semibold))
+                    .font(ORXType.section)
                 Text("重试：\(RetryDisplay.text(taskDetail.retry))")
-                    .font(.caption)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.primary.opacity(0.08)))
+                    .font(ORXType.caption)
+                    .padding(.horizontal, ORXSpace.sm).padding(.vertical, ORXSpace.xxs)
+                    .background(ORXColor.inset, in: RoundedRectangle(cornerRadius: ORXRadius.badge))
                 if let status = taskDetail.task?.status?.display {
-                    Text("状态：\(status)").font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("状态：\(status)").font(ORXType.caption)
+                        .foregroundStyle(ORXColor.secondary)
                 }
             }
             if let failure = taskDetail.task?.failureReason, !failure.isEmpty {
-                Label("失败原因：\(failure)", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                ORXNotice(text: "失败原因：\(failure)", tone: .danger, symbol: "exclamationmark.triangle")
             }
 
             // 任务消耗分解：worker / verifier 分账 + 缺失说明
-            Text("任务消耗分解（ORX 已记录）").font(.subheadline.weight(.semibold))
+            Text("任务消耗分解（ORX 已记录）").font(ORXType.section)
             bookRow("worker（含失败与重试）", taskDetail.usage?.books?.worker)
             bookRow("verifier（计入任务，单列）", taskDetail.usage?.books?.verifier)
             if let other = taskDetail.usage?.books?.otherRoles {
@@ -652,101 +660,101 @@ struct RunDetailView: View {
             keyValue("任务用量覆盖", MetricsFormat.coverageText(taskDetail.usage?.coverage))
             keyValue("字段缺失", MetricsFormat.missingText(taskDetail.usage?.missingFields))
 
-            Divider()
+            ORXRule()
 
             // 尝试列表：结果/用量/会话关联/失败原因/来源
             Text("尝试（每次 Attempt 的结果、用量、会话关联、失败原因和来源）")
-                .font(.subheadline.weight(.semibold))
+                .font(ORXType.section)
             let attempts = taskDetail.usage?.attempts ?? []
             if attempts.isEmpty {
-                Text("无尝试记录").font(.caption).foregroundStyle(.secondary)
+                Text("无尝试记录").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
             ForEach(attempts) { attempt in
                 attemptRow(attempt)
             }
 
-            Divider()
+            ORXRule()
 
             // 验证证据
-            Text("验证（verifier 运行记录）").font(.subheadline.weight(.semibold))
+            Text("验证（verifier 运行记录）").font(ORXType.section)
             if taskDetail.verifications.isEmpty {
-                Text("无验证记录").font(.caption).foregroundStyle(.secondary)
+                Text("无验证记录").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
             ForEach(taskDetail.verifications) { verification in
-                HStack(spacing: 8) {
-                    Text(verification.kind ?? "—").font(.caption)
+                HStack(spacing: ORXSpace.sm) {
+                    Text(verification.kind ?? "—").font(ORXType.caption)
                     Text(verification.command ?? "—")
-                        .font(.system(.caption, design: .monospaced))
+                        .font(ORXType.code)
                         .lineLimit(1)
                     Spacer()
                     Text("退出码 \(verification.exitCode.map(String.init) ?? "—")")
                     Text(verification.passed == true ? "通过" :
                             (verification.passed == false ? "未通过" : "—"))
-                        .foregroundStyle(verification.passed == false ? .orange : .secondary)
+                        .foregroundStyle(verification.passed == false ? ORXColor.dangerText : ORXColor.secondary)
                     Text(DisplayTime.short(verification.createdAt) ?? verification.createdAt ?? "—")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ORXColor.secondary)
                 }
-                .font(.caption)
+                .font(ORXType.caption)
             }
         }
     }
 
     private func attemptRow(_ attempt: AttemptDetail) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: ORXSpace.xxs) {
+            HStack(spacing: ORXSpace.sm) {
                 Text("#\(attempt.attemptID) \(attempt.role ?? "—")")
-                    .font(.callout.weight(.medium))
+                    .font(ORXType.label)
                 Text(attempt.result ?? "进行中")
-                    .font(.caption)
-                    .foregroundStyle(attempt.result == "failed" ? .orange : .secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(attempt.result == "failed" ? ORXColor.dangerText : ORXColor.secondary)
                 if attempt.routing == nil {
-                    Text(attempt.model ?? "模型未知").font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(attempt.model ?? "模型未知").font(ORXType.caption)
+                        .foregroundStyle(ORXColor.secondary)
                 }
                 Spacer()
                 Text("\(DisplayTime.short(attempt.startedAt) ?? attempt.startedAt ?? "—") → \(DisplayTime.short(attempt.endedAt) ?? attempt.endedAt ?? "进行中")")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: ORXSpace.sm) {
                 // 单次尝试的规范观测（每 attempt 取一，不同来源不相加）
                 if let observation = attempt.observation {
                     Text("来源 \(observation.source ?? "—")（\(observation.accuracy ?? "—")）")
                     Text("输入 \(MetricsFormat.tokenText(observation.tokens?.inputTokens)) · 输出 \(MetricsFormat.tokenText(observation.tokens?.outputTokens)) · 缓存 \(MetricsFormat.tokenText(observation.tokens?.cachedTokens))")
-                        .font(.caption.monospacedDigit())
+                        .font(ORXType.caption.monospacedDigit())
                 } else {
                     Text("用量未观测\(attempt.usageMissingReason.map { "（\($0)）" } ?? "（原因未记录）")")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ORXColor.secondary)
                 }
             }
-            .font(.caption)
+            .font(ORXType.caption)
             if let routing = attempt.routing {
                 recordedDispatch(routing, attempt: attempt)
             }
             if let link = attempt.sessionLink {
                 Text("会话关联：\(link.sessionID ?? "—")（\(link.authority ?? "—") · \(link.confidence ?? "—")）")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
             }
             if let failure = attempt.failureReason, !failure.isEmpty {
                 Text("失败原因：\(failure)")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.warningText)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, ORXSpace.xxs)
     }
 
     private func recordedDispatch(_ routing: AttemptRouting, attempt: AttemptDetail) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("当次派发").font(.caption.weight(.semibold))
-            Text("Controller  \(routing.controllerHarness ?? "未记录")")
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            Text("当次派发").font(ORXType.section)
+            ORXValueRow("Controller", routing.controllerHarness ?? "未记录", monospaced: true)
             let profile = routing.profile.map { "\($0)\(routing.fallbackUsed == true ? " · 回退" : "")" }
             let selection = [profile, RoutingLabels.execution(driver: attempt.driver, harness: attempt.harness)]
                 .compactMap { $0 }.joined(separator: "  ·  ")
-            if !selection.isEmpty { Text("执行配置  \(selection)") }
-            Text("请求模型  \(routing.requestedModel ?? "未记录")  ·  请求推理 \(routing.requestedEffort ?? "未记录")")
-            Text("实际模型  \(routing.actualModel ?? "未记录")  ·  推理 \(recordedEffort(routing))")
+            ORXValueRow("执行配置", selection.isEmpty ? "未记录" : selection)
+            ORXValueRow("请求模型", "\(routing.requestedModel ?? "未记录") · \(routing.requestedEffort ?? "推理未记录")")
+            ORXValueRow("实际模型", "\(routing.actualModel ?? "未记录") · \(recordedEffort(routing))")
             if let reason = routing.reason { Text("选中原因  \(RoutingLabels.reason(reason))") }
             if let candidates = routing.candidates, !candidates.isEmpty {
                 DisclosureGroup("当次候选与过滤结果") {
@@ -759,7 +767,7 @@ struct RunDetailView: View {
                 }
             }
         }
-        .font(.caption)
+        .font(ORXType.caption)
         .textSelection(.enabled)
     }
 
@@ -779,18 +787,14 @@ struct RunDetailView: View {
 
     private func zone<Content: View>(_ title: String,
                                      @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
+        VStack(alignment: .leading, spacing: ORXSpace.md) {
+            Text(title).font(ORXType.title).accessibilityAddTraits(.isHeader)
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .orxCard()
     }
 
     private func keyValue(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Text(value).font(.callout).textSelection(.enabled)
-        }
+        ORXValueRow(label, value).textSelection(.enabled)
     }
 }

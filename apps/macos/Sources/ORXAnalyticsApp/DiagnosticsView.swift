@@ -1,193 +1,149 @@
 import SwiftUI
 import ORXAnalyticsCore
 
-/// 错误与诊断视图 (design §8 容错). Three honest blocks:
-///
-/// 1. 引擎 — connection state, the repeated-failure count (the threshold
-///    that opened this entry), the LAST FAILURE REASON with its time,
-///    and what to do about it.
-/// 2. 数据状态 — 旧数据时间: when the still-displayed data was last
-///    successfully collected, plus its age. During failures the panel
-///    keeps showing that data; this is where its age is disclosed.
-/// 3. 来源 — per-source failures from the last successful overview,
-///    each with the engine's data-health classification, the failure
-///    reason and that source's own 旧数据时间; healthy sources are
-///    summarized — 单源失败不拖垮整体.
 struct DiagnosticsView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                channelSection
-                Divider()
+            VStack(alignment: .leading, spacing: ORXSpace.lg) {
+                ORXPageHeader("系统与来源诊断", detail: "引擎连接、采集时间和各项目来源状态。") {
+                    if model.isRefreshing {
+                        ProgressView().controlSize(.small).accessibilityLabel("正在刷新")
+                    }
+                    if !model.connection.isFatal {
+                        Button {
+                            Task { await model.refreshNow() }
+                        } label: {
+                            Label("刷新状态", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(ORXButtonStyle())
+                        .disabled(model.isRefreshing)
+                    }
+                }
                 engineSection
-                Divider()
                 dataSection
-                Divider()
                 sourcesSection
+                channelSection
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(ORXSpace.xl)
         }
-        .frame(minWidth: 480, minHeight: 420)
-        .navigationTitle("诊断")
+        .orxSurface()
     }
-
-    // MARK: 构建渠道 (G011 T005)
-
-    /// The distribution channel this app was built for, read from the
-    /// app's own Info.plist. Shown honestly even when unlabeled — an
-    /// internal preview is never presented as a formal installer.
-    private var channelSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("构建渠道").font(.headline)
-            if let info = Self.channelInfo {
-                LabeledContent("渠道") { Text(info.summaryText) }
-                if let audience = info.audience {
-                    LabeledContent("受众") {
-                        Text(audience).foregroundStyle(.secondary)
-                    }
-                }
-                if let notice = info.gatekeeperNotice {
-                    LabeledContent("Gatekeeper 限制") {
-                        Text(notice).foregroundStyle(.secondary)
-                    }
-                }
-                LabeledContent("来源提交") {
-                    Text(info.sourceCommit.map { commit in
-                        info.hasCompleteSourceCommit
-                            ? commit : "\(commit)（非完整提交）"
-                    } ?? "未记录")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                }
-                if info.isInternalPreview {
-                    Label("内部预览不是正式安装包：ad-hoc 签名、未公证，仅限内部测试。",
-                          systemImage: "person.crop.circle.badge.exclamationmark")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("未标注渠道（开发运行或旧构建）；不视为正式分发产物。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private static let channelInfo: AppChannelInfo? =
-        AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])
-
-    // MARK: 引擎
 
     private var engineSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("引擎").font(.headline)
-            LabeledContent("连接状态") { Text(connectionText) }
-            LabeledContent("连续刷新失败") {
-                Text("\(MetricsFormat.countText(model.diagnostics.consecutiveFailures)) 次（达到 \(MetricsFormat.countText(DiagnosticsState.failureThreshold)) 次显示此诊断入口）")
+        section("引擎", symbol: "bolt.horizontal.circle") {
+            HStack {
+                Text(connectionText).font(ORXType.label).textSelection(.enabled)
+                Spacer()
+                ORXBadge(failureCountText, tone: model.diagnostics.consecutiveFailures > 0 ? .warning : .neutral)
             }
             if let failure = model.diagnostics.lastFailureText {
-                LabeledContent("最近失败原因") {
-                    Text(failure).foregroundStyle(.secondary)
-                }
+                ORXValueRow("最近失败原因", failure).textSelection(.enabled)
             }
-            if let at = model.diagnostics.lastFailureAt {
-                LabeledContent("最近失败时间") { Text(Self.fullTime(at)) }
+            if let time = model.diagnostics.lastFailureAt {
+                ORXValueRow("最近失败时间", Self.fullTime(time), monospaced: true)
             }
-            if model.diagnostics.needsDiagnosticsEntry {
-                Label("引擎连续刷新失败。请在终端确认引擎在运行（python -m orxanalytics.engine），或重启引擎后重试。期间面板继续显示上次成功数据。",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if model.connection.isFatal {
+                ORXNotice(text: "请升级应用或引擎至兼容版本后重新打开 ORX。",
+                          tone: .warning, symbol: "exclamationmark.triangle")
+            } else if model.diagnostics.needsDiagnosticsEntry {
+                ORXNotice(text: "请确认本地引擎在运行，或重启引擎再刷新。可在终端运行 python -m orxanalytics.engine。",
+                          tone: .warning, symbol: "exclamationmark.triangle")
             }
         }
+    }
+
+    private var failureCountText: String {
+        "\(MetricsFormat.countText(model.diagnostics.consecutiveFailures)) 次连续失败"
     }
 
     private var connectionText: String {
         switch model.connection {
         case .idle: return "未连接"
         case .connecting: return "连接中"
-        case let .ready(version): return "已连接（协议 v\(version)）"
-        case let .incompatible(requested, supported):
-            return "协议不兼容：App v\(requested) / 引擎 v\(supported)（已停止查询，不强行接管）"
-        case .notRunning(let why): return why
+        case .ready(let version): return "已连接 · 协议 v\(version)"
+        case .incompatible(let requested, let supported):
+            return "协议不兼容 · App v\(requested) / 引擎 v\(supported) · 查询已停止"
+        case .notRunning(let reason): return reason
         }
     }
-
-    // MARK: 数据状态 (旧数据时间)
 
     private var dataSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("数据状态").font(.headline)
-            if let oldDataAt = model.lastRefreshedAt ?? model.cachedOverview?.cachedAt {
-                LabeledContent("旧数据时间") {
-                    Text("\(Self.fullTime(oldDataAt))（\(Self.ageText(oldDataAt))前采集）")
-                }
+        section("数据状态", symbol: "clock") {
+            if let date = model.lastRefreshedAt ?? model.cachedOverview?.cachedAt {
+                ORXValueRow("上次成功采集", "\(Self.fullTime(date)) · \(Self.ageText(date))前", monospaced: true)
             } else {
-                LabeledContent("旧数据时间") { Text("尚无成功采集") }
+                ORXValueRow("上次成功采集", "尚无成功采集")
             }
-            if model.diagnostics.consecutiveFailures > 0 {
-                Text("当前正在显示上次成功采集的数据；失败原因见上方。数据年龄不代表执行停摆。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if model.diagnostics.consecutiveFailures > 0 && model.cachedOverview != nil {
+                ORXNotice(text: "正在显示上次成功的数据。数据年龄只表示观测时间。")
             }
             if model.isResyncingAfterWake {
-                Label("刚从睡眠唤醒，正在重新同步（睡眠期间不判定停摆）…", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                ORXNotice(text: "从睡眠唤醒后正在重新同步", symbol: "arrow.triangle.2.circlepath")
             }
         }
     }
-
-    // MARK: 来源
 
     private var sourcesSection: some View {
-        let envelope = model.cachedOverview?.envelope
-        let (unhealthy, healthy) = envelope.map { DiagnosticsBuilder.sourceRows(from: $0) }
-            ?? ([], 0)
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("来源").font(.headline)
-            if envelope == nil {
-                Text("尚无成功采集的来源状态。").font(.caption).foregroundStyle(.secondary)
-            } else if unhealthy.isEmpty {
-                Text("没有失败来源。\(MetricsFormat.countText(healthy)) 个来源数据健康正常。")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(unhealthy) { row in
-                    sourceRow(row)
+        section("项目来源", symbol: "externaldrive") {
+            if let envelope = model.cachedOverview?.envelope {
+                let sources = DiagnosticsBuilder.sourceRows(from: envelope)
+                ForEach(sources.unhealthy) { source in
+                    VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                        HStack {
+                            Text(QuickPanelView.projectName(source.project)).font(ORXType.section)
+                            Text(source.project).font(ORXType.code).foregroundStyle(ORXColor.secondary)
+                                .lineLimit(1).truncationMode(.middle).help(source.project)
+                            Spacer()
+                            ORXBadge(source.health ?? "异常", tone: .warning, symbol: "exclamationmark.triangle")
+                        }
+                        Text("上次可用快照 · \(source.takenAt.flatMap(DisplayTime.full) ?? "未知")")
+                            .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                        if let warning = source.warning {
+                            Text(warning).font(ORXType.caption).foregroundStyle(ORXColor.warningText)
+                        }
+                    }
+                    .padding(ORXSpace.md)
+                    .background(ORXColor.inset, in: RoundedRectangle(cornerRadius: ORXRadius.row))
                 }
-                Text("其余 \(MetricsFormat.countText(healthy)) 个来源正常——单源失败不影响其他来源的展示。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("\(MetricsFormat.countText(sources.healthyCount)) 个来源正常")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            } else {
+                Text("尚无项目来源状态。")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
         }
     }
 
-    private func sourceRow(_ row: SourceStatusRow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.caption2).foregroundStyle(.orange)
-                Text((row.project as NSString).lastPathComponent)
-                    .font(.callout.weight(.medium))
-                Spacer()
-                Text(row.health ?? "异常").font(.caption)
+    private var channelSection: some View {
+        section("构建渠道", symbol: "shippingbox") {
+            if let info = Self.channelInfo {
+                ORXValueRow("渠道", info.summaryText)
+                if let audience = info.audience { ORXValueRow("受众", audience) }
+                if let notice = info.gatekeeperNotice { ORXValueRow("Gatekeeper 限制", notice) }
+                let source = info.sourceCommit.map { $0 + (info.hasCompleteSourceCommit ? "" : "（非完整提交）") }
+                ORXValueRow("来源提交", source ?? "未记录", monospaced: true)
+                    .textSelection(.enabled)
+                if info.isInternalPreview {
+                    ORXNotice(text: "内部预览 · ad-hoc 签名 · 未公证 · 仅限内部测试")
+                }
+            } else {
+                ORXValueRow("渠道", "未标注 · 开发运行或旧构建")
             }
-            if let warning = row.warning {
-                Text("失败原因：\(warning)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Text("旧数据时间：\(row.takenAt.flatMap(DisplayTime.full) ?? "未知")")
-                .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    // MARK: helpers
+    private func section<Content: View>(_ title: String, symbol: String,
+                                       @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.md) {
+            Label(title, systemImage: symbol).font(ORXType.title).accessibilityAddTraits(.isHeader)
+            content()
+        }
+        .orxCard()
+    }
+
+    private static let channelInfo = AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])
 
     private static func fullTime(_ date: Date) -> String {
         let f = DateFormatter()

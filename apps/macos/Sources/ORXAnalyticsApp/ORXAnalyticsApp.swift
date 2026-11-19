@@ -62,10 +62,15 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
     private var badgeObservation: AnyCancellable?
+    private var appearanceObservation: AnyCancellable?
+    private var openSearchAfterClose = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installMainMenu()
+        appearanceObservation = model.$settings.map(\.appearance).removeDuplicates().sink {
+            NSApp.appearance = $0.nativeAppearance
+        }
         RuntimeCoordinator.shared.start(model: model, openRunDetail: { [weak self] in
             self?.windows.showMain()
         })
@@ -118,17 +123,43 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         let active = summary?.activeRuns ?? 0
         let attention = summary?.attention ?? 0
         button.image = NSImage(systemSymbolName: attention > 0
-                               ? "exclamationmark.octagon.fill" : "circle.grid.2x2",
+                               ? "exclamationmark.triangle.fill" : "circle.grid.2x2",
                                accessibilityDescription: "ORX")
         button.image?.isTemplate = true
         button.title = active > 0 ? MetricsFormat.countText(active) : ""
-        button.toolTip = "ORX · 进行中 \(active) · 需要关注 \(attention)"
+        let status = "进行中 \(active) · 需要关注 \(attention)"
+        button.toolTip = "ORX · \(status)"
+        button.setAccessibilityHelp(status)
     }
 
     @objc private func toggleQuickPanel() {
-        guard let button = statusItem?.button else { return }
         if popover.isShown {
             popover.performClose(nil)
+        } else {
+            showQuickPanel()
+        }
+    }
+
+    @objc private func searchMenu() {
+        if popover.isShown {
+            openSearchAfterClose = true
+            popover.performClose(nil)
+        } else {
+            showQuickPanel(startSearching: true)
+        }
+    }
+
+    private func showQuickPanel(startSearching: Bool = false) {
+        let anchor: NSView
+        let position: NSRect
+        if let button = statusItem?.button, statusItem?.isVisible == true, button.window?.isVisible == true {
+            anchor = button
+            position = button.bounds
+        } else if startSearching, let content = NSApp.keyWindow?.contentView {
+            anchor = content
+            position = NSRect(x: content.bounds.midX, y: content.bounds.maxY,
+                              width: ORXLayout.stroke, height: ORXLayout.stroke)
+        } else {
             return
         }
         let panel = QuickPanelView(
@@ -143,16 +174,23 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
             openSettings: { [weak self] in
                 self?.popover.performClose(nil)
                 self?.windows.showSettings()
-            }
+            },
+            startSearching: startSearching,
+            closePanel: { [weak self] in self?.popover.performClose(nil) }
         )
         .environmentObject(model)
-        .frame(width: 360)
-        popover.contentViewController = NSHostingController(rootView: panel)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let host = NSHostingController(rootView: panel)
+        popover.contentViewController = host
+        popover.show(relativeTo: position, of: anchor, preferredEdge: .minY)
+        if startSearching { host.view.window?.makeKey() }
     }
 
     func popoverDidClose(_ notification: Notification) {
         popover.contentViewController = nil
+        if openSearchAfterClose {
+            openSearchAfterClose = false
+            Task { @MainActor [weak self] in self?.showQuickPanel(startSearching: true) }
+        }
     }
 
     @objc private func showMain() { windows.showMain() }
@@ -167,6 +205,8 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         let mainMenu = NSMenu()
         let application = NSMenu(title: "ORX")
         application.addItem(withTitle: "打开 ORX", action: #selector(showMain), keyEquivalent: "o")
+            .target = self
+        application.addItem(withTitle: "搜索菜单…", action: #selector(searchMenu), keyEquivalent: "k")
             .target = self
         application.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
             .target = self

@@ -1,320 +1,364 @@
 import SwiftUI
 import ORXAnalyticsCore
 
-/// The menu-bar quick panel (design §3): header with status + manual
-/// refresh, then 需要关注 / 进行中 / 最近完成 (attention first), then
-/// footer actions.
-///
-/// - The three sections come from `PanelModel` — 同一 Run 只出现一次，
-///   异常优先排序 (the attention section renders first).
-/// - Cards show 项目/目标, attention lines, "任务 a/b（当前计划）" and
-///   "已观测 token N（全部版本）" as SEPARATE expressions, plus the
-///   project's data-health tag (third dimension, design §4).
-/// - Clicking a card sets the app's detail selection (project + run
-///   context preserved) and opens the detail window.
-/// - Cache-first: the panel renders whatever `model.cachedOverview`
-///   holds the moment it opens and refreshes asynchronously — the open
-///   path never waits for a collection round to finish.
 struct QuickPanelView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var searching: Bool
+    @State private var query = ""
+    @State private var confirmingClear = false
+
     let openRunWindow: () -> Void
     let openDiagnostics: () -> Void
     let openSettings: () -> Void
+    let closePanel: () -> Void
+
+    init(openRunWindow: @escaping () -> Void, openDiagnostics: @escaping () -> Void,
+         openSettings: @escaping () -> Void, startSearching: Bool = false,
+         closePanel: @escaping () -> Void = {}) {
+        self.openRunWindow = openRunWindow
+        self.openDiagnostics = openDiagnostics
+        self.openSettings = openSettings
+        self.closePanel = closePanel
+        _searching = State(initialValue: startSearching)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            statusBanner
-            Divider()
-            let panel = currentPanel
-            attentionSection(panel)
-            activeSection(panel)
-            recentSection(panel)
-            Spacer(minLength: 0)
-            footer
-        }
-        .padding(12)
-        .onAppear { model.bootstrap() ; model.startAutoRefresh() }
-        .onDisappear { model.stopAutoRefresh() }
-    }
-
-    private var currentPanel: PanelModel {
-        model.cachedOverview.map { PanelModel.build($0.envelope) } ?? .empty
-    }
-
-    // MARK: header
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text("ORX").font(.headline)
-                    if AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])?.isInternalPreview == true {
-                        Text("Internal Preview").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if model.isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                            .help("正在异步刷新（不阻塞显示）")
+        let panel = model.cachedOverview.map { PanelModel.build($0.envelope) } ?? .empty
+        VStack(spacing: 0) {
+            header(panel)
+            ORXRule()
+            if searching {
+                searchResults(panel)
+            } else {
+                VStack(alignment: .leading, spacing: ORXSpace.md) {
+                    shortcuts
+                    connectionNotice
+                    if model.cachedOverview != nil {
+                        runSections(panel)
                     }
                 }
-                Text(statusLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .padding(ORXSpace.md)
             }
-            Spacer()
+            ORXRule()
+            footer
+        }
+        .font(ORXType.body)
+        .foregroundStyle(ORXColor.text)
+        .tint(ORXColor.accent)
+        .frame(width: ORXLayout.panelWidth)
+        .background(ORXColor.surface)
+        .onAppear {
+            model.bootstrap()
+            model.startAutoRefresh()
+        }
+        .onDisappear { model.stopAutoRefresh() }
+        .onExitCommand {
+            if searching { closeSearch() }
+            else { closePanel() }
+        }
+        .orxCacheConfirmation(isPresented: $confirmingClear, onConfirm: model.clearDisplayCache)
+    }
+
+    private func header(_ panel: PanelModel) -> some View {
+        HStack(alignment: .center, spacing: ORXSpace.md) {
+            VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                HStack(spacing: ORXSpace.sm) {
+                    Text("ORX").font(ORXType.title)
+                    if AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])?.isInternalPreview == true {
+                        ORXBadge("Internal Preview")
+                    }
+                }
+                Text(statusLine(panel))
+                    .font(ORXType.caption)
+                    .foregroundStyle(ORXColor.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            if model.isRefreshing {
+                ProgressView().controlSize(.small).accessibilityLabel("正在刷新")
+            }
             Button {
                 Task { await model.refreshNow() }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                Label("刷新状态", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
             }
+            .buttonStyle(ORXButtonStyle(variant: .quiet))
+            .disabled(model.isRefreshing || model.connection.isFatal)
             .help("刷新状态")
+
+            Button {
+                searching ? closeSearch() : openSearch()
+            } label: {
+                Label(searching ? "关闭搜索" : "搜索菜单", systemImage: searching ? "xmark" : "magnifyingglass")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(ORXButtonStyle())
+            .keyboardShortcut("k", modifiers: .command)
+            .help(searching ? "关闭搜索" : "搜索菜单 · ⌘K")
         }
+        .padding(ORXSpace.md)
+        .background(ORXColor.inset)
     }
 
-    private var statusLine: String {
+    private func statusLine(_ panel: PanelModel) -> String {
         var parts: [String] = []
         if let cached = model.cachedOverview {
             parts.append("进行中 \(MetricsFormat.countText(cached.envelope.summary.activeRuns))")
-            // 控制层概览：进行中的执行里有多少处于已暂停/取消中控制态
-            // （G011 分层——两个维度并列，不改写执行事实）
-            let panel = PanelModel.build(cached.envelope)
-            let control = panel.activeControlCounts
-                .map { "\($0.label) \(MetricsFormat.countText($0.count))" }
-                .joined(separator: "、")
-            if !control.isEmpty {
-                parts.append("（\(control)）")
-            }
-            parts.append("需要关注 \(MetricsFormat.countText(cached.envelope.summary.attention))")
+            parts.append("需关注 \(MetricsFormat.countText(cached.envelope.summary.attention))")
+            parts += panel.activeControlCounts.map { "\($0.label) \(MetricsFormat.countText($0.count))" }
+            parts.append("缓存 \(cached.cachedAt.formatted(date: .omitted, time: .shortened))")
         }
         switch model.connection {
         case .idle: parts.append("未连接")
-        case .connecting: parts.append("连接中")
-        case let .ready(version): parts.append("引擎协议 v\(version)")
-        case let .incompatible(requested, supported):
-            parts.append("协议不兼容：App v\(requested) / 引擎 v\(supported)")
-        case .notRunning(let why): parts.append(why)
-        }
-        if let cached = model.cachedOverview {
-            parts.append("缓存于 \(Self.shortTime(cached.cachedAt))")
+        case .connecting: parts.append("正在连接")
+        case .ready(let version): parts.append("引擎 v\(version)")
+        case .incompatible: parts.append("协议不兼容")
+        case .notRunning: parts.append("引擎离线")
         }
         return parts.joined(separator: " · ")
     }
 
-    /// Engine/data status without touching run facts: a failed round
-    /// shows its reason beside the still-displayed cache (design §8).
     @ViewBuilder
-    private var statusBanner: some View {
-        if model.cachedOverview == nil {
-            switch model.connection {
-            case let .incompatible(requested, supported):
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("引擎协议版本不兼容")
-                        .font(.subheadline.weight(.semibold))
-                    Text("本应用使用协议 v\(requested)，引擎支持 v\(supported)。已停止查询，不强行接管引擎。请升级应用或引擎后重试。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var shortcuts: some View {
+        if !model.settings.panelShortcuts.isEmpty {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: ORXSpace.xs), count: 3),
+                      alignment: .leading, spacing: ORXSpace.xs) {
+                ForEach(model.settings.panelShortcuts) { shortcut in
+                    Button { perform(shortcut) } label: {
+                        Label(shortcut.title, systemImage: shortcut.symbol)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(ORXButtonStyle())
+                    .help(shortcut.title)
                 }
-            case .notRunning(let why):
-                Text("\(why) 首次使用请先在终端启动引擎（python -m orxanalytics.engine）。当前没有可显示的缓存。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            default:
-                Text("暂无缓存数据，正在异步刷新…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
-        // 睡眠唤醒后的重新同步状态：旧数据继续显示，标注为重新同步
-        // 而不是异常（design §8: 睡眠期间不判定停摆）。
+    }
+
+    @ViewBuilder
+    private var connectionNotice: some View {
         if model.isResyncingAfterWake {
-            Label("刚从睡眠唤醒，正在重新同步…", systemImage: "arrow.triangle.2.circlepath")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            ORXNotice(text: "唤醒后正在重新同步", symbol: "arrow.triangle.2.circlepath")
         }
-        if let failure = model.lastFailureText {
-            Text(failure).font(.caption2).foregroundStyle(.secondary)
+        switch model.connection {
+        case let .incompatible(requested, supported):
+            ORXNotice(text: "协议不兼容 · App v\(requested)，引擎 v\(supported)。请升级应用或引擎。"
+                      + cacheSuffix, tone: .warning, symbol: "exclamationmark.triangle")
+        case .notRunning(let reason):
+            ORXNotice(text: (model.lastFailureText ?? reason)
+                      + (model.cachedOverview == nil ? " 当前没有可显示的缓存。" : ""),
+                      tone: .warning, symbol: "bolt.slash")
+        default:
+            if let failure = model.lastFailureText {
+                ORXNotice(text: failure + cacheSuffix, tone: .warning, symbol: "exclamationmark.triangle")
+            } else if model.cachedOverview == nil {
+                ORXNotice(text: "正在等待首次采集，尚无缓存", symbol: "arrow.clockwise")
+            }
         }
-        diagnosticsEntry
-    }
 
-    /// 引擎重复失败显示诊断入口 (design §8). Ordinary failures are
-    /// shown as text; the ENTRY appears only when failures repeat or the
-    /// protocol is fatally incompatible — with or without cached data.
-    @ViewBuilder
-    private var diagnosticsEntry: some View {
         if model.showDiagnosticsEntry {
-            Button {
-                openDiagnostics()
-            } label: {
-                Label("引擎连续失败——打开诊断…", systemImage: "stethoscope")
-                    .font(.caption)
+            Button(action: openDiagnostics) {
+                Label("查看诊断 · 连续失败 \(MetricsFormat.countText(model.diagnostics.consecutiveFailures)) 次",
+                      systemImage: "stethoscope")
             }
-            .buttonStyle(.link)
+            .buttonStyle(ORXButtonStyle())
         }
     }
 
-    private static func shortTime(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateStyle = .none
-        f.timeStyle = .medium
-        return f.string(from: date)
+    private var cacheSuffix: String {
+        model.cachedOverview == nil ? "" : " 正在显示上次成功的数据。"
     }
 
-    // MARK: sections (needsAttention first — 异常优先排序)
+    @ViewBuilder
+    private func runSections(_ panel: PanelModel) -> some View {
+        let count = panel.needsAttention.count + panel.active.count + panel.recentCompleted.count
+        if count > 0 {
+            PanelScroll { sections(panel) }
+        } else {
+            sections(panel)
+        }
+    }
 
-    private func attentionSection(_ panel: PanelModel) -> some View {
-        section(title: "需要关注（\(MetricsFormat.countText(panel.needsAttention.count)) 个执行）") {
-            if panel.needsAttention.isEmpty {
-                Text("没有需要关注的执行").font(.caption)
-                    .foregroundStyle(.secondary)
+    private func sections(_ panel: PanelModel) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.md) {
+            section("需要关注", symbol: "exclamationmark.triangle", cards: panel.needsAttention,
+                    empty: "没有需要关注的执行", panel: panel, tone: .warning)
+            section("进行中", symbol: "circle.dotted", cards: panel.active,
+                    empty: "当前没有进行中的执行", panel: panel)
+            section("最近完成", symbol: "checkmark.circle", cards: panel.recentCompleted,
+                    empty: "最近没有完成的执行", panel: panel)
+        }
+    }
+
+    private func section(_ title: String, symbol: String, cards: [PanelRunCard],
+                         empty: String, panel: PanelModel, tone: ORXTone = .neutral) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            HStack(spacing: ORXSpace.sm) {
+                Label(title, systemImage: symbol).font(ORXType.section)
+                    .foregroundStyle(tone.ink).accessibilityAddTraits(.isHeader)
+                Text(MetricsFormat.countText(cards.count)).font(ORXType.number)
+                    .foregroundStyle(ORXColor.secondary)
+            }
+            if cards.isEmpty {
+                Text(empty).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                    .padding(.leading, ORXSpace.xl)
             } else {
-                ForEach(panel.needsAttention) { card in
-                    runCard(card, showAttention: true, panel: panel)
-                }
+                ForEach(cards) { runCard($0, panel: panel) }
             }
         }
     }
 
-    private func activeSection(_ panel: PanelModel) -> some View {
-        section(title: "进行中（\(MetricsFormat.countText(panel.active.count)) 个执行）") {
-            if panel.active.isEmpty {
-                Text("当前没有进行中的执行").font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(panel.active) { card in
-                    runCard(card, showAttention: false, panel: panel)
-                }
-            }
-        }
-    }
-
-    private func recentSection(_ panel: PanelModel) -> some View {
-        section(title: "最近完成（\(MetricsFormat.countText(panel.recentCompleted.count))）") {
-            if panel.recentCompleted.isEmpty {
-                Text("最近没有完成的执行").font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(panel.recentCompleted) { card in
-                    runCard(card, showAttention: false, panel: panel)
-                }
-            }
-        }
-    }
-
-    // MARK: card
-
-    private func runCard(_ card: PanelRunCard, showAttention: Bool,
-                         panel: PanelModel) -> some View {
+    private func runCard(_ card: PanelRunCard, panel: PanelModel) -> some View {
         Button {
             model.openRunDetail(project: card.run.project, runID: card.run.runID)
             openRunWindow()
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("\(Self.projectName(card.run.project)) / \(card.run.goal?.objective ?? card.run.runID)")
-                        .font(.callout)
-                        .lineLimit(1)
-                    Spacer()
-                    // 控制层徽标（G011 分层）：目标控制状态与执行状态并列
-                    // 呈现——已暂停 Goal 下仍执行中的 Run 两个维度同时可见。
-                    // 终态 done 降为普通文字（G012 用户反馈 3）。
-                    if let badge = card.controlBadgeText {
-                        Text(badge)
-                            .font(.caption2)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.orange.opacity(0.18)))
-                            .help("Goal 控制状态（与执行状态分立）")
-                    } else if let plain = card.controlPlainText {
-                        // 已完成是预期的终态：文字仍可见，但不徽标强调
-                        Text(plain)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .help("Goal 控制状态（与执行状态分立）")
-                    }
-                    Text(card.run.status.display).font(.caption)
-                        .foregroundStyle(card.run.status.known ? .primary : .secondary)
+            VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                HStack(alignment: .firstTextBaseline, spacing: ORXSpace.xs) {
+                    Text(Self.projectName(card.run.project)).font(ORXType.label)
+                    Text(card.run.runID).font(ORXType.code).foregroundStyle(ORXColor.secondary)
+                    Spacer(minLength: ORXSpace.xs)
+                    ORXBadge(card.run.status.display, tone: .execution(card.run.status.raw))
+                    Image(systemName: "chevron.right").font(ORXType.badge)
+                        .foregroundStyle(ORXColor.secondary).accessibilityHidden(true)
                 }
-                if showAttention {
-                    ForEach(card.attention) { item in
-                        HStack(alignment: .top, spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                            Text("\(Self.kindLabel(item.kind))：\(item.detail)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
+                Text(card.run.goal?.objective ?? card.run.runID).font(ORXType.section)
+                    .lineLimit(2)
+                if let badge = card.controlBadgeText {
+                    ORXBadge(badge, tone: .warning, symbol: card.controlStatus?.raw == "paused"
+                             ? "pause.circle" : "exclamationmark.circle")
+                } else if let plain = card.controlPlainText {
+                    Text(plain).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
                 }
-                HStack(spacing: 8) {
-                    // 当前计划进度：已完成任务数 / 当前计划任务数
-                    Text("任务 \(MetricsFormat.progressText(card.run.progress))（当前计划）")
-                    // 历史计划消耗：observed tokens over ALL revisions —
-                    // a separate expression, never mixed into progress.
-                    Text("已观测 token \(MetricsFormat.tokenText(card.run.consumption?.observedTotal))（全部版本）")
+                ForEach(card.attention) { item in
+                    Label("\(Self.kindLabel(item.kind)) · \(item.detail)", systemImage: "exclamationmark.triangle")
+                        .font(ORXType.caption)
+                        .foregroundStyle(ORXColor.dangerText)
+                        .lineLimit(2)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    if let health = panel.health(for: card.run.project)?.health {
-                        Label("数据健康：\(health)", systemImage: "stethoscope")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let asOf = card.run.dataAsOf {
-                        Text("数据更新 \(Self.compactTime(asOf))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                if let progress = card.run.progress, progress.total > 0,
+                   card.run.status.raw != "done", card.run.status.raw != "completed" {
+                    ProgressView(value: Double(max(0, min(progress.completed, progress.total))),
+                                 total: Double(progress.total))
+                        .accessibilityLabel("当前计划任务 \(MetricsFormat.progressText(progress))")
                 }
+                HStack(spacing: ORXSpace.sm) {
+                    Text("当前计划 \(MetricsFormat.progressText(card.run.progress))")
+                    Spacer(minLength: ORXSpace.xs)
+                    Text("已观测 token \(MetricsFormat.tokenText(card.run.consumption?.observedTotal))")
+                        .help("Run 全部计划版本的已观测用量")
+                }
+                .font(ORXType.caption.monospacedDigit())
+                .foregroundStyle(ORXColor.secondary)
+                if model.settings.panelDensity == .detailed, let consumption = card.run.consumption {
+                    Text(MetricsFormat.coverageText(consumption.coverage))
+                        .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                }
+                healthLine(card, panel: panel)
             }
-            .padding(6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .orxCard(padding: ORXSpace.sm, fill: .clear)
         }
-        .buttonStyle(.plain)
-        .help("打开执行详情")
+        .buttonStyle(ORXRowButtonStyle())
+        .help("打开 \(card.run.runID) 执行详情")
     }
 
-    private func section(title: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.subheadline.weight(.semibold))
-            content()
+    @ViewBuilder
+    private func healthLine(_ card: PanelRunCard, panel: PanelModel) -> some View {
+        let health = panel.health(for: card.run.project)?.health
+        let time = card.run.dataAsOf.map(Self.compactTime)
+        if health != nil || time != nil {
+            HStack(spacing: ORXSpace.sm) {
+                if let health { Label(health, systemImage: "stethoscope").help("数据健康") }
+                if let time { Text("数据更新 \(time)") }
+            }
+            .font(ORXType.caption)
+            .foregroundStyle(ORXColor.secondary)
         }
     }
-
-    // MARK: footer
 
     private var footer: some View {
-        HStack {
-            Button("查看全部执行…") {
-                model.openAllRuns()
-                openRunWindow()
-            }
-            Button("模型与路由…") {
-                model.openRouting(project: nil)
-                openRunWindow()
-            }
-            Spacer()
-            Button("应用设置…") {
-                openSettings()
-            }
-            Button("退出") {
-                NSApp.terminate(nil)
+        HStack(spacing: 0) {
+            Button("查看全部", action: { perform(.history) })
+            Button("模型与路由", action: { perform(.routing) })
+            Spacer(minLength: 0)
+            Button("设置", action: openSettings)
+            Button("退出") { NSApp.terminate(nil) }
+        }
+        .buttonStyle(ORXButtonStyle(variant: .quiet))
+        .padding(ORXSpace.xs)
+        .background(ORXColor.inset)
+    }
+
+    private func searchResults(_ panel: PanelModel) -> some View {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let actions = PanelShortcut.allCases.filter {
+            $0 != .search && (term.isEmpty || $0.title.localizedCaseInsensitiveContains(term)
+                            || $0.rawValue.localizedCaseInsensitiveContains(term))
+        }
+        let cards = (panel.needsAttention + panel.active + panel.recentCompleted).filter {
+            !term.isEmpty && [$0.run.project, $0.run.runID, $0.run.goal?.objective ?? ""]
+                .contains { $0.localizedCaseInsensitiveContains(term) }
+        }
+        return VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            ORXTextInput(title: "搜索菜单", prompt: "搜索功能、项目或 Run", text: $query, autoFocus: true)
+                .onSubmit {
+                    if let action = actions.first { perform(action) }
+                    else if let card = cards.first {
+                        model.openRunDetail(project: card.run.project, runID: card.run.runID)
+                        openRunWindow()
+                    }
+                }
+            if actions.isEmpty && cards.isEmpty {
+                Text("没有匹配的菜单或面板记录")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                    .padding(ORXSpace.md)
+            } else {
+                PanelScroll { matches(actions, cards: cards, panel: panel) }
             }
         }
-        .buttonStyle(.link)
-        .font(.callout)
+        .padding(ORXSpace.md)
     }
 
-    // MARK: helpers
-
-    static func projectName(_ key: String) -> String {
-        (key as NSString).lastPathComponent
+    private func matches(_ actions: [PanelShortcut], cards: [PanelRunCard], panel: PanelModel) -> some View {
+        VStack(spacing: ORXSpace.xs) {
+            ForEach(actions) { action in
+                Button { perform(action) } label: {
+                    Label(action.title, systemImage: action.symbol)
+                        .padding(ORXSpace.sm)
+                }
+                .buttonStyle(ORXRowButtonStyle())
+            }
+            ForEach(cards) { runCard($0, panel: panel) }
+        }
     }
+
+    private func openSearch() {
+        searching = true
+    }
+
+    private func closeSearch() {
+        searching = false
+        query = ""
+    }
+
+    private func perform(_ action: PanelShortcut) {
+        switch action {
+        case .history:
+            model.openAllRuns()
+            openRunWindow()
+        case .usage:
+            model.openAllRuns(page: .usage)
+            openRunWindow()
+        case .routing:
+            model.openRouting(project: nil)
+            openRunWindow()
+        case .diagnostics: openDiagnostics()
+        case .search: openSearch()
+        case .cache: confirmingClear = true
+        }
+    }
+
+    static func projectName(_ path: String) -> String { (path as NSString).lastPathComponent }
 
     static func kindLabel(_ kind: String) -> String {
         switch kind {
@@ -324,8 +368,60 @@ struct QuickPanelView: View {
         }
     }
 
-    /// "2026-10-16T09:59:30+00:00" -> "09:59:30"; unparseable stays raw.
-    static func compactTime(_ iso: String) -> String {
-        DisplayTime.short(iso) ?? iso
+    static func compactTime(_ iso: String) -> String { DisplayTime.short(iso) ?? iso }
+}
+
+// Give the hosting popover an explicit viewport; an unconstrained ScrollView's
+// ideal height is only a single row in AppKit's preferred-content-size pass.
+private struct PanelScroll<Content: View>: View {
+    let content: Content
+    @State private var contentHeight = ORXLayout.panelScrollHeight
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        ScrollView {
+            content.background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: PanelContentHeight.self, value: geometry.size.height)
+                }
+            }
+        }
+        .frame(height: min(contentHeight, ORXLayout.panelScrollHeight))
+        .onPreferenceChange(PanelContentHeight.self) { height in
+            if height > 0 { contentHeight = height }
+        }
+    }
+}
+
+private struct PanelContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+extension PanelShortcut {
+    var title: String {
+        switch self {
+        case .history: return "执行历史"
+        case .usage: return "用量分析"
+        case .routing: return "模型与路由"
+        case .diagnostics: return "来源诊断"
+        case .search: return "搜索菜单"
+        case .cache: return "清理缓存"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .history: return "clock.arrow.circlepath"
+        case .usage: return "chart.bar"
+        case .routing: return "point.3.connected.trianglepath.dotted"
+        case .diagnostics: return "stethoscope"
+        case .search: return "magnifyingglass"
+        case .cache: return "trash"
+        }
     }
 }

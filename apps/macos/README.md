@@ -6,6 +6,12 @@ AppKit `NSStatusItem` 承载 SwiftUI 快速面板及进行中 Run 数徽标，
 可随时打开唯一主窗口。引擎 Unix socket 客户端供应快速面板和执行详情
 （设计 §3/§4/§5）。
 
+## 界面和设计系统
+
+[DESIGN.md](DESIGN.md) 记录设计系统、复用组件及数据展示规则。各界面共用
+`Sources/ORXAnalyticsApp/DesignSystem/` 的 tokens，主题设置同时作用于
+快捷面板、主窗口、设置和诊断。
+
 ## 构建 / 测试 / 冒烟（不打开 Xcode）
 
 ```sh
@@ -56,8 +62,8 @@ analytics.db 需要跨版本打开，先备份再放行（升级保护）。引�
   run-detail 单一窗口前置取键（`NSApp.activate` → `openWindow` →
   `makeKeyAndOrderFront`），不产生重复详情窗口；连续点击不同项目时选中跟随
   最后一次点击（G012 用户反馈 2）。
-- 控制状态维度分层不变：Goal 控制状态读原文，终态 `done` 在面板卡片头显示
-  为普通文字「目标 已完成」（caption2+secondary，无徽标背景）；非终态
+- 控制状态维度分层不变：Goal 控制状态读原文，终态 `done` 在面板卡片中显示
+  为次要文字「目标 已完成」；非终态
   `已暂停/取消中/已取消` 保留橙色控制徽标；状态行汇总计数（含已完成）
   不受影响（G012 用户反馈 3）。
 - 打开面板先渲染缓存，再异步刷新；详情窗口异步加载、失败保留上次成功数据

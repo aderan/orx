@@ -1,44 +1,33 @@
 import SwiftUI
 import ORXAnalyticsCore
 
-/// The history query window content (design §3 历史查询): cross-project
-/// search over `runs.list` with project / goal-or-task title / Run or
-/// Task number / status / model / time-range filters, time and
-/// observed-consumption sorting, stable paging.
-///
-/// - All filtering, sorting and paging run ENGINE-SIDE; this view only
-///   mirrors filter state and renders the returned page (no local
-///   re-sort — the engine's identity secondary key is what keeps pages
-///   stable).
-/// - Every consumption number is rendered next to its coverage line —
-///   mandatory under the consumption sort, so a run without usage data
-///   can never look like the cheapest one (its usage shows "—" and the
-///   row says it sorts last).
-/// - The listed consumption is the run's ALL-REVISION total (旧计划消耗
-///   没有消失); clicking a row opens the run detail where each historical
-///   revision keeps its own ledger.
+/// Both entry points use the same engine query, filter state and results viewport.
 struct HistoryQueryView: View {
     @EnvironmentObject private var app: AppModel
-    @ObservedObject private var history: HistoryModel
-
-    private let page: DesktopPage
-
-    init(history: HistoryModel, page: DesktopPage = .execution) {
-        self.history = history
-        self.page = page
-    }
+    @ObservedObject var history: HistoryModel
+    let page: DesktopPage
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            filterBar
-            Divider()
-            resultSummary
-            resultList
-            paginationFooter
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: ORXSpace.md) {
+                header
+                filterBar
+                if let failure = history.projectsFailureText {
+                    ORXNotice(text: "项目列表加载失败，仍可查询全部项目。\(failure)",
+                              tone: .warning, symbol: "exclamationmark.triangle")
+                }
+                if let failure = history.lastFailureText, history.results != nil {
+                    ORXNotice(text: "查询失败 · 正在显示上次成功的结果。\(failure)",
+                              tone: .warning, symbol: "exclamationmark.triangle")
+                }
+            }
+            .padding(ORXSpace.lg)
+            .background(ORXColor.surface)
+            ORXRule()
+            results
+            ORXRule()
+            pagination
         }
-        .padding(14)
-        .frame(minWidth: 760, minHeight: 520)
         .onAppear {
             Task {
                 await history.loadProjects()
@@ -49,20 +38,13 @@ struct HistoryQueryView: View {
         }
     }
 
-    // MARK: header
-
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("历史查询").font(.title2)
-                Text("按项目、目标或任务标题、Run/Task 编号、状态、模型、时间范围查询全部执行；排序与分页由引擎执行。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        ORXPageHeader(page == .usage ? "用量分析" : "执行历史",
+                      detail: page == .usage
+                        ? "选择一条 Run，查看全部计划版本的用量与原生会话预览。"
+                        : "跨项目查找目标、任务与历史执行。") {
             if history.isLoading {
-                ProgressView().controlSize(.small)
-                    .help("正在异步查询（不阻塞界面）")
+                ProgressView().controlSize(.small).accessibilityLabel("正在查询")
             }
             Button {
                 Task {
@@ -72,219 +54,261 @@ struct HistoryQueryView: View {
             } label: {
                 Label("重新查询", systemImage: "arrow.clockwise")
             }
-            .help("按当前过滤条件重新查询")
+            .buttonStyle(ORXButtonStyle())
         }
     }
-
-    // MARK: filters
 
     private var filterBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                filterField(label: "目标或任务标题", width: 200) {
-                    TextField("关键词", text: $history.filter.text)
-                        .onSubmit(runSearch)
-                }
-                filterField(label: "模型", width: 140) {
-                    TextField("模型名", text: $history.filter.model)
-                        .onSubmit(runSearch)
-                }
-                Picker("项目", selection: $history.filter.project) {
-                    Text("全部项目").tag("")
-                    ForEach(history.availableProjects) { project in
-                        Text(project.displayName).tag(project.project)
-                    }
-                }
-                .frame(width: 190)
-                .onChange(of: history.filter.project) { _ in runSearch() }
-                Picker("状态", selection: $history.filter.status) {
-                    Text("全部状态").tag("")
-                    ForEach(HistoryStatusOption.known) { option in
-                        Text(option.label).tag(option.raw)
-                    }
-                }
-                .frame(width: 120)
-                .onChange(of: history.filter.status) { _ in runSearch() }
-            }
-            HStack(spacing: 10) {
-                filterField(label: "Run 编号", width: 110) {
-                    TextField("如 R001", text: $history.filter.runID)
-                        .onSubmit(runSearch)
-                }
-                filterField(label: "Task 编号", width: 110) {
-                    TextField("如 T002", text: $history.filter.taskID)
-                        .onSubmit(runSearch)
-                }
-                Picker("时间范围", selection: $history.filter.timeRange) {
-                    ForEach(HistoryTimeRange.allCases) { range in
-                        Text(range.label).tag(range)
-                    }
-                }
-                .frame(width: 140)
-                .onChange(of: history.filter.timeRange) { _ in runSearch() }
-                Picker("排序", selection: $history.filter.sortKey) {
-                    ForEach(HistorySortKey.allCases) { key in
-                        Text(key.label).tag(key)
-                    }
-                }
-                .frame(width: 130)
-                .onChange(of: history.filter.sortKey) { _ in runSearch() }
-                Picker("顺序", selection: $history.filter.orderDesc) {
-                    Text("降序").tag(true)
-                    Text("升序").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
-                .onChange(of: history.filter.orderDesc) { _ in runSearch() }
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            HStack(alignment: .bottom, spacing: ORXSpace.md) {
+                field("目标或任务标题", prompt: "搜索关键词", text: $history.filter.text)
+                field("模型", prompt: "模型名", text: $history.filter.model)
+                field("Run 编号", prompt: "R001", text: $history.filter.runID)
+                    .frame(width: ORXLayout.historyIdentifierField)
+                field("Task 编号", prompt: "T001", text: $history.filter.taskID)
+                    .frame(width: ORXLayout.historyIdentifierField)
                 Button("查询", action: runSearch)
+                    .buttonStyle(ORXButtonStyle(variant: .primary))
+                    .fixedSize()
             }
-            if let failure = history.projectsFailureText {
-                Text("项目列表加载失败（可继续查询全部项目）：\(failure)")
-                    .font(.caption2).foregroundStyle(.secondary)
+            HStack(alignment: .bottom, spacing: ORXSpace.md) {
+                ORXField("项目") {
+                    Picker("项目", selection: $history.filter.project) {
+                        Text("全部项目").tag("")
+                        ForEach(history.availableProjects) { project in
+                            Text(project.displayName).tag(project.project)
+                        }
+                        if !history.filter.project.isEmpty,
+                           !history.availableProjects.contains(where: { $0.project == history.filter.project }) {
+                            Text(QuickPanelView.projectName(history.filter.project)).tag(history.filter.project)
+                        }
+                    }
+                    .onChange(of: history.filter.project) { _ in runSearch() }
+                }
+                ORXField("状态") {
+                    Picker("状态", selection: $history.filter.status) {
+                        Text("全部状态").tag("")
+                        ForEach(HistoryStatusOption.known) { Text($0.label).tag($0.raw) }
+                    }
+                    .onChange(of: history.filter.status) { _ in runSearch() }
+                }
+                ORXField("时间范围") {
+                    Picker("时间范围", selection: $history.filter.timeRange) {
+                        ForEach(HistoryTimeRange.allCases) { Text($0.label).tag($0) }
+                    }
+                    .onChange(of: history.filter.timeRange) { _ in runSearch() }
+                }
+                ORXField("排序") {
+                    Picker("排序", selection: $history.filter.sortKey) {
+                        ForEach(HistorySortKey.allCases) { Text($0.label).tag($0) }
+                    }
+                    .onChange(of: history.filter.sortKey) { _ in runSearch() }
+                }
+                ORXField("顺序") {
+                    Picker("顺序", selection: $history.filter.orderDesc) {
+                        Text("降序").tag(true)
+                        Text("升序").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: history.filter.orderDesc) { _ in runSearch() }
+                }
+                .frame(width: ORXLayout.historyOrderField)
             }
+            .labelsHidden()
         }
     }
 
-    private func runSearch() {
-        Task { await history.search() }
-    }
-
-    private func filterField<Content: View>(label: String, width: CGFloat,
-                                            @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-            content().frame(width: width)
+    private func field(_ title: String, prompt: String, text: Binding<String>) -> some View {
+        ORXField(title) {
+            ORXTextInput(title: title, prompt: prompt, text: text)
+                .onSubmit(runSearch)
         }
     }
 
-    // MARK: results
-
-    private var resultSummary: some View {
-        HStack(spacing: 10) {
-            Text(history.rangeText).font(.caption)
-            if let sort = history.results?.query?.sort {
-                Text("排序：\(sortLabel(sort.key)) · \(sort.order == "desc" ? "降序" : "升序") · 稳定次级键 \(sort.secondary ?? "—")")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if let failure = history.lastFailureText {
-                Text("上次查询失败（仍显示上次成功结果）：\(failure)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-    }
-
-    private func sortLabel(_ key: String) -> String {
-        HistorySortKey(rawValue: key)?.label ?? key
-    }
-
-    private var resultList: some View {
-        List(history.rows) { row in
-            HistoryRunRowView(row: row) {
-                app.openRunDetail(project: row.run.project,
-                                  runID: row.run.runID, page: page)
-            }
-        }
-        .listStyle(.inset)
-        .overlay {
-            if history.rows.isEmpty && !history.isLoading {
-                Text(history.results == nil ? "尚未查询" : "没有匹配的执行")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var paginationFooter: some View {
-        HStack {
-            Button("上一页") { Task { await history.previousPage() } }
-                .disabled(!history.canPreviousPage)
-            Button("下一页") { Task { await history.nextPage() } }
-                .disabled(!history.canNextPage)
-            Spacer()
-            if let warnings = history.results?.warnings, !warnings.isEmpty {
-                ForEach(Array(warnings.prefix(3).enumerated()),
-                        id: \.offset) { _, warning in
-                    Text("警告 \(warning.code)：\(warning.detail ?? "")")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+    private var results: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: ORXSpace.md) {
+                Text(history.rangeText).font(ORXType.label)
+                Spacer()
+                if let sort = history.results?.query?.sort {
+                    Text("\(HistorySortKey(rawValue: sort.key)?.label ?? sort.key) · \(sort.order == "desc" ? "降序" : "升序")")
+                        .font(ORXType.caption)
+                        .foregroundStyle(ORXColor.secondary)
+                        .help(sort.secondary ?? "引擎稳定排序")
                 }
             }
+            .padding(.horizontal, ORXSpace.lg)
+            .padding(.vertical, ORXSpace.sm)
+            if history.rows.isEmpty {
+                emptyResults
+            } else {
+                table
+            }
         }
-        .font(.callout)
+        .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var emptyResults: some View {
+        if history.isLoading {
+            ORXEmptyState("正在查询执行", loading: true)
+        } else if let failure = history.lastFailureText, history.results == nil {
+            ORXEmptyState("查询失败", detail: failure, symbol: "exclamationmark.triangle") {
+                Button("重试", action: runSearch).buttonStyle(ORXButtonStyle())
+            }
+        } else {
+            ORXEmptyState(history.results == nil ? "尚未查询" : "没有匹配的执行",
+                          detail: history.results == nil ? nil : "更改筛选条件后再次查询。",
+                          symbol: "magnifyingglass")
+        }
+    }
+
+    private var table: some View {
+        VStack(spacing: 0) {
+            HistoryColumns {
+                Text("项目 / Run")
+                Text("Goal 目标")
+                Text("目标 / 执行状态")
+                Text("当前计划")
+                Text("已观测 token")
+                Text("开始 / 更新")
+            }
+            .font(ORXType.caption)
+            .foregroundStyle(ORXColor.secondary)
+            .padding(.horizontal, ORXSpace.lg)
+            .padding(.vertical, ORXSpace.sm)
+            .background(ORXColor.inset)
+            ORXRule()
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        Color.clear.frame(height: 0).id("history-top")
+                        ForEach(history.rows) { row in
+                            HistoryRunRowView(row: row) {
+                                app.openRunDetail(project: row.run.project, runID: row.run.runID, page: page)
+                            }
+                            ORXRule().padding(.horizontal, ORXSpace.lg)
+                        }
+                    }
+                }
+                .onChange(of: history.results?.query) { _ in proxy.scrollTo("history-top", anchor: .top) }
+                .onChange(of: history.results?.page?.offset) { _ in proxy.scrollTo("history-top", anchor: .top) }
+            }
+        }
+    }
+
+    private var pagination: some View {
+        HStack(spacing: ORXSpace.sm) {
+            if let warnings = history.results?.warnings {
+                ForEach(Array(warnings.prefix(3).enumerated()), id: \.offset) { _, warning in
+                    let text = "\(warning.code) · \(warning.detail ?? "—")"
+                    Label(text, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(ORXColor.warningText)
+                        .font(ORXType.caption)
+                        .lineLimit(1)
+                        .help(text)
+                }
+            }
+            Spacer()
+            Button {
+                Task { await history.previousPage() }
+            } label: {
+                Label("上一页", systemImage: "chevron.left")
+            }
+            .disabled(!history.canPreviousPage || history.isLoading)
+            Button {
+                Task { await history.nextPage() }
+            } label: {
+                Label("下一页", systemImage: "chevron.right")
+            }
+            .disabled(!history.canNextPage || history.isLoading)
+        }
+        .buttonStyle(ORXButtonStyle())
+        .padding(ORXSpace.md)
+        .background(ORXColor.surface)
+    }
+
+    private func runSearch() { Task { await history.search() } }
+}
+
+/// Header and rows use the same grid, keeping observed usage and coverage together.
+private struct HistoryColumns<Project: View, Goal: View, Status: View, Progress: View, Usage: View, Time: View>: View {
+    let project: Project
+    let goal: Goal
+    let status: Status
+    let progress: Progress
+    let usage: Usage
+    let time: Time
+
+    init(@ViewBuilder _ columns: () -> TupleView<(Project, Goal, Status, Progress, Usage, Time)>) {
+        (project, goal, status, progress, usage, time) = columns().value
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: ORXSpace.md) {
+            project.frame(width: ORXLayout.historyProjectColumn, alignment: .leading)
+            goal.frame(maxWidth: .infinity, alignment: .leading).layoutPriority(1)
+            status.frame(width: ORXLayout.historyStatusColumn, alignment: .leading)
+            progress.frame(width: ORXLayout.historyProgressColumn, alignment: .leading)
+            usage.frame(width: ORXLayout.historyUsageColumn, alignment: .leading)
+            time.frame(width: ORXLayout.historyTimeColumn, alignment: .leading)
+        }
     }
 }
 
-/// One history result row: identity + status + time, and the consumption
-/// line that ALWAYS carries its coverage (消耗排序同时展示覆盖程度).
 private struct HistoryRunRowView: View {
     let row: HistoryRunRow
     let onOpen: () -> Void
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("\(Self.projectName(row.run.project)) / \(row.run.goal?.objective ?? "（无目标记录）")")
-                            .font(.callout)
-                            .lineLimit(1)
-                        Text(row.run.runID)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                        // G011 分层：控制层徽标与执行状态并列（已取消的历史
-                        // 行保留其控制层可见）
-                        if let control = row.goalControlText {
-                            Text("目标\(control)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .help("Goal 控制状态（与执行状态分立）")
-                        }
-                        Text(row.run.status.display)
-                            .font(.caption)
-                            .foregroundStyle(row.run.status.known ? .primary : .secondary)
+            HistoryColumns {
+                VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                    Text(QuickPanelView.projectName(row.run.project)).font(ORXType.section).lineLimit(1)
+                    Text(row.run.runID).font(ORXType.code).foregroundStyle(ORXColor.secondary)
+                }
+                Text(row.run.goal?.objective ?? "无目标记录").font(ORXType.body).lineLimit(2)
+                VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                    ORXBadge(row.run.status.display, tone: .execution(row.run.status.raw))
+                    if let control = row.goalControlText {
+                        Text("目标 \(control)").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
                     }
-                    HStack(spacing: 10) {
-                        // 消耗与覆盖程度同行展示；数字是全部版本汇总
-                        Text(row.consumptionText)
-                        Text(row.coverageText)
-                        if let note = row.unknownNote {
-                            Label(note, systemImage: "questionmark.circle")
-                                .foregroundStyle(.secondary)
-                        }
+                }
+                VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                    Text(MetricsFormat.progressText(row.run.progress)).font(ORXType.number)
+                    Text("当前版本").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                }
+                VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                    Text(MetricsFormat.tokenText(row.run.consumption?.observedTotal))
+                        .font(ORXType.number)
+                        .help(row.consumptionText)
+                    Text(row.coverageText).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                    if let note = row.unknownNote {
+                        Text("用量未知").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                            .help(note).accessibilityLabel(note)
                     }
-                    .font(.caption)
-                    .foregroundStyle(row.consumptionKnown ? .secondary : .primary)
-                    HStack(spacing: 10) {
-                        Text("任务 \(MetricsFormat.progressText(row.run.progress))（当前计划）")
-                        if let started = row.run.startedAt {
-                            Text("开始 \(DisplayTime.full(started) ?? started)")
-                        } else if let field = row.run.timeBasis?.field {
-                            Text("开始 —（按 \(field) 排序）")
-                        } else {
-                            Text("开始 —")
+                }
+                HStack(alignment: .top, spacing: ORXSpace.xs) {
+                    VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                        Text(row.run.startedAt.flatMap(DisplayTime.full) ?? "—")
+                        if row.run.startedAt == nil, let field = row.run.timeBasis?.field {
+                            Text("时序依据 \(field)")
                         }
                         if let asOf = row.run.dataAsOf {
-                            Text("数据更新 \(DisplayTime.short(asOf) ?? asOf)")
+                            Text("更新 \(DisplayTime.short(asOf) ?? asOf)")
                         }
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(ORXType.caption.monospacedDigit()).foregroundStyle(ORXColor.secondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(ORXType.badge)
+                        .foregroundStyle(ORXColor.secondary).accessibilityHidden(true)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            .contentShape(Rectangle())
+            .padding(.horizontal, ORXSpace.lg)
+            .padding(.vertical, ORXSpace.md)
         }
-        .buttonStyle(.plain)
-        .help("打开执行详情（含各 Revision 的消耗账本）")
-    }
-
-    static func projectName(_ key: String) -> String {
-        (key as NSString).lastPathComponent
+        .buttonStyle(ORXRowButtonStyle())
+        .help("打开 \(row.run.runID) 执行详情及各计划版本用量")
     }
 }

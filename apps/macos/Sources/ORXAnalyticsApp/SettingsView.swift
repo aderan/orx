@@ -1,33 +1,46 @@
+import AppKit
 import SwiftUI
 import ORXAnalyticsCore
 
-/// 设置页 (design §8/§9):
-/// - 通知: default OFF; enabling is the ONLY trigger for requesting the
-///   system permission; the OS's actual verdict is displayed.
-/// - 登录启动: default OFF, managed via SMAppService.mainApp, and the
-///   displayed state is the SYSTEM's actual status — never an assumed
-///   desired state.
-/// - 数据目录: the shared analytics data-dir is shown; a custom one is
-///   an EXPLICIT choice applying on the next launch.
-/// - 刷新偏好: the panel-open refresh tier.
-/// - 显示缓存: the separate, explicit display-cache cleanup. Quitting
-///   or uninstalling never deletes ORX project data (design §9).
 struct SettingsView: View {
+    private enum Page: String, CaseIterable {
+        case general = "通用"
+        case panel = "快捷面板"
+        case data = "数据与缓存"
+
+        var symbol: String {
+            switch self {
+            case .general: return "slider.horizontal.3"
+            case .panel: return "menubar.rectangle"
+            case .data: return "externaldrive"
+            }
+        }
+    }
+
     @EnvironmentObject private var model: AppModel
     @StateObject private var login = LoginItemController()
-    @State private var confirmedClear = false
-    @State private var pendingDataDir: URL?
+    @State private var page: Page = .general
+    @State private var directoryChanged = false
+    @State private var confirmingClear = false
 
     var body: some View {
-        Form {
-            notificationSection
-            loginItemSection
-            dataDirectorySection
-            refreshSection
-            cacheSection
+        HStack(spacing: 0) {
+            navigation
+            Rectangle().fill(ORXColor.border).frame(width: ORXLayout.stroke)
+                .accessibilityHidden(true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: ORXSpace.lg) {
+                    ORXPageHeader(page.rawValue)
+                    switch page {
+                    case .general: general
+                    case .panel: panel
+                    case .data: data
+                    }
+                }
+                .padding(ORXSpace.xl)
+            }
         }
-        .formStyle(.grouped)
-        .frame(width: 520, height: 560)
+        .orxSurface()
         .onAppear {
             login.refreshSystemState()
             Task {
@@ -37,38 +50,159 @@ struct SettingsView: View {
                 }
             }
         }
+        .orxCacheConfirmation(isPresented: $confirmingClear, onConfirm: model.clearDisplayCache)
     }
 
-    // MARK: 通知（默认关闭）
-
-    private var notificationSection: some View {
-        Section {
-            Toggle("启用异常通知", isOn: notificationBinding)
-            LabeledContent("系统权限状态") { Text(authorizationText) }
-                .font(.caption)
-            if model.settings.notificationsEnabled && model.notificationAuth == .notDetermined {
-                Button("申请通知权限") { Task { await enableNotifications() } }
+    private var navigation: some View {
+        VStack(alignment: .leading, spacing: ORXSpace.xs) {
+            Text("ORX 设置")
+                .font(ORXType.title)
+                .padding(.horizontal, ORXSpace.sm)
+                .padding(.bottom, ORXSpace.sm)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(Page.allCases, id: \.self) { item in
+                Button {
+                    page = item
+                } label: {
+                    Label(item.rawValue, systemImage: item.symbol)
+                        .font(ORXType.label).padding(ORXSpace.sm)
+                }
+                .buttonStyle(ORXRowButtonStyle(selected: page == item))
+                .accessibilityAddTraits(page == item ? .isSelected : [])
             }
-        } header: {
-            Text("通知")
-        } footer: {
-            Text("通知默认关闭；只有在你开启时才向系统申请权限。相同异常只提醒一次，同一轮多个异常合并为一条通知，点击通知打开对应执行。低置信度推测只在面板中显示，不发通知。")
-                .font(.caption)
+            Spacer()
+        }
+        .padding(ORXSpace.md)
+        .frame(width: ORXLayout.settingsNavigationWidth)
+        .background(ORXColor.inset)
+    }
+
+    private var general: some View {
+        VStack(alignment: .leading, spacing: ORXSpace.lg) {
+            settingsRow("外观主题", detail: "适用于 ORX 的窗口和快捷面板。") {
+                Picker("外观主题", selection: Binding(get: { model.settings.appearance }, set: model.setAppearance)) {
+                    ForEach(AppAppearance.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            settingsGroup("登录启动") {
+                settingsRow("登录时启动", detail: login.systemState.text) {
+                    Toggle("登录时启动", isOn: Binding(
+                        get: { login.systemState.isEnabled }, set: login.setEnabled))
+                        .toggleStyle(.switch).labelsHidden()
+                }
+                if let error = login.lastActionError {
+                    ORXNotice(text: error, tone: .warning, symbol: "exclamationmark.triangle")
+                }
+            }
+            settingsGroup("通知") {
+                settingsRow("启用异常通知", detail: authorizationText) {
+                    Toggle("启用异常通知", isOn: notificationBinding)
+                        .toggleStyle(.switch).labelsHidden()
+                }
+                Text("相同异常只提醒一次。点击系统通知可打开对应执行。")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                if model.settings.notificationsEnabled && model.notificationAuth == .notDetermined {
+                    Button("申请通知权限") { Task { await enableNotifications() } }
+                        .buttonStyle(ORXButtonStyle())
+                }
+            }
         }
     }
 
-    private var notificationBinding: Binding<Bool> {
-        Binding(
-            get: { model.settings.notificationsEnabled },
-            set: { on in
-                Task { @MainActor in
-                    if on {
-                        await enableNotifications()
-                    } else {
-                        model.disableNotifications()
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: ORXSpace.lg) {
+            settingsRow("卡片信息量", detail: "详细模式会增加已观测用量的覆盖说明。") {
+                Picker("卡片信息量", selection: Binding(get: { model.settings.panelDensity }, set: model.setPanelDensity)) {
+                    Text("极简扫读").tag(PanelDensity.compact)
+                    Text("详细").tag(PanelDensity.detailed)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            settingsGroup("固定入口") {
+                ForEach(PanelShortcut.allCases) { shortcut in
+                    Toggle(isOn: Binding(
+                        get: { model.settings.panelShortcuts.contains(shortcut) },
+                        set: { model.setPanelShortcut(shortcut, enabled: $0) }
+                    )) {
+                        Label(shortcut.title, systemImage: shortcut.symbol)
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+        }
+    }
+
+    private var data: some View {
+        VStack(alignment: .leading, spacing: ORXSpace.lg) {
+            settingsGroup("数据目录") {
+                Text(model.settings.resolvedDataDirectory())
+                    .font(ORXType.code).textSelection(.enabled)
+                HStack(spacing: ORXSpace.sm) {
+                    Button("选择数据目录…", action: chooseDataDirectory)
+                    if model.settings.dataDirectoryOverride != nil {
+                        Button("恢复默认") {
+                            model.setDataDirectoryOverride(nil)
+                            directoryChanged = true
+                        }
                     }
                 }
-            })
+                .buttonStyle(ORXButtonStyle())
+                Text("应用与 CLI 共享 Analytics 数据目录。可由 ORX_ANALYTICS_HOME 覆盖默认路径。")
+                    .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+                if directoryChanged {
+                    ORXNotice(text: "数据目录更改将在下次启动时生效。")
+                }
+            }
+            settingsRow("刷新间隔", detail: "面板和 Run 详情共用此设置。手动刷新立即执行。") {
+                Picker("刷新间隔", selection: Binding(
+                    get: { model.settings.panelRefreshInterval }, set: model.setPanelRefreshInterval
+                )) {
+                    ForEach([5, 10, 15, 30, 60], id: \.self) { seconds in
+                        Text(seconds == 30 ? "30 秒（默认）" : "\(seconds) 秒").tag(TimeInterval(seconds))
+                    }
+                }
+                .labelsHidden().fixedSize()
+            }
+            settingsRow("显示缓存", detail: "清理后重新读取显示数据。项目和 Analytics 采集记录保留。") {
+                Button("清理显示缓存…") { confirmingClear = true }
+                    .buttonStyle(ORXButtonStyle(variant: .destructive))
+            }
+        }
+    }
+
+    private func settingsRow<Control: View>(_ title: String, detail: String,
+                                            @ViewBuilder control: () -> Control) -> some View {
+        HStack(alignment: .center, spacing: ORXSpace.lg) {
+            VStack(alignment: .leading, spacing: ORXSpace.xs) {
+                Text(title).font(ORXType.section)
+                Text(detail).font(ORXType.caption).foregroundStyle(ORXColor.secondary)
+            }
+            Spacer(minLength: ORXSpace.sm)
+            control()
+        }
+        .orxCard()
+    }
+
+    private func settingsGroup<Content: View>(_ title: String,
+                                              @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: ORXSpace.sm) {
+            Text(title).font(ORXType.title).accessibilityAddTraits(.isHeader)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var notificationBinding: Binding<Bool> {
+        Binding(get: { model.settings.notificationsEnabled }, set: { on in
+            Task { @MainActor in
+                if on {
+                    await enableNotifications()
+                } else {
+                    model.disableNotifications()
+                }
+            }
+        })
     }
 
     private func enableNotifications() async {
@@ -81,60 +215,9 @@ struct SettingsView: View {
     private var authorizationText: String {
         switch model.notificationAuth {
         case .notDetermined:
-            return model.settings.notificationsEnabled ? "需要为当前应用授权" : "未申请（默认关闭）"
-        case .granted:
-            return "已授权"
-        case .denied:
-            return "系统已拒绝：请在 系统设置 → 通知 中允许 ORX"
-        }
-    }
-
-    // MARK: 登录启动（默认关闭，显示系统实际状态）
-
-    private var loginItemSection: some View {
-        Section {
-            Toggle("登录时启动", isOn: loginBinding)
-            LabeledContent("系统实际状态") { Text(login.systemState.text) }
-                .font(.caption)
-            if let error = login.lastActionError {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("登录启动")
-        } footer: {
-            Text("默认关闭。通过系统的 SMAppService（登录项）管理；上面显示的是系统当前的实际登记状态，不以本应用的设置为准。开发环境直接运行的可执行文件无法登记，属正常现象。")
-                .font(.caption)
-        }
-    }
-
-    private var loginBinding: Binding<Bool> {
-        Binding(
-            get: { login.systemState.isEnabled },
-            set: { login.setEnabled($0) })
-    }
-
-    // MARK: 数据目录（显式选择）
-
-    private var dataDirectorySection: some View {
-        Section {
-            LabeledContent("当前数据目录") {
-                Text(model.settings.resolvedDataDirectory())
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-            }
-            if model.settings.dataDirectoryOverride != nil {
-                Button("恢复默认数据目录") { model.setDataDirectoryOverride(nil) }
-            }
-            Button("选择数据目录…") { chooseDataDirectory() }
-            if let pending = pendingDataDir {
-                Text("已选择 \(pending.path)，重启应用后生效。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("数据目录")
-        } footer: {
-            Text("应用与 CLI 共用同一 analytics 数据目录（默认 ~/.orx-analytics，可用 ORX_ANALYTICS_HOME 覆盖）。自定义目录需要在此显式选择，更改在下次启动应用后生效，不会移动或复制任何数据。")
-                .font(.caption)
+            return model.settings.notificationsEnabled ? "等待系统授权" : "尚未申请系统权限"
+        case .granted: return "系统已授权"
+        case .denied: return "系统已拒绝。可前往「系统设置 → 通知」允许 ORX。"
         }
     }
 
@@ -143,55 +226,10 @@ struct SettingsView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "选择 analytics 数据目录（包含 engine.sock 的目录）"
+        panel.message = "选择包含 engine.sock 的 Analytics 数据目录"
         if panel.runModal() == .OK, let url = panel.url {
             model.setDataDirectoryOverride(url.path)
-            pendingDataDir = url
-        }
-    }
-
-    // MARK: 刷新偏好
-
-    private var refreshSection: some View {
-        Section {
-            Picker("面板/详情打开时自动刷新间隔", selection: refreshBinding) {
-                Text("5 秒").tag(TimeInterval(5))
-                Text("10 秒").tag(TimeInterval(10))
-                Text("15 秒").tag(TimeInterval(15))
-                Text("30 秒（默认）").tag(TimeInterval(30))
-                Text("60 秒").tag(TimeInterval(60))
-            }
-        } header: {
-            Text("刷新偏好")
-        } footer: {
-            Text("面板或详情打开时的状态刷新节奏，默认 30 秒（详情窗口与面板共用同一偏好）。这只是状态检查频率，不代表 token 每隔该时间就有新数据；手动刷新随时立即生效。")
-                .font(.caption)
-        }
-    }
-
-    private var refreshBinding: Binding<TimeInterval> {
-        Binding(
-            get: { model.settings.panelRefreshInterval },
-            set: { model.setPanelRefreshInterval($0) })
-    }
-
-    // MARK: 显示缓存（独立、明确的清理操作）
-
-    private var cacheSection: some View {
-        Section {
-            if confirmedClear {
-                Button("确认清理显示缓存", role: .destructive) {
-                    model.clearDisplayCache()
-                    confirmedClear = false
-                }
-            } else {
-                Button("清理显示缓存…") { confirmedClear = true }
-            }
-        } header: {
-            Text("显示缓存")
-        } footer: {
-            Text("缓存只影响面板显示速度。清理它不会触碰 ORX 项目数据，也不会删除 analytics 采集数据；退出或卸载应用同样不会删除任何项目数据。")
-                .font(.caption)
+            directoryChanged = true
         }
     }
 }

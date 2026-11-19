@@ -196,8 +196,41 @@ extension View {
     }
 }
 
-extension Text {
-    static func orxPrompt(_ title: String) -> Text {
-        Text(title).foregroundColor(ORXColor.secondary)
+/// A native editable field with ORX foreground, prompt, border and focus roles.
+struct ORXTextInput: View {
+    let title: String
+    let prompt: String
+    @Binding var text: String
+    var monospaced = false
+    var autoFocus = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if text.isEmpty {
+                Text(prompt).foregroundStyle(ORXColor.secondary)
+                    .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
+            }
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .foregroundStyle(ORXColor.text)
+                .accessibilityLabel(title)
+                .focused($focused)
+        }
+        .font(monospaced ? ORXType.code : ORXType.label)
+        .padding(.horizontal, ORXSpace.sm)
+        .frame(minHeight: ORXLayout.controlHeight)
+        .background(ORXColor.surface, in: RoundedRectangle(cornerRadius: ORXRadius.control))
+        .overlay {
+            RoundedRectangle(cornerRadius: ORXRadius.control)
+                .strokeBorder(focused ? ORXColor.accent : ORXColor.border)
+                .allowsHitTesting(false)
+        }
+        .task {
+            if autoFocus {
+                await Task.yield()
+                focused = true
+            }
+        }
     }
 }
