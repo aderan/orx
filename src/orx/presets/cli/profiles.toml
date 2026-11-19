@@ -1,0 +1,53 @@
+schema_version = 1
+
+# Optional CLI defaults. Requires each CLI's own installation and login.
+# Model names are editable examples, not host identity or capability discovery.
+
+[profiles.claude-plan]
+driver = "cli"
+harness = "claude"
+model = "sonnet"
+tier = "T1"
+effort = "low"
+capabilities = ["coding"]
+
+[profiles.claude-plan-deep]
+driver = "cli"
+harness = "claude"
+model = "sonnet"
+tier = "T1"
+effort = "high"
+capabilities = ["coding"]
+
+[profiles.zcode-cli-worker]
+driver = "cli"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+tier = "T2"
+effort = "low"
+capabilities = ["coding"]
+
+[profiles.cursor-cli-worker]
+driver = "cli"
+harness = "cursor"
+model = {family = "grok", version = "4.7"}
+tier = "T2"
+effort = "medium"
+capabilities = ["coding"]
+
+[profiles.codex-verify]
+driver = "cli"
+harness = "codex"
+model = "gpt-6.1-sol"
+tier = "T1"
+effort = "low"
+capabilities = ["coding"]
+
+# Host-only tasks remain with the current Controller.
+[profiles.orx-host]
+driver = "host"
+harness = "current"
+model = "unconfigured"
+tier = "T2"
+effort = "medium"
+capabilities = ["coding", "host_context"]

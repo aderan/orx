@@ -12,7 +12,9 @@ selected, and whether fallback was used.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import shlex
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 
 from orx import records
 from orx.config import Config, Profile
@@ -38,24 +40,59 @@ from orx.state import Store
 HOST_CONTEXT_CAPABILITY = "host_context"
 HOST_EXCLUSIVE_CAPABILITIES: frozenset[str] = frozenset({HOST_CONTEXT_CAPABILITY})
 
+# CLI declarations live only for one invocation, including embedded CliRunner calls.
+CONTROLLER_CONTEXT: ContextVar[ControllerContext | None] = ContextVar("orx_controller", default=None)
+
+
+def bind_host_profile(profile: Profile, harness: str | None) -> Profile:
+    """Resolve a current-host profile without rewriting its static definition."""
+    if profile.harness is records.Harness.CURRENT and harness:
+        return replace(profile, harness=records.Harness(harness))
+    return profile
+
+
+def host_rejection(profile: Profile, controller: ControllerContext | None) -> str | None:
+    if profile.harness is records.Harness.CURRENT and controller is None:
+        return "host_not_declared:use orx --host <codex|zcode|cursor|claude>"
+    return controller.rejection(profile) if controller else None
+
+
+def controller_command(command: str) -> str:
+    """Keep an explicit Controller declaration on executable next actions."""
+    controller = ControllerContext.from_environment()
+    if controller is None or controller.source != "cli" or not command.startswith("orx "):
+        return command
+    args = ["orx", "--host", controller.harness]
+    for agent in sorted(controller.agents):
+        args.extend(["--host-agent", agent])
+    if controller.session_ref:
+        args.extend(["--host-session", controller.session_ref])
+    return shlex.join(args) + command[3:]
+
 
 @dataclass(frozen=True)
 class ControllerContext:
     harness: str
     agents: frozenset[str]
+    session_ref: str | None = None
+    source: str = "environment"
 
     @classmethod
     def from_environment(cls) -> ControllerContext | None:
+        declared = CONTROLLER_CONTEXT.get()
+        if declared is not None:
+            return declared
         harness = os.environ.get("ORX_CONTROLLER_HARNESS", "").strip()
         if not harness:
             return None  # Preserve existing callers that route without a host declaration.
         agents = os.environ.get("ORX_CONTROLLER_AGENTS", "")
-        return cls(harness, frozenset(name.strip() for name in agents.split(",") if name.strip()))
+        return cls(harness, frozenset(name.strip() for name in agents.split(",") if name.strip()),
+                   os.environ.get("ORX_SESSION_REF", "").strip() or None)
 
     def rejection(self, profile: Profile) -> str | None:
         if profile.driver is not Driver.HOST:
             return None
-        if profile.harness.value != self.harness:
+        if profile.harness is not records.Harness.CURRENT and profile.harness.value != self.harness:
             return f"host_harness_mismatch:requires {profile.harness.value}, current {self.harness}"
         if profile.host_mode == "subagent" and profile.agent_ref not in self.agents:
             return f"host_agent_unavailable:{profile.agent_ref}"
@@ -91,6 +128,8 @@ class RouteRequest:
                 "harness": self.controller.harness,
                 "agents": sorted(self.controller.agents),
             }
+            if self.controller.session_ref:
+                out["controller"]["session_ref"] = self.controller.session_ref
         return out
 
 
@@ -207,8 +246,8 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             own_row = store.resource_row(name)
             if own_row is None or not own_row.override:
                 reject = f"quota_domain_exhausted:{profile.quota_domain}"
-        if reject is None and req.controller is not None:
-            reject = req.controller.rejection(profile)
+        if reject is None:
+            reject = host_rejection(profile, req.controller)
         if reject is None and profile.tier is records.ModelTier.S:
             specialized = set(profile.capabilities) - records.GENERIC_CAPABILITIES
             if not specialized.intersection(req.required_capabilities):
@@ -251,7 +290,7 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             return result
         chosen = kept[0]
         result.selected = chosen.profile
-        result.profile = profiles[chosen.profile]
+        result.profile = bind_host_profile(profiles[chosen.profile], req.controller.harness if req.controller else None)
         result.reason = "pinned"
         return result
 
@@ -267,7 +306,7 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
 
     chosen = pool[0]
     result.selected = chosen.profile
-    result.profile = profiles[chosen.profile]
+    result.profile = bind_host_profile(profiles[chosen.profile], req.controller.harness if req.controller else None)
     index = [c.profile for c in result.candidates].index(chosen.profile)
     result.fallback_used = index != 0
     if not preferred:

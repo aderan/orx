@@ -124,6 +124,31 @@ def handle_errors(fn):
     return wrapper
 
 
+@app.callback()
+def controller_options(
+    ctx: typer.Context,
+    host: Optional[str] = typer.Option(None, "--host", help="Current Controller: codex, zcode, cursor, or claude. Applies to this invocation only."),
+    host_agent: Optional[list[str]] = typer.Option(None, "--host-agent", help="Native agent reference this Controller can launch; repeat for each. Omit for none."),
+    host_session: Optional[str] = typer.Option(None, "--host-session", help="Actual Controller session reference, when known; never a Worker session."),
+) -> None:
+    """Declare the current session independently of project CLI routing."""
+    if host is None:
+        if host_agent is not None or host_session is not None:
+            raise typer.BadParameter("--host-agent and --host-session require --host")
+        return
+    if host not in {"codex", "zcode", "cursor", "claude"}:
+        raise typer.BadParameter("--host must be codex, zcode, cursor, or claude")
+    agents = host_agent or []
+    if any(not a.strip() or any(c.isspace() or ord(c) < 32 for c in a) for a in agents):
+        raise typer.BadParameter("--host-agent requires one non-empty reference without whitespace")
+    try:
+        session = dispatch.resolve_session_ref(host_session) if host_session is not None else None
+    except ORXError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    token = routing.CONTROLLER_CONTEXT.set(routing.ControllerContext(host, frozenset(agents), session, "cli"))
+    ctx.call_on_close(lambda: routing.CONTROLLER_CONTEXT.reset(token))
+
+
 def _ok(json_out: bool, **data) -> None:
     if json_out:
         typer.echo(json.dumps({"ok": True, **data}, indent=2))
@@ -335,10 +360,13 @@ def _model_selection(
         row = {"profile": name, "profile_origin": effective.profile_origins.get(name)}
         if profile is None:
             return {**row, "error": "profile is not defined"}
+        declared_harness = profile.harness.value
+        profile = routing.bind_host_profile(profile, controller.harness if controller else None)
         return {
             **row,
             "driver": profile.driver.value,
             "harness": profile.harness.value,
+            "declared_harness": declared_harness,
             "model": profile.model,
             "tier": profile.tier.value if profile.tier is not None else None,
             "legacy_class": profile.model_class.value if profile.model_class is not None else None,
@@ -346,7 +374,7 @@ def _model_selection(
             "native_effort": profile.native_effort,
             "host_mode": profile.host_mode if profile.driver.value == "host" else None,
             "agent_ref": profile.agent_ref,
-            "host_blocked_reason": controller.rejection(profile) if controller and executor else None,
+            "host_blocked_reason": routing.host_rejection(profile, controller) if executor else None,
         }
 
     def candidates(key: str, role: Role, depth: PlanDepth | None = None) -> dict:
@@ -358,6 +386,9 @@ def _model_selection(
     return {
         "controller": {
             "session_harness": controller.harness if controller else None,
+            "native_agents": sorted(controller.agents) if controller else [],
+            "session_ref": controller.session_ref if controller else None,
+            "source": controller.source if controller else "undeclared",
             "origin": effective.origins["controller.profile"],
             "candidate": candidate(cfg.controller_profile, executor=False),
         },
@@ -2474,6 +2505,7 @@ def skill_install(
             "set orx-controller orx-agent)."
         ),
     ),
+    home: Optional[Path] = typer.Option(None, "--home", help="Installation home (default: current user's home)."),
     json_out: bool = JsonOpt,
 ) -> None:
     """Install packaged skills to ~/.agents/skills (+ symlinks).
@@ -2482,7 +2514,9 @@ def skill_install(
     Explicit names install only those skills; an already-installed skill is
     refreshed. Unknown names are rejected with the list of available skills.
     """
-    result = skills_mod.install_skills(names=names or None)
+    controller = routing.ControllerContext.from_environment()
+    result = skills_mod.install_skills(names=names or None, home=home,
+        host=controller.harness if controller and controller.source == "cli" else None)
     _ok(json_out, **result)
     if not json_out:
         typer.echo(f"canonical: {result['canonical_root']}")
@@ -2496,9 +2530,14 @@ def skill_install(
 
 @skill_app.command("update")
 @handle_errors
-def skill_update(json_out: bool = JsonOpt) -> None:
+def skill_update(
+    home: Optional[Path] = typer.Option(None, "--home", help="Installation home (default: current user's home)."),
+    json_out: bool = JsonOpt,
+) -> None:
     """Replace installed skills with the packaged copies and refresh symlinks."""
-    result = skills_mod.update_skills()
+    controller = routing.ControllerContext.from_environment()
+    result = skills_mod.update_skills(home=home,
+        host=controller.harness if controller and controller.source == "cli" else None)
     _ok(json_out, **result)
     if not json_out:
         if not result["installed"] and not result["refreshed"]:

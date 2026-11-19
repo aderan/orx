@@ -27,7 +27,7 @@ from orx.records import ORXError
 DEFAULT_SKILLS = ("orx-controller", "orx-agent")
 # Backwards-compatible alias for the pre-optional-names constant.
 PACKAGED_SKILLS = DEFAULT_SKILLS
-SYMLINK_SOURCES = (".zcode", ".cursor", ".codex")
+SYMLINK_SOURCES = (".zcode", ".cursor", ".codex", ".claude")
 
 
 def packaged_skills_dir() -> Path:
@@ -68,7 +68,11 @@ def canonical_root(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".agents" / "skills"
 
 
-def _symlink_dirs(home: Path) -> list[Path]:
+def _symlink_dirs(home: Path, host: str | None = None) -> list[Path]:
+    if host is not None:
+        if f".{host}" not in SYMLINK_SOURCES:
+            raise ORXError(f"unsupported skill host {host!r}")
+        return [home / f".{host}" / "skills"]
     return [
         home / source / "skills"
         for source in SYMLINK_SOURCES
@@ -80,10 +84,12 @@ def install_skills(
     home: Path | None = None,
     only_update: bool = False,
     names: list[str] | None = None,
+    host: str | None = None,
 ) -> dict:
-    home = home or Path.home()
+    home = (home or Path.home()).expanduser().resolve()
     source_root = packaged_skills_dir()
     canonical = canonical_root(home)
+    link_dirs = _symlink_dirs(home, host)
 
     if only_update:
         # update ignores names: refresh installed ∩ available, install nothing
@@ -132,7 +138,7 @@ def install_skills(
         shutil.copytree(src, dst)
         (installed if not existed else refreshed).append(name)
 
-        for link_dir in _symlink_dirs(home):
+        for link_dir in link_dirs:
             link = link_dir / name
             if link.is_symlink() or link.exists():
                 if link.is_symlink() or link.is_file():
@@ -146,9 +152,9 @@ def install_skills(
         "canonical_root": str(canonical),
         "installed": installed,
         "refreshed": refreshed,
-        "symlinked_into": [str(d.parent) for d in _symlink_dirs(home)],
+        "symlinked_into": [str(d.parent) for d in link_dirs],
     }
 
 
-def update_skills(home: Path | None = None) -> dict:
-    return install_skills(home=home, only_update=True)
+def update_skills(home: Path | None = None, host: str | None = None) -> dict:
+    return install_skills(home=home, only_update=True, host=host)

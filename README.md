@@ -47,6 +47,45 @@ uv run orx usage --json        # per-profile tasks, runtime, tokens + accuracy
 Every command takes `--json` for a machine envelope:
 `{"ok": true, ...}` or `{"ok": false, "error": "..."}` (exit 0/1; 2 = usage).
 
+## Current Controller and clean setup
+
+Declare the current conversation with root options before the command:
+
+```sh
+orx --host codex skill install       # creates this host's skill links if needed
+orx --host codex init
+orx --host codex config models --json
+orx --host codex plan --json
+# In a ZCode conversation, use --host zcode for the same project.
+```
+
+`--host` identifies the Controller for this invocation. Repeat
+`--host-agent <reference>` for native agents the conversation can actually
+launch; omission declares none. `--host-session <actual-id>` records the
+Controller reference when known. Explicit options replace the legacy
+`ORX_CONTROLLER_HARNESS` / `ORX_CONTROLLER_AGENTS` declaration and are
+retained in executable `next_actions` commands. They do not edit project
+routing or start a Controller process.
+
+Without an installed user preset, `init` creates a host self profile with
+`harness = "current"`. It follows the declared host; a missing declaration
+produces a setup hint. This value is valid only for host self execution.
+Its `model = "unconfigured"` is a placeholder, not a model selection or
+an observation about the current conversation.
+
+For optional CLI defaults on a clean user layer, run `orx preset install cli`
+**before** `init`. The project then inherits editable profiles for Claude
+Code Sonnet planning, ZCode/Cursor implementation, and Codex verification,
+plus current-host self work for tasks requiring host context. Each CLI needs
+its own installation and login; model names are configuration examples.
+Review `config models` before dispatch. Existing project overrides and user
+settings remain effective; installing a preset does not replace them.
+
+`orx --host zcode skill install` also works when that host's skill directory
+does not exist. Codex, ZCode, Cursor and Claude Code are supported targets.
+For isolated installation checks, `skill install/update --home <directory>`
+chooses a separate installation home. PBV remains explicitly opt-in.
+
 ## Model tiers and effort
 
 New profiles declare `tier = "T0" | "T1" | "T2" | "T3" | "S"` and
@@ -184,9 +223,8 @@ high to low, is environment (`ORX_RUNTIME_MAX_PARALLEL`,
 
 `orx goal new` and `orx goal resume` display the same model selection.
 Candidate order includes fallbacks. Task capabilities and resource status
-determine the route at dispatch. Pass the Controller's
-`ORX_CONTROLLER_HARNESS` and `ORX_CONTROLLER_AGENTS` to flag incompatible
-host candidates. To change the project order, use `orx config set` with
+determine the route at dispatch. Pass `--host` and any `--host-agent`
+declarations to flag incompatible host candidates. To change project order, use `orx config set` with
 `plan.<depth>.profiles`, `worker.profiles`, or `verify.profiles`.
 
 ## Agent discovery

@@ -23,8 +23,8 @@ the authorization; respect existing authorization and repo defaults for
 everything else.
 
 For a new or resumed Goal, locate or initialize its ORX project, then run
-`orx config models --json` before the first dispatch. Use the same Controller
-environment as the routing calls below. Tell the user which project is active.
+`orx --host <current-harness> config models --json` before the first dispatch.
+Use the invocation declaration below. Tell the user which project is active.
 Show the Controller session, Planner depth, and ordered Planner, Worker,
 and Verifier candidates with their harness, model, and effort. Identify
 incompatible host candidates and inherited routing. Use one compact line
@@ -34,8 +34,13 @@ refresh the preview and tell the user which candidates moved before dispatch.
 
 ### A. The user states a goal directly
 
-1. If the project has no `.orx/`, run `orx init` first; run `orx doctor`
-   when routing or agent definitions look broken.
+1. If the project has no `.orx/`, run `orx --host <current-harness> init`.
+   Without a user preset, the default self profile follows the declared host.
+   For CLI execution, inspect `orx preset list`; `orx preset install cli`
+   installs editable CLI model examples in the user layer before initialization.
+   Confirm the user's chosen CLIs, models, and logins instead of silently
+   installing a preset over an existing setup. Preview effective configuration;
+   project overrides continue to win. Use `doctor` for setup blockers.
 2. Compose the Goal from what the user actually said: objective,
    acceptance criteria (verbatim), hard constraints (only ones the user
    confirmed), context. Acceptance text is injected verbatim into planner,
@@ -74,15 +79,22 @@ proceed as entry A: establish or continue the Goal and run the loop.
 - The current ADE or terminal agent conversation is the Controller. Use its
   tools to call ORX. The project chooses Planner, Worker, and Verifier
   profiles. `controller.profile` does not start or identify this conversation.
-- On each routing call (`plan`, `replan`, `run`, `verify`), pass the current
-  harness and the native agent references this session can actually launch:
-  `ORX_CONTROLLER_HARNESS=codex ORX_CONTROLLER_AGENTS= orx run --json` is the
-  example for a Codex session with no configured ORX agents. Use a
-  comma-separated list for available references. ORX skips incompatible
-  host profiles for that invocation; CLI and external profiles follow project
-  order and capability requirements. An empty list permits host self work
-  in the current harness. A parked assignment with `execution.blocked_reason`
-  keeps its identity. Report the blocker and let its compatible host resume it.
+- Declare the current harness with root options before each command:
+  `orx --host codex run --json` or `orx --host zcode run --json`.
+  Repeat `--host-agent <reference>` only for native roles this session can
+  actually launch. Omission declares none. Add `--host-session <actual-id>`
+  when known; this identifies the Controller, not a Worker. Apply the same
+  declaration to configuration previews and routing calls. Returned
+  `next_actions` commands retain it and can be executed directly. Legacy
+  `ORX_CONTROLLER_HARNESS` / `ORX_CONTROLLER_AGENTS` remain supported;
+  explicit flags replace the entire legacy declaration for that invocation.
+  Profiles with `harness = "current"` are self work on the declared host.
+  Their `unconfigured` model is a placeholder; use the existing conversation
+  and report actual model/session information only when observed.
+  Branded native profiles require the matching host and declared role.
+  CLI and external candidates follow project order and capabilities.
+  Parked assignments retain their original host and identity; handle
+  `execution.blocked_reason` before continuing them.
 - Planner / Worker / Verifier are **per-assignment roles**, not separate
   processes. Every assignment names its role; the same host may serve
   several across a run, one assignment at a time.

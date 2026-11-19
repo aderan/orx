@@ -28,7 +28,7 @@ ORX 的核心价值是：换一个 agent 或换一个宿主，仍能知道 Goal 
 
 当前和用户对话的 ADE agent 担任 Controller。它用 `orx-controller` 读取状态、选择下一步并转交指派，`orx-agent` 负责一项指派的执行。ORX 命令拥有运行状态。终端也可以由操作者逐条调用命令，仓库的 `scripts/` 用于发布和联合验收。
 
-Controller 调用调度命令时可通过 `ORX_CONTROLLER_HARNESS` 声明当前宿主，通过 `ORX_CONTROLLER_AGENTS` 声明原生角色引用（逗号分隔）。已声明宿主时，空角色列表表示该会话没有可用的原生角色。ORX 按本次调用的能力筛选 host 候选，CLI 和 external 候选沿用项目配置。不提供宿主声明的既有调用继续使用原有路由。
+Controller 通过命令根选项 `orx --host codex ...` 声明当前宿主，重复 `--host-agent <引用>` 声明实际可启动的原生角色；省略角色表示没有可用原生角色。已知真实主控会话时可加 `--host-session <id>`。声明仅作用于本次调用，next_actions 保留参数；CLI 和 external 候选沿用项目配置。旧环境变量继续兼容，显式选项优先。默认 self profile 使用 `harness = "current"`，在派发时绑定本次主控；已有指派保持其原宿主。无声明的旧品牌 profile 保留原路由，新的 current profile 则明确提示缺少 --host。
 
 `orx plan` 调度规划，`orx run` 推进一轮 Worker，`orx verify` 执行命令检查及 CLI 验证并返回待提交的宿主验证，`orx status --json` 提供下一步判断所需的状态。配置中的 `controller.profile` 保留兼容读取。当前 ADE 会话直接担任主控。
 

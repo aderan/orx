@@ -3,7 +3,7 @@ schema_version = 1
 # Daily CLI routing validated in Stage 4. The current ADE conversation is
 # the Controller. This compatibility profile does not launch that session.
 [controller]
-profile = "zcode-controller"
+profile = "orx-host"
 
 [plan]
 depth = "standard"
@@ -20,11 +20,11 @@ profiles = ["claude-plan-deep", "codex-verify"]
 
 # Native candidates are filtered against the current host and agent list.
 [worker]
-profiles = ["zcode-cli-worker", "cursor-cli-worker", "zcode-worker"]
+profiles = ["zcode-cli-worker", "cursor-cli-worker", "zcode-worker", "orx-host"]
 
 # Project commands provide deterministic checks. Agent checks use this pool.
 [verify]
-profiles = ["codex-verify", "zcode-verifier-flash", "cursor-economy"]
+profiles = ["codex-verify", "zcode-verifier-flash", "cursor-economy", "orx-host"]
 
 [runtime]
 max_parallel = 1

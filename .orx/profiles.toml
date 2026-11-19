@@ -10,6 +10,15 @@ tier = "T1"
 effort = "low"
 capabilities = ["coding"]
 
+# Current Controller self work, including tasks that need host context.
+[profiles.orx-host]
+driver = "host"
+harness = "current"
+model = "unconfigured"
+tier = "T2"
+effort = "medium"
+capabilities = ["coding", "host_context"]
+
 [profiles.claude-plan-deep]
 driver = "cli"
 harness = "claude"

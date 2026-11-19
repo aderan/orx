@@ -151,6 +151,18 @@ def run_doctor(root: Path | None) -> dict:
         checks.append(Check("effective_config", FAIL, "; ".join(exc.messages)))
     else:
         checks.extend(_subagent_definition_checks(effective.profiles))
+        from orx import routing
+        controller = routing.ControllerContext.from_environment()
+        unresolved = [name for name, profile in effective.profiles.items()
+                      if profile.harness.value == "current" and controller is None]
+        if unresolved:
+            checks.append(Check("controller_session", WARN,
+                "current host is undeclared; use orx --host <codex|zcode|cursor|claude> <command>; "
+                "project CLI candidates are unchanged"))
+        elif controller is not None:
+            checks.append(Check("controller_session", OK,
+                f"{controller.harness} ({controller.source}); native agents: "
+                + (", ".join(sorted(controller.agents)) or "none declared")))
 
     if db_path.exists():
         try:

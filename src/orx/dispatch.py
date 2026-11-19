@@ -140,11 +140,11 @@ schema_version = 1
 
 [profiles.orx-host]
 driver = "host"
-harness = "zcode"
+harness = "current"
 model = "unconfigured"
 tier = "T2"
 effort = "medium"
-capabilities = ["coding"]
+capabilities = ["coding", "host_context"]
 """
 
 
@@ -319,7 +319,10 @@ def resolve_session_ref(explicit: str | None) -> str | None:
 
 
 def _host_session_ref() -> str | None:
-    """Environment session only. Blank is unset. Never invented."""
+    """Controller session from the command declaration or legacy environment."""
+    controller = routing.ControllerContext.from_environment()
+    if controller is not None and controller.source == "cli":
+        return controller.session_ref
     return resolve_session_ref(None)
 
 
@@ -1444,7 +1447,7 @@ def plan_route(
         facts_md = plan_mod.render_replan_facts(replan_snapshot(store, goal, run))
 
     # Reject a bad explicit session before routing or assignment writes.
-    session_ref = resolve_session_ref(session)
+    session_ref = resolve_session_ref(session) if session is not None else _host_session_ref()
 
     depth = _resolve_depth(project, goal, depth_flag)
     request = routing.RouteRequest(
@@ -1457,6 +1460,9 @@ def plan_route(
         waiting_profile = project.profiles.get(waiting.profile)
         if waiting_profile is None:
             raise RoutingError(f"planning assignment {waiting.id} has no configured profile")
+        owned = store.attempt_open_for_assignment(waiting.id)
+        if owned is not None:
+            waiting_profile = routing.bind_host_profile(waiting_profile, owned.harness)
         blocked = request.controller.rejection(waiting_profile)
         if blocked:
             raise RoutingError(f"planning assignment {waiting.id} is waiting on its host ({blocked})")
@@ -1911,6 +1917,8 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
     attempt identity every later submission must quote. The nonce (v11) is
     the same token embedded at the top of the dispatch prompt."""
     controller = routing.ControllerContext.from_environment()
+    if profile is not None:
+        profile = routing.bind_host_profile(profile, attempt.harness)
     if profile is None:
         spec = {
             "mode": "self",
@@ -6432,6 +6440,8 @@ def verify_dispatch(project: Project) -> dict:
                     continue
                 # An open verifier retains its assignment when the Controller changes.
                 existing_profile = project.profiles.get(existing.profile)
+                if existing_profile is not None:
+                    existing_profile = routing.bind_host_profile(existing_profile, existing.harness)
                 error = (
                     "assigned verifier profile is missing" if existing_profile is None else None
                 )
@@ -7224,14 +7234,14 @@ def _next_actions(store: Store, goal: Goal, run: Run, *, blocked_workers=(),
     goal = store.goal_get(goal.id)
     run = store.run_get(run.id)
     if goal.status == GoalStatus.PAUSED.value:
-        return [{"action": "paused", "command": "orx goal resume --json"}]
+        return [{"action": "paused", "command": routing.controller_command("orx goal resume --json")}]
     if goal.status in (GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value):
         return [{"action": goal.status}]
     if run.status == RunStatus.DONE.value:
         return [{"action": "done"}]
     revision = store.revision_active(run.id)
     if revision is None:
-        return [{"action": "plan", "command": "orx plan --json"}]
+        return [{"action": "plan", "command": routing.controller_command("orx plan --json")}]
 
     tasks = store.tasks_all(revision.id)
     actions = []
@@ -7249,7 +7259,7 @@ def _next_actions(store: Store, goal: Goal, run: Run, *, blocked_workers=(),
         if ids:
             step = {"action": action, "tasks": ids}
             if command is not None:
-                step["command"] = command
+                step["command"] = routing.controller_command(command)
             actions.append(step)
     if blocked_workers:
         actions.append({"action": "inspect_routing", "tasks": sorted(set(blocked_workers))})

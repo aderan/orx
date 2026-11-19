@@ -96,6 +96,7 @@ class Driver(str, Enum):
 
 
 class Harness(str, Enum):
+    CURRENT = "current"  # host self only; resolved from this invocation
     ZCODE = "zcode"
     CODEX = "codex"
     CURSOR = "cursor"

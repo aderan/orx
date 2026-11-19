@@ -1,0 +1,27 @@
+schema_version = 1
+
+# Controller identity comes from the current invocation, not this compatibility key.
+[controller]
+profile = "orx-host"
+
+[plan]
+depth = "standard"
+
+[plan.light]
+profiles = ["claude-plan", "codex-verify", "orx-host"]
+
+[plan.standard]
+profiles = ["claude-plan", "codex-verify", "orx-host"]
+
+[plan.deep]
+profiles = ["claude-plan-deep", "codex-verify", "orx-host"]
+
+[worker]
+profiles = ["zcode-cli-worker", "cursor-cli-worker", "orx-host"]
+
+[verify]
+profiles = ["codex-verify", "orx-host"]
+
+[runtime]
+max_parallel = 1
+command_timeout_sec = 1800

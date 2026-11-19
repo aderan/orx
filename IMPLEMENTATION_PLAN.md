@@ -1,3 +1,29 @@
+# 当前任务：跨宿主初始化与安装收口
+
+## Stage 1: 主控入口与中立默认配置
+**Goal**：默认 host self 不绑定品牌；当前主控及原生角色通过命令入口声明。
+**Success Criteria**：Codex/ZCode 共用初始化结果；旧环境变量兼容；已有指派不被换宿主抢占。
+**Tests**：先写初始化、上下文优先级、宿主筛选和指派归属回归。
+**Status**：Complete
+
+## Stage 2: 安装与操作契约
+**Goal**：通过已安装 preset 配置 CLI 职责，skill 安装支持声明的宿主。
+**Success Criteria**：CLI 配置与主控身份独立，skill 可在干净目标目录安装，PBV 保持可选。
+**Tests**：preset 继承、安装目标、帮助及打包资源检查。
+**Status**：Complete
+
+## Stage 3: 干净安装真实验收
+**Goal**：构建 wheel，分别由 Codex 和 ZCode 主控完成真实依赖任务 Run。
+**Success Criteria**：使用非 editable 安装、安装包内 skill/preset；不手写主控环境变量；两项任务交接并 done。
+**Tests**：两个独立安装/配置目录，真实 CLI 规划、执行、验证；全量测试。
+**Status**：Complete
+
+## Stage 4: 证据与提交
+**Goal**：记录可复核证据和使用边界。
+**Success Criteria**：文档与安装结果一致，保留其他工作区修改，提交工作代码。
+**Tests**：自审、diff 检查及证据一致性检查。
+**Status**：In Progress
+
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。
