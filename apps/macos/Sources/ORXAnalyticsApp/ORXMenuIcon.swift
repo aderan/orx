@@ -1,7 +1,11 @@
 import AppKit
 
 enum ORXMenuIcon {
-    static let normal: NSImage = {
+    static func image(showsAttention: Bool) -> NSImage {
+        showsAttention ? withAttention : normal
+    }
+
+    private static let normal: NSImage = {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
             // The open O and check from ORXAppIcon.svg, fitted to the status bar.
             let outline = NSBezierPath()
@@ -26,6 +30,27 @@ enum ORXMenuIcon {
         }
         image.isTemplate = true
         image.accessibilityDescription = "ORX"
+        return image
+    }()
+
+    private static let withAttention: NSImage = {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        guard let warning = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
+                                    accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return normal }
+
+        let brandFrame = NSRect(origin: .zero, size: normal.size)
+        let warningFrame = NSRect(x: brandFrame.maxX + 4,
+                                  y: brandFrame.midY - warning.size.height / 2,
+                                  width: warning.size.width, height: warning.size.height)
+        let size = NSSize(width: ceil(warningFrame.maxX), height: brandFrame.height)
+        let image = NSImage(size: size, flipped: false) { _ in
+            normal.draw(in: brandFrame)
+            warning.draw(in: warningFrame)
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = normal.accessibilityDescription
         return image
     }()
 }

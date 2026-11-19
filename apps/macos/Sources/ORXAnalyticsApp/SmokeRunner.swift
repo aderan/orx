@@ -18,6 +18,13 @@ enum SmokeRunner {
         results.append(("overview-fetch", checkOverviewFetch(), nil2s(ovErr)))
         results.append(("metrics-freeze-rules", checkMetricsRules(), nil2s(mxErr)))
         results.append(("detail-fetch-two-calibers", checkDetailFetch(), nil2s(dtErr)))
+        let normal = ORXMenuIcon.image(showsAttention: false)
+        let attention = ORXMenuIcon.image(showsAttention: true)
+        let hasAdjacentWarning = normal.isTemplate && attention.isTemplate
+            && attention.size.height == normal.size.height
+            && attention.size.width > normal.size.width
+        results.append(("menu-bar-icon", hasAdjacentWarning,
+                        hasAdjacentWarning ? "" : "attention needs room for a second symbol"))
         if Bundle.main.bundleURL.pathExtension == "app" {
             let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
             let iconURL = iconName.flatMap {

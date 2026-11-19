@@ -122,10 +122,7 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         let summary = overview?.envelope.summary
         let active = summary?.activeRuns ?? 0
         let attention = summary?.attention ?? 0
-        button.image = attention > 0
-            ? NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "ORX")
-            : ORXMenuIcon.normal
-        button.image?.isTemplate = true
+        button.image = ORXMenuIcon.image(showsAttention: attention > 0)
         button.title = active > 0 ? MetricsFormat.countText(active) : ""
         let status = "进行中 \(active) · 需要关注 \(attention)"
         button.toolTip = "ORX · \(status)"
