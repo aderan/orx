@@ -1,3 +1,40 @@
+# ORX Analytics 同仓迁移
+
+## Stage 1: 锁定基线并导入源码
+
+**Goal**: 保存可恢复的源提交，完成机械导入，分别构建和安装两个包。
+**Success Criteria**: 文件模式与哈希可核对，普通 Git 目录无外部检出依赖。
+**Tests**: 干净克隆执行 ORX 安装闭环，Analytics 隔离安装并分析合成原生会话。
+**Status**: In Progress
+
+## Stage 2: 适配构建和兼容验收
+
+**Goal**: 同一冻结提交构建两套包和 App，保留历史联合验收入口。
+**Success Criteria**: 发布清单绑定版本、源码和哈希，兼容性通过实测。
+**Tests**: 两套安装检查、Swift 测试、包内引擎、WAL、历史及未知 schema、混合客户端与引擎。
+**Status**: Not Started
+
+## Stage 3: 统一 ORX 桌面入口
+
+**Goal**: 在现有菜单栏应用中提供执行、模型与路由、用量分析。
+**Success Criteria**: 执行和用量走 Analytics，项目和用户配置通过 ORX 可预览并保存。
+**Tests**: 双项目、用量跳转、Finder、错误引用、并发修改、ORX 缺失或不兼容。
+**Status**: Not Started
+
+## Stage 4: 演练安装、升级与回退
+
+**Goal**: 以真实旧安装包演示替换、备份、共享引擎和回退。
+**Success Criteria**: 数据目录、偏好、历史及系统登录项通过各渠道门禁。
+**Tests**: 干净安装、升级、系统实际状态、备份恢复、退出 App 后 CLI watch。
+**Status**: Not Started
+
+## Stage 5: 切换发布来源并收口旧仓
+
+**Goal**: 从 ORX 分发受验产物，对账下载并更新旧仓迁移入口。
+**Success Criteria**: 新旧下载可用，标签不变，安装和回退指引与实物一致。
+**Tests**: 按发布 URL 干净安装，旧资产下载并校验，核对旧仓发布与归档状态。
+**Status**: Not Started
+
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。

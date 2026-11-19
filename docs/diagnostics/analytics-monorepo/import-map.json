@@ -1,0 +1,800 @@
+[
+  {
+    "source": ".github/workflows/ci.yml",
+    "destination": "tools/orx-analytics/.github/workflows/ci.yml",
+    "mode": "100644",
+    "git_blob": "4f5c36327ee08db89b1a74d3f6534f593032799a",
+    "sha256": "2bb32d4b44ca992ce0cdf6fc7d224d7fb1aff87a5979520d72a1e2930e233aff"
+  },
+  {
+    "source": ".gitignore",
+    "destination": "tools/orx-analytics/.gitignore",
+    "mode": "100644",
+    "git_blob": "47e3f5fe4d401bc0d30b7ebf21c6428ac135e173",
+    "sha256": "a6bb4591486d99aa57da36b56ace68ff01c5e51f8b1ee32870c937d980375b7e"
+  },
+  {
+    "source": "CHANGELOG.md",
+    "destination": "tools/orx-analytics/CHANGELOG.md",
+    "mode": "100644",
+    "git_blob": "3241279b5d2b731f7c18f19cfa7962bde33983e2",
+    "sha256": "4444892d6d593dfdfe418f251308986b95df91d5c8b387c4f9a13554d88004df"
+  },
+  {
+    "source": "CONTRIBUTING.md",
+    "destination": "tools/orx-analytics/CONTRIBUTING.md",
+    "mode": "100644",
+    "git_blob": "8bcac2ba9693bfb3a0ba7b074a8b82dc37e324c0",
+    "sha256": "1bdb09ec2694567d43535e3cfdbb402b46f537367354969ed8f00d5c0fe6e1ce"
+  },
+  {
+    "source": "MANIFEST.in",
+    "destination": "tools/orx-analytics/MANIFEST.in",
+    "mode": "100644",
+    "git_blob": "0ee13243eddceaa748685671a377c2fd6675e873",
+    "sha256": "a1db3ca3f0621daa5d29f05018c1830f228d93a77e134e031f7ff92e774d9459"
+  },
+  {
+    "source": "README.md",
+    "destination": "tools/orx-analytics/README.md",
+    "mode": "100644",
+    "git_blob": "8ce31544229193f39cbcb7bd5b11bc850ada5737",
+    "sha256": "f671371ce18ad0f0fcea098eb16360152825c1e8cdb29a31f7bdcf2e63cc7caf"
+  },
+  {
+    "source": "apps/macos/Package.swift",
+    "destination": "apps/macos/Package.swift",
+    "mode": "100644",
+    "git_blob": "4239920bb911106a196e6355bf7d77c232ab40e8",
+    "sha256": "cd29e3bddae94d1c032fe44252698fcf7487147000ade3c0d7cb1d307bcaf195"
+  },
+  {
+    "source": "apps/macos/README.md",
+    "destination": "apps/macos/README.md",
+    "mode": "100644",
+    "git_blob": "76648b95eb2e2140f0ba33a1682ecb6c0ebdfe60",
+    "sha256": "7dbb28d69950fbb24f8ced73732d8cc82627884478721290d9e2199e06ee3590"
+  },
+  {
+    "source": "apps/macos/Resources/Info.plist",
+    "destination": "apps/macos/Resources/Info.plist",
+    "mode": "100644",
+    "git_blob": "3d5665f690964199f9cf40c7cb69d774964defba",
+    "sha256": "db2a9514111401f7995e84cf820858254b1ffab57b476554eda2cdb7be4d7df2"
+  },
+  {
+    "source": "apps/macos/Resources/orx_engine_serve.py",
+    "destination": "apps/macos/Resources/orx_engine_serve.py",
+    "mode": "100644",
+    "git_blob": "3d5fa8101bfb4cbd1c60548b16dc522dbcad96d2",
+    "sha256": "48f9e156e603001b10b3a387820b0e3751ebd68aba7110fbfdeb6ffdf83d8389"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/DetailWindowRouting.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/DetailWindowRouting.swift",
+    "mode": "100644",
+    "git_blob": "6ab56e4ba2802474f753725bb0da75a249c07655",
+    "sha256": "aaa171917f005d6d62706166d532177a6c95aa02aecc64179f10b478e7999e1d"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/DiagnosticsView.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/DiagnosticsView.swift",
+    "mode": "100644",
+    "git_blob": "400b269d801c18510356b0af3f4b7a26427f2486",
+    "sha256": "1e7418519182921e651d52d4238080681e372ad4ea007f1ad53b70d587ec9b02"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/DisplayTime.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/DisplayTime.swift",
+    "mode": "100644",
+    "git_blob": "6331ccc39fbb3f21013711f0e2591c10bc7b88f8",
+    "sha256": "4099537056ca309a9fa78042f39cf9dc1d7181c79f319400c5b6f06bfcceee2f"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/HistoryView.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/HistoryView.swift",
+    "mode": "100644",
+    "git_blob": "50f4b7f5fbc52712b24be374eeac42ed84122439",
+    "sha256": "c1af6da0cd488cf431d61fe3aa1ab4ff5bed436009855a00f891ba3c5f033518"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/LoginItemController.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/LoginItemController.swift",
+    "mode": "100644",
+    "git_blob": "ac3e708aa5001f17ac6d4a20c6f10670ccbc7fb1",
+    "sha256": "d4e77ab30eec21e94efec8a043bc730679fb28c5314c0e36693a870720189a7d"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/ORXAnalyticsApp.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/ORXAnalyticsApp.swift",
+    "mode": "100644",
+    "git_blob": "c20786795ad6ae30388f38589d722d0ba8e334f1",
+    "sha256": "c175d383ddd4f1d02315fa3e67f6e85e96ec7be5a5dad967f8e769bd242ef719"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/QuickPanelView.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/QuickPanelView.swift",
+    "mode": "100644",
+    "git_blob": "518cb97603a72ba2e84a4b702804c76fe3d78352",
+    "sha256": "b5c75a202f411a97e544c56503471f415ca859e5dc68e1bc20b09df4524b17e9"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+    "mode": "100644",
+    "git_blob": "f09b4a1151d5253847c06abea9582251fc6406f7",
+    "sha256": "655b8e29dda4930a779887b9309224f8ef08f913cfde21199cf6e06e6096ba85"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/SettingsView.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/SettingsView.swift",
+    "mode": "100644",
+    "git_blob": "567e21fcfca5b851f8c082b4c0be7aa31b78424c",
+    "sha256": "67c2c6a30876fe45910cdd89774c6ac88acc699a17c94bb980706878e059e04b"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/SmokeRunner.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/SmokeRunner.swift",
+    "mode": "100644",
+    "git_blob": "5acf3d71e4d2264019137c614e5a0707ea1573cc",
+    "sha256": "5367e0d67a8c7a24192de8ad466726019dbdbc5ae45de2fa56b18d189dac5cc7"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsApp/SystemNotifications.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsApp/SystemNotifications.swift",
+    "mode": "100644",
+    "git_blob": "e0296b2195701d2d413f011d2d57e0864b40a29e",
+    "sha256": "0df08ac83611e1847191d87ce69f2f955976d3011fb3bd6966878e43b15eeb64"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/AppModel.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/AppModel.swift",
+    "mode": "100644",
+    "git_blob": "a5be9f8bc28dd031676feb46de2028da26c034f7",
+    "sha256": "838a62f57f85da604a61bcb0d255c1f5cc37e5cc3f8d150ab94e6881552bc1b9"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/AppSettings.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/AppSettings.swift",
+    "mode": "100644",
+    "git_blob": "3e7fb9485cce4cbe550a21d2fdcdd1f6e3043868",
+    "sha256": "6479371a2eb513385d6cb4ea7566f62bbec3a0626495e31e798033ff3d2a66ee"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/ChannelInfo.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/ChannelInfo.swift",
+    "mode": "100644",
+    "git_blob": "a62a7a4c4ac8bc20ee972ce5947cfd8c8195e115",
+    "sha256": "a78da42cebceb803190fd728e0cdc34c1acf136aaa8c6f5faeaf323506703818"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+    "mode": "100644",
+    "git_blob": "da5a0a45145f55b59671df5ee3489c4d3f1915b0",
+    "sha256": "3c590cae3c2d41de5c84e3a5584542a3fbc330166fa14365b7e8aefb828053ca"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/DetailPresentation.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/DetailPresentation.swift",
+    "mode": "100644",
+    "git_blob": "ccbff3811a2a66675dbfc1d3ec5bb187d5be3dc0",
+    "sha256": "70fadee90cecff78630195bf58db674c2198d208e1bcd5926812877a162cad3c"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/DiagnosticsState.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/DiagnosticsState.swift",
+    "mode": "100644",
+    "git_blob": "f9aedef56adfb7fee69aee9a1e3a8cdb389fc6ab",
+    "sha256": "ed74aa549a5f9a1f96fd6a0e7ef0961020eec05effc8deac4f266d99da272812"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/EngineClient.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/EngineClient.swift",
+    "mode": "100644",
+    "git_blob": "e7cf5f22ed6e8802cd7b18100cdfd8f6dad6a93e",
+    "sha256": "fc103d8c7248505b7b990479100c238603c419009d7909b49255011f6113eeba"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/EngineModels.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/EngineModels.swift",
+    "mode": "100644",
+    "git_blob": "1e3f994dccdcc8406182dfd14994eee6667ebfee",
+    "sha256": "76129fbe66685980436ece699bebf3d5263ccde371fcb55715af1eca597ff631"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/EngineProcessManager.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/EngineProcessManager.swift",
+    "mode": "100644",
+    "git_blob": "fb416efe4cdbc4a4d637a4237aaba2042997e234",
+    "sha256": "cfe34342606d8aff8ada38331d76ee52b6b15c62ad369901e387bfd1fa84fa99"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/EngineSimulator.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/EngineSimulator.swift",
+    "mode": "100644",
+    "git_blob": "4c0667c582a5bc6c9f0c855745f2c4443be63b5c",
+    "sha256": "d399221defbf2532afadbbd092fda28eea986412d2d3625def0764bfe1fc6f80"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/HistoryModel.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/HistoryModel.swift",
+    "mode": "100644",
+    "git_blob": "df467599df862ab85b8af658950b68002f7f7c70",
+    "sha256": "c3bb188cf788cacc8d9e1a376c9cf0359b52a0957a1616c09a621660e38d55a9"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/HistoryModels.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/HistoryModels.swift",
+    "mode": "100644",
+    "git_blob": "d5f1775853286ed10fdecfd8fcc039c788f4e3e1",
+    "sha256": "08e721f9e667dd7a25c7b1815551571e1a6e346a8c3eb23ffa80e3d335de7358"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/HistoryPresentation.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/HistoryPresentation.swift",
+    "mode": "100644",
+    "git_blob": "59d61efd26824290939ab1851b63fc81582e7382",
+    "sha256": "2f4f6745d90e45657d56a1adc29913deb5afee3a73e48bb3f35c169e70dbe21b"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/MetricsFormat.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/MetricsFormat.swift",
+    "mode": "100644",
+    "git_blob": "e1dec82972b10220d5a0ecfd4e208f715f3f4af7",
+    "sha256": "35b1af5767a7044051957a5d2a77146c4415aa8f8b852d78470c4a7b0912fcc2"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/NotificationPolicy.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/NotificationPolicy.swift",
+    "mode": "100644",
+    "git_blob": "181af60731061ea36e92d7e1da7391c9884fbefb",
+    "sha256": "c2e75064a39d264e67460bd356b525d082e9a47a62f6b7a25027f45ef31c7fce"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/OverviewCache.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/OverviewCache.swift",
+    "mode": "100644",
+    "git_blob": "644599b39fa30600e2452383aa7b85df404359a2",
+    "sha256": "3a4cddb88c612689613e94c5f67c41e30dcb2ff7e629a7911f4c47d0a39c4c71"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/PanelSections.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/PanelSections.swift",
+    "mode": "100644",
+    "git_blob": "6831bb0663b49b39d1a63b360cdbfe68334f2378",
+    "sha256": "f40232cf0b1be59b3a52658598e141ef74eb9fa1a2c8b46bc7232d3a08d2974b"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/RunDetailModel.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/RunDetailModel.swift",
+    "mode": "100644",
+    "git_blob": "45f1efc8379022bc482cb35aa7236803239ec796",
+    "sha256": "b096354e174c13e69b0435644b606c9b84f1c3bcaa622192b7b7079c6902a886"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/UnixSocketLineTransport.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/UnixSocketLineTransport.swift",
+    "mode": "100644",
+    "git_blob": "4b6ae1c361f14a368765e328bda5f47ea39ff24b",
+    "sha256": "b3d51872891c0dc56301149dce7c83c78bbc4fd303e8cfeb7a8ef22d6bad7d92"
+  },
+  {
+    "source": "apps/macos/Sources/ORXAnalyticsCore/WireSupport.swift",
+    "destination": "apps/macos/Sources/ORXAnalyticsCore/WireSupport.swift",
+    "mode": "100644",
+    "git_blob": "5c26b65581f90237b78d7e06e7fb5b4657559d9a",
+    "sha256": "920129661f2058ba9b7ec3b3ab826312370395af5aaf15a5a727b0542165ac56"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/AppChannelInfoTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/AppChannelInfoTests.swift",
+    "mode": "100644",
+    "git_blob": "26fa22cacf4823c8e7c5a84ac9775de939aa1ce7",
+    "sha256": "6a14196afbf3f9b7c45a3f1fdfc1b590d5444e4d52d95494399cbe76e3a891ce"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/AppModelTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/AppModelTests.swift",
+    "mode": "100644",
+    "git_blob": "e228c3578b216fc0536e817d71e2d7f3f450e6c5",
+    "sha256": "bdd303f404e45267322133dd2e414cc90d7eee036a6d3751cbc7df1b45f206ef"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/AppSettingsTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/AppSettingsTests.swift",
+    "mode": "100644",
+    "git_blob": "37d7fa9d9e9df9409b3ae7819ef01714d560cee4",
+    "sha256": "89b6c59baeb98a54607cda43e7a8ea0855e1b9914cb535f0e53536794b88df99"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/DetailModelsTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/DetailModelsTests.swift",
+    "mode": "100644",
+    "git_blob": "be114c5d1725bab738af531f07c46bacedda7ed7",
+    "sha256": "de662b4845fba23eac24c3dcdf1be610833665033d364d1d20e5a3f923f07cd7"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/DiagnosticsTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/DiagnosticsTests.swift",
+    "mode": "100644",
+    "git_blob": "f874695aadf5dda627541b1e43ecd204e5a2f246",
+    "sha256": "00e256a381a89566060d0b1b049d9ce0ffd88cc8b8d333d0c2f1cc11947054a6"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/EngineClientTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/EngineClientTests.swift",
+    "mode": "100644",
+    "git_blob": "538dc7b4c52353d51ffab4f79da29d65dbd89dd8",
+    "sha256": "cf0968c837142e4c8b844dfae076b4099deebcabf82e5c1d1e09c763adf84dab"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/EngineProcessManagerTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/EngineProcessManagerTests.swift",
+    "mode": "100644",
+    "git_blob": "c97daf0339a6fba10ecb9d0dcc495930c11eceb8",
+    "sha256": "7d7fb3509c436511699d924e239c301fd79a3a7993b42102e531ad7d3c86bd57"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/HistoryModelTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/HistoryModelTests.swift",
+    "mode": "100644",
+    "git_blob": "5ab7a9891f9c5291d3baf76144af8aebd2a0ac23",
+    "sha256": "9504108d0656c7caedce7fceaaaccf4cf88675857ad5556e64f554850c54dd2f"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/MetricsFormatTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/MetricsFormatTests.swift",
+    "mode": "100644",
+    "git_blob": "73b8b921cd329f4483b88d451a4803b2dee11ed0",
+    "sha256": "443466e399ae9660929a3182ba3a074284fbb1b6d98caf3a649a6dd780729edd"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/NotificationPolicyTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/NotificationPolicyTests.swift",
+    "mode": "100644",
+    "git_blob": "334c111309adb8fd8e8e82c5ee2e085497a8555d",
+    "sha256": "7e106cb69bcaf449632c314ee429c64f5597e7824109bb05ea49e81fb4aa93ba"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/OverviewCacheTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/OverviewCacheTests.swift",
+    "mode": "100644",
+    "git_blob": "76dd54c5f3dfe571e50f0ebe4ee84ce20b2d8ae8",
+    "sha256": "9b507c0c5027e60a95fa1f74d6e3b24ca964c7207a8ae255f4bba3025b560748"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/PanelSectionsTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/PanelSectionsTests.swift",
+    "mode": "100644",
+    "git_blob": "ddf4ce05dcca98b091fd4701fb5cec3774f3ee32",
+    "sha256": "982a87c2941b6f7897294d5b9e1148a687709011f12f86c39e3ec013202dd29d"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/PythonWireContractTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/PythonWireContractTests.swift",
+    "mode": "100644",
+    "git_blob": "cb47b678dbf14ffef253962afbd8c9e5992f4982",
+    "sha256": "edc45e8c698a75a969902a3d9f5541b4b04dce96d7260f2de9338bd736df6076"
+  },
+  {
+    "source": "apps/macos/Tests/ORXAnalyticsCoreTests/RunDetailModelTests.swift",
+    "destination": "apps/macos/Tests/ORXAnalyticsCoreTests/RunDetailModelTests.swift",
+    "mode": "100644",
+    "git_blob": "23065b71e4b48577f3ea574f8827808466b72996",
+    "sha256": "32843ee93afd698e399a082f27030865d3bf1d19e829734f7a0a7aa3907e374f"
+  },
+  {
+    "source": "apps/macos/scripts/gen_wire_fixtures.py",
+    "destination": "apps/macos/scripts/gen_wire_fixtures.py",
+    "mode": "100644",
+    "git_blob": "985a57099e25457ed1c32092dc758f4a62a7f4eb",
+    "sha256": "862e104fe08b8e5c1a7523ec9775d5a90b33fe117e3552c2827bcd36647b06a6"
+  },
+  {
+    "source": "docs/adr/0001-independent-repository.md",
+    "destination": "tools/orx-analytics/docs/adr/0001-independent-repository.md",
+    "mode": "100644",
+    "git_blob": "8c3751212bc5ef549e50e1aaa63633cb83ca0ddf",
+    "sha256": "e76a40b621f724aaf8e1b45b2399393f49eb7fff0c0fb9a53f12dd6d1a68a4ad"
+  },
+  {
+    "source": "docs/app-installation.md",
+    "destination": "tools/orx-analytics/docs/app-installation.md",
+    "mode": "100644",
+    "git_blob": "a8dea3556d8fea5f43f5a998a04b6a5b820c07eb",
+    "sha256": "1f8aa852a62368b2163c4280acc743327958ca62fc155d3baaf67e92ff77b3c1"
+  },
+  {
+    "source": "docs/compatibility.md",
+    "destination": "tools/orx-analytics/docs/compatibility.md",
+    "mode": "100644",
+    "git_blob": "0979e16a71c189b3eb60c156710909adf4e5eab2",
+    "sha256": "abadcee83bc21b00fac0fc350dffb01c1102f02d562238406dea2717a3599c88"
+  },
+  {
+    "source": "docs/correlation.md",
+    "destination": "tools/orx-analytics/docs/correlation.md",
+    "mode": "100644",
+    "git_blob": "abd43e6982f095b2101d42715787d961f964af00",
+    "sha256": "657a7894c6cac3c6745dc823855c605b657880fa96ef2410d1bbef8e52d4e8d3"
+  },
+  {
+    "source": "docs/installation.md",
+    "destination": "tools/orx-analytics/docs/installation.md",
+    "mode": "100644",
+    "git_blob": "5b9d372b164a760112e9bc5b35578b13f57c1954",
+    "sha256": "3e18555913d898a7953e6116ae99b1140d17922ec63b20dc44ce80fd94f8db84"
+  },
+  {
+    "source": "docs/menubar-app-design.md",
+    "destination": "tools/orx-analytics/docs/menubar-app-design.md",
+    "mode": "100644",
+    "git_blob": "8d7e0586fa25267f0e061c80d1d0d015bbecfb15",
+    "sha256": "2c60fae3cc2b170989fe8e5b723967fd8d0dcc73e2edacd48c5db9f3192adecc"
+  },
+  {
+    "source": "docs/metrics.md",
+    "destination": "tools/orx-analytics/docs/metrics.md",
+    "mode": "100644",
+    "git_blob": "065f96114220b356e2eaf2b878705c95f873aa10",
+    "sha256": "f07bdc142b0f84f7b876345b37b9b76b19d38e372ce4496e0d574865063243c9"
+  },
+  {
+    "source": "docs/orx-integration.md",
+    "destination": "tools/orx-analytics/docs/orx-integration.md",
+    "mode": "100644",
+    "git_blob": "d4b13857d96a8781eb944feafacf01edf3507830",
+    "sha256": "bdb4494df91c7a380f01dcc5466e3e750dceffafbfa7eb6fa6689467960af080"
+  },
+  {
+    "source": "docs/resume-runbook.md",
+    "destination": "tools/orx-analytics/docs/resume-runbook.md",
+    "mode": "100644",
+    "git_blob": "fcc600624635f154b15b3a717bb4e444fabf769b",
+    "sha256": "cea026e9dfe0c5ea4c5ae3263449148380cab0b74aab1e8908234b55bfccb2d5"
+  },
+  {
+    "source": "docs/source-probes.md",
+    "destination": "tools/orx-analytics/docs/source-probes.md",
+    "mode": "100644",
+    "git_blob": "da04bf3000482716e0c8b74e0055ee12d8b09b01",
+    "sha256": "cd97bb42dc63bc3fe3377a81a20d046f342a9c2ee71ee1a5dd41bd65cfe83ae1"
+  },
+  {
+    "source": "docs/watch-migration.md",
+    "destination": "tools/orx-analytics/docs/watch-migration.md",
+    "mode": "100644",
+    "git_blob": "955d29df71099e9bbeaef0e93e43e8d5126de4e5",
+    "sha256": "8a4b12f061d8321a06f6fa457067b3807520b8221be4dde242ff0ca0088146d2"
+  },
+  {
+    "source": "orx_analytics.py",
+    "destination": "tools/orx-analytics/orx_analytics.py",
+    "mode": "100644",
+    "git_blob": "4a3230d884b2058cd903c581ce943231b14bcd51",
+    "sha256": "7c617b86f96ae708d185bffb37e2f996c4f521617802520b027c812f23b6c089"
+  },
+  {
+    "source": "pyproject.toml",
+    "destination": "tools/orx-analytics/pyproject.toml",
+    "mode": "100644",
+    "git_blob": "8a9b1e635bd641e5e71d467aebd0304884dda18a",
+    "sha256": "f8b08b7df803028b87befb9f1d02188a916496cba6f84bfbafdc4757cfe3c3e8"
+  },
+  {
+    "source": "scripts/app_distribution.py",
+    "destination": "apps/macos/scripts/app_distribution.py",
+    "mode": "100644",
+    "git_blob": "3dc165d831fbc10fb696b1545f0919f0f6d80098",
+    "sha256": "12190ff1c9318a8ef077b948a9a14605b531599173bedb405ddcbb3f6d7fcae3"
+  },
+  {
+    "source": "scripts/build_app.sh",
+    "destination": "apps/macos/scripts/build_app.sh",
+    "mode": "100755",
+    "git_blob": "7425e71b01d38eda70e89c298b47ae4203376c72",
+    "sha256": "18141f89ee82d1e86375893fb0786bf45dc1757741c84af81c9fe34d477ed05c"
+  },
+  {
+    "source": "scripts/build_macos_app.sh",
+    "destination": "apps/macos/scripts/build_macos_app.sh",
+    "mode": "100755",
+    "git_blob": "5b61571ba57d720fe9e98392a1420388b29d7ba6",
+    "sha256": "3b4e324ea90f7d1e36f0595b1d545d71237dd1c970e3df065031f3da816edcdd"
+  },
+  {
+    "source": "scripts/check_install.py",
+    "destination": "tools/orx-analytics/scripts/check_install.py",
+    "mode": "100644",
+    "git_blob": "07a021f267ca298827ee65fa6692109c1546bf8a",
+    "sha256": "c84057b943a744d7de38e244b3b452a708ba250617ae00f8f9b7a43a177771e7"
+  },
+  {
+    "source": "scripts/check_runtime_seal.py",
+    "destination": "apps/macos/scripts/check_runtime_seal.py",
+    "mode": "100644",
+    "git_blob": "31c5253164e33111655488446c0d79741fb33a93",
+    "sha256": "d82df28c13afdf896aa2c0f8644fbffe36fdd82e5abd4875de5592fe6ac61d89"
+  },
+  {
+    "source": "scripts/smoke_macos_app.sh",
+    "destination": "apps/macos/scripts/smoke_macos_app.sh",
+    "mode": "100755",
+    "git_blob": "d374bf587d34ea0e7a33f47c58c3f966debf3753",
+    "sha256": "cb5dda3d9cbd8904f6d331c61b82654a341d4e9b3f2811031e02c82c1cd747c5"
+  },
+  {
+    "source": "src/orxanalytics/__init__.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/__init__.py",
+    "mode": "100644",
+    "git_blob": "725fff96b331e50612cf2353b8cbb98aa21f3865",
+    "sha256": "1d49a23e7276e4a9ae3751ec78aaeec354c084610a8cec13b9e47290234c1bad"
+  },
+  {
+    "source": "src/orxanalytics/__main__.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/__main__.py",
+    "mode": "100644",
+    "git_blob": "18db2cc16fd844ca27ccd800e62ef3e84db92c17",
+    "sha256": "5e5a6e0b2a9278eea38c4195e730f0535b921a6a1773deaed1ecd41ca7cb6c79"
+  },
+  {
+    "source": "src/orxanalytics/anomalies/__init__.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/anomalies/__init__.py",
+    "mode": "100644",
+    "git_blob": "c7772fa8e1c4b825647022d6e92e16c6a1c0c111",
+    "sha256": "641d1ee1f9f95e8d8f98beed6eac29adbdf8c89ee760177aba50cfbe589bc091"
+  },
+  {
+    "source": "src/orxanalytics/bundle.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/bundle.py",
+    "mode": "100644",
+    "git_blob": "e7709fbe8133392db6217612753d53ea701b8e18",
+    "sha256": "1f6fabde1a76201bddbba6d3d23ff6118999719cc3515fb9b33aa9bc05bd380e"
+  },
+  {
+    "source": "src/orxanalytics/cli.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/cli.py",
+    "mode": "100644",
+    "git_blob": "23b46ddcdb608d571e2bd63079a21e690417f464",
+    "sha256": "b44ff97eea561605dd00df593d346b1c725bac38e0f96cc3d6f6edb2a2d77fb2"
+  },
+  {
+    "source": "src/orxanalytics/collect.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/collect.py",
+    "mode": "100644",
+    "git_blob": "58d919b9967a8db6cedcfdba4cd5f9f7354a7da9",
+    "sha256": "71331f986d31ac65313592a0106f1881bb54a6fbfcb7db6ed9ddd177e503066b"
+  },
+  {
+    "source": "src/orxanalytics/correlate.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/correlate.py",
+    "mode": "100644",
+    "git_blob": "767e6d9fd42eb62ef936cee126527a3582b84330",
+    "sha256": "c3fa4b94f97a5592ddecf5470897ef008a3c24a0c0f5b94412b39faa0612d8dd"
+  },
+  {
+    "source": "src/orxanalytics/dbutil.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/dbutil.py",
+    "mode": "100644",
+    "git_blob": "ca62af736d61cdbe16ceaf0d4662ba1b1c65c4a7",
+    "sha256": "cdaf9e88b27945673cffd0dd0bdfef9a20c5811f2d9f3f67127197d40c658a70"
+  },
+  {
+    "source": "src/orxanalytics/discovery.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/discovery.py",
+    "mode": "100644",
+    "git_blob": "74fe53532a39f6d585a78ca3604d7867321d096c",
+    "sha256": "8c7b7478f4aa6a7540b1b86eee4dbba846757d31fc52024e16804574593c4746"
+  },
+  {
+    "source": "src/orxanalytics/display.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/display.py",
+    "mode": "100644",
+    "git_blob": "abcaeeb95e9d944bf8fb5a5ec10f485ae9f9072c",
+    "sha256": "33b7e3bb8338eda03ed2f88e18f49525967641be8525a39732e3775fb9740d5e"
+  },
+  {
+    "source": "src/orxanalytics/engine.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/engine.py",
+    "mode": "100644",
+    "git_blob": "20f3091072d6d28a40a24dca9a2c86a7e78d1f11",
+    "sha256": "1374356a1f13937e01134c66595d2c91879533b4e411a37e86f52300a48c2265"
+  },
+  {
+    "source": "src/orxanalytics/findings.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/findings.py",
+    "mode": "100644",
+    "git_blob": "1b607cd1716a12ca0ffe49c9798fcc93ca4f960d",
+    "sha256": "e05aa5492698cb4ec1a2fcc9bfcd4916bca9fb7a5cb43817b7f7b8c817c97c50"
+  },
+  {
+    "source": "src/orxanalytics/importers/__init__.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/importers/__init__.py",
+    "mode": "100644",
+    "git_blob": "2c8d7b085877d66cd4cf219baea1c36eb75977bc",
+    "sha256": "538c912d572716deddd59e92f85ea6e1bb56449c367c9ee1ebddd4ef06b7cd7f"
+  },
+  {
+    "source": "src/orxanalytics/importers/orxstate.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/importers/orxstate.py",
+    "mode": "100644",
+    "git_blob": "47f04b38782f76665ea51d1cb31a0d7a412094cb",
+    "sha256": "254a3bc62a173269c5bd820ecd9504d8f57546b41f094ccc0b9f20387b855ffd"
+  },
+  {
+    "source": "src/orxanalytics/metrics.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/metrics.py",
+    "mode": "100644",
+    "git_blob": "3c595607e29b2653f1c84655dae1966af20131fb",
+    "sha256": "2f76983fee2dff733164b85a6d3347287929a1cedb614193c9229fe50d187788"
+  },
+  {
+    "source": "src/orxanalytics/probe.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/probe.py",
+    "mode": "100644",
+    "git_blob": "a234e255578eaf2d88a92b9784974252080b02c1",
+    "sha256": "90167c328e978247a91ff4a604205e9066881c23a83789de4b319c0684c0c90b"
+  },
+  {
+    "source": "src/orxanalytics/query_model.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/query_model.py",
+    "mode": "100644",
+    "git_blob": "087f17910966b6ffa13c2ce2d4bf661a63bb30b9",
+    "sha256": "478c8f2817d8ee80a7a768a1412f339d0a866fb35592e64510e45db9d34b0040"
+  },
+  {
+    "source": "src/orxanalytics/registry.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/registry.py",
+    "mode": "100644",
+    "git_blob": "f02023c4d17d1c59bf1a114bcadce9548b442c2a",
+    "sha256": "88f0663af17a26b55e96e7734d95af7c3160f5796f35500efb1f3992ce0ad1bc"
+  },
+  {
+    "source": "src/orxanalytics/store.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/store.py",
+    "mode": "100644",
+    "git_blob": "3edd2c0fab56bda4a38f1353144475bf508a73ea",
+    "sha256": "0d73583e3c55d2466157927256b1d3a48f779c04fe6699f2d62aa662cf0f7cbf"
+  },
+  {
+    "source": "src/orxanalytics/usage_readmodel.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/usage_readmodel.py",
+    "mode": "100644",
+    "git_blob": "240339c003d525ce6e1565a6584b875bc2790672",
+    "sha256": "be52f8a6ed2c31e5975db74dd316fce893a3bacd7e1137cfee863dce4ceb53f8"
+  },
+  {
+    "source": "src/orxanalytics/watch.py",
+    "destination": "tools/orx-analytics/src/orxanalytics/watch.py",
+    "mode": "100644",
+    "git_blob": "9365fef6a21c3406f67fb9129786fbabf69cdd8b",
+    "sha256": "41284df431a576894954fa80e9c8fafcb7f77d54731252410625ab2c03df0664"
+  },
+  {
+    "source": "tests/conftest.py",
+    "destination": "tools/orx-analytics/tests/conftest.py",
+    "mode": "100644",
+    "git_blob": "f6094eb28dbcc79a4299809dbf605cb665ca6a79",
+    "sha256": "2537b4e4457ee725019d9c39529f46c53302f7513d1cd7194d639c9152ae14a3"
+  },
+  {
+    "source": "tests/test_anomalies.py",
+    "destination": "tools/orx-analytics/tests/test_anomalies.py",
+    "mode": "100644",
+    "git_blob": "c7bab710baa35a5ea4b8333b9f6194aceb20a067",
+    "sha256": "433051336320d2ad7c3f67f0cdbc3e6c76761face321fd5b14d0893167d7e7f1"
+  },
+  {
+    "source": "tests/test_app_distribution.py",
+    "destination": "apps/macos/tests_python/test_app_distribution.py",
+    "mode": "100644",
+    "git_blob": "e3805f3148c72069cefdc88973800d2f64c52ea5",
+    "sha256": "ed2154479dcb78e90cc6527a4ef4f7ec06cb5de696474e4a25675b464298e2ef"
+  },
+  {
+    "source": "tests/test_bundle.py",
+    "destination": "tools/orx-analytics/tests/test_bundle.py",
+    "mode": "100644",
+    "git_blob": "0e90a813ce30c346e952498c5318c4d50aeeaccc",
+    "sha256": "ee1b78f7bbdf827cd95a602f6aec73526924e43a81c4df6d747bd807e935ba19"
+  },
+  {
+    "source": "tests/test_cli.py",
+    "destination": "tools/orx-analytics/tests/test_cli.py",
+    "mode": "100644",
+    "git_blob": "bdb5540131efc657d54efd809ce85b7de0a2e0aa",
+    "sha256": "95cbbe4317b0f08d1c2ef139a369a5d83f2efbf3bbebdc418a39b3e1d17a590b"
+  },
+  {
+    "source": "tests/test_discovery.py",
+    "destination": "tools/orx-analytics/tests/test_discovery.py",
+    "mode": "100644",
+    "git_blob": "88b951221a3be47ddd6f3d52cceb95f521e78861",
+    "sha256": "86daea4d65729461405cb333aedfaa2ca8aa4b37edd6b8d6da6e469226a3c6fc"
+  },
+  {
+    "source": "tests/test_display_contract.py",
+    "destination": "tools/orx-analytics/tests/test_display_contract.py",
+    "mode": "100644",
+    "git_blob": "c4def58d39a39df07aae964d3490569301f0db65",
+    "sha256": "12a4e7415ecd705d06c79aa613b7d565ae4dc540ec3f813f6c2cfd4f53045703"
+  },
+  {
+    "source": "tests/test_engine.py",
+    "destination": "tools/orx-analytics/tests/test_engine.py",
+    "mode": "100644",
+    "git_blob": "637fd0d6329c8c19da89b34da6e7dead797f55b1",
+    "sha256": "b81ced31dcfa841c526dc55cbbb549432a44de2570b0e4d7335faf58db1535f0"
+  },
+  {
+    "source": "tests/test_engine_discovery.py",
+    "destination": "tools/orx-analytics/tests/test_engine_discovery.py",
+    "mode": "100644",
+    "git_blob": "4dfb38f14a05e5729ac84c595ff57a2e1002cd7d",
+    "sha256": "3d4b7a0edd297d46954d5f77262053020527e3c0bb676f975c4613e245ed791f"
+  },
+  {
+    "source": "tests/test_import.py",
+    "destination": "tools/orx-analytics/tests/test_import.py",
+    "mode": "100644",
+    "git_blob": "d037d5927a58cd29339fab7b46ae69857104b753",
+    "sha256": "934b934458b8d7d6cf48178ed8133eb5d7c165305a5b2ef31c255b0f9180465c"
+  },
+  {
+    "source": "tests/test_install_check.py",
+    "destination": "tools/orx-analytics/tests/test_install_check.py",
+    "mode": "100644",
+    "git_blob": "a98071cc7f112124ee2183f8f64f2ec7d26f1ff7",
+    "sha256": "4144fbbc6169c2c15cd61a9d99e5f5d17fab7b84f8f9005ceaf4347bb4a00fb7"
+  },
+  {
+    "source": "tests/test_metrics.py",
+    "destination": "tools/orx-analytics/tests/test_metrics.py",
+    "mode": "100644",
+    "git_blob": "f2520aa0d5c1965c324791ea1a867a16c94d51d4",
+    "sha256": "de40a2fb36c7d981c63398b02e815d7571d4c02cd47e3ba427e0a0922ba55e27"
+  },
+  {
+    "source": "tests/test_probe.py",
+    "destination": "tools/orx-analytics/tests/test_probe.py",
+    "mode": "100644",
+    "git_blob": "2e586a8a2b3f058cd305f06797f3719552d05d69",
+    "sha256": "0ad49b20cd741aa9828215093a64918cbc5d12eca0cb25595536a97e1dcf1c63"
+  },
+  {
+    "source": "tests/test_query_model.py",
+    "destination": "tools/orx-analytics/tests/test_query_model.py",
+    "mode": "100644",
+    "git_blob": "ad7824ae7fd200f135281dab84921f3105087f12",
+    "sha256": "e1507e49ea58e26f25d0cb9dbd69b05215791cc94bf39803da8e4574db03472b"
+  },
+  {
+    "source": "tests/test_runtime_seal.py",
+    "destination": "apps/macos/tests_python/test_runtime_seal.py",
+    "mode": "100644",
+    "git_blob": "21c2169b17cfe4718d59ae8ba548bf805683cf24",
+    "sha256": "c183c6e88a6dc4f93aad1b8d4491f704f0ab3146e9aa346dd6767a36f094f8b7"
+  },
+  {
+    "source": "tests/test_storage_retention.py",
+    "destination": "tools/orx-analytics/tests/test_storage_retention.py",
+    "mode": "100644",
+    "git_blob": "55235136655091e8dd4faf97e3eba66013a18002",
+    "sha256": "71f64c48e7847cf9d0d94ad5af1a57a9f07b90deff6efd84866b24075598ef56"
+  },
+  {
+    "source": "tests/test_usage_readmodel.py",
+    "destination": "tools/orx-analytics/tests/test_usage_readmodel.py",
+    "mode": "100644",
+    "git_blob": "52a8d8661558415e7674a7d246bfb83815f5ffbc",
+    "sha256": "435c360b5c68188927d5989bb4f2071b0f1b5cbf235803248ea539c89e1262e1"
+  },
+  {
+    "source": "tests/test_watch_engine.py",
+    "destination": "tools/orx-analytics/tests/test_watch_engine.py",
+    "mode": "100644",
+    "git_blob": "1520f9ceb9e5e101e0b939c6af1e90d73a59586e",
+    "sha256": "35fe1c7639c709556d7bb89fc6a07121c2c2e24498ea11fdcdd6a26778cab68a"
+  }
+]

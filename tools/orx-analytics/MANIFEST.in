@@ -1,0 +1,14 @@
+include README.md pyproject.toml MANIFEST.in
+include CONTRIBUTING.md CHANGELOG.md
+recursive-include src/orxanalytics *.py
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include docs *.md
+prune reports
+prune var
+prune .orx
+prune .venv
+prune .git
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod] .DS_Store

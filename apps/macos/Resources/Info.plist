@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>ORX Analytics</string>
+	<key>CFBundleDisplayName</key>
+	<string>ORX Analytics</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.orxanalytics.macos</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleExecutable</key>
+	<string>ORXAnalyticsApp</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- Menu-bar-only app: no Dock icon, no main window (design §7). -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>ORX Analytics contributors</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<!-- Channel identity (G011 T005). This checked-in plist marks the
+	     SwiftPM/swift-run binary as a DEVELOPMENT build — not a
+	     distribution artifact. Distribution builds generate their own
+	     Info.plist via scripts/build_app.sh with the real channel,
+	     audience, Gatekeeper notice and complete source commit. -->
+	<key>ORXAnalyticsChannel</key>
+	<string>development</string>
+	<key>ORXAnalyticsChannelAudience</key>
+	<string>developer machine only (swift run; not a distribution artifact)</string>
+	<key>ORXAnalyticsGatekeeperNotice</key>
+	<string>Development build: unsigned or ad-hoc, not notarized; do not distribute.</string>
+</dict>
+</plist>

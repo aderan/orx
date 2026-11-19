@@ -1,0 +1,125 @@
+[
+  {
+    "repository": "aderan/orx",
+    "tag_name": "v0.4.0",
+    "html_url": "https://github.com/aderan/orx/releases/tag/v0.4.0",
+    "prerelease": false,
+    "published_at": "2026-10-17T18:02:51Z",
+    "assets": [
+      {
+        "name": "compatibility-orx-0.4.0-analytics-0.4.2.md",
+        "digest": "sha256:c7b99e8796e39571a44d21a335da94b626506c3039b7e0d8d59692076b4bd585",
+        "size": 5659,
+        "browser_download_url": "https://github.com/aderan/orx/releases/download/v0.4.0/compatibility-orx-0.4.0-analytics-0.4.2.md"
+      },
+      {
+        "name": "manifest.json",
+        "digest": "sha256:f2e5aac6f02a063c390984bbc2f3f181f03c76ee8648ca5a507ff8e32735495d",
+        "size": 10771,
+        "browser_download_url": "https://github.com/aderan/orx/releases/download/v0.4.0/manifest.json"
+      },
+      {
+        "name": "orx_agent-0.4.0-py3-none-any.whl",
+        "digest": "sha256:f71c19aebd2dcd1a09524602be50ad730b194d743f52925ea59fd75c2d2a212f",
+        "size": 338818,
+        "browser_download_url": "https://github.com/aderan/orx/releases/download/v0.4.0/orx_agent-0.4.0-py3-none-any.whl"
+      },
+      {
+        "name": "SHA256SUMS.txt",
+        "digest": "sha256:f02097a9e8917e353109a1a50579bef686acf2353fee5cfba74953ebed19d689",
+        "size": 419,
+        "browser_download_url": "https://github.com/aderan/orx/releases/download/v0.4.0/SHA256SUMS.txt"
+      }
+    ]
+  },
+  {
+    "repository": "aderan/orx-analytics",
+    "tag_name": "v0.4.2",
+    "html_url": "https://github.com/aderan/orx-analytics/releases/tag/v0.4.2",
+    "prerelease": true,
+    "published_at": "2026-10-17T18:03:29Z",
+    "assets": [
+      {
+        "name": "compatibility-orx-0.4.0-analytics-0.4.2.md",
+        "digest": "sha256:c7b99e8796e39571a44d21a335da94b626506c3039b7e0d8d59692076b4bd585",
+        "size": 5659,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/compatibility-orx-0.4.0-analytics-0.4.2.md"
+      },
+      {
+        "name": "manifest.json",
+        "digest": "sha256:f2e5aac6f02a063c390984bbc2f3f181f03c76ee8648ca5a507ff8e32735495d",
+        "size": 10771,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/manifest.json"
+      },
+      {
+        "name": "ORXAnalytics-0.4.2-internal-preview-dev-macos13-arm64.zip",
+        "digest": "sha256:5187029c8ab41a41a8d6100c502061035a322c7d24ad015cfbe2fa76303d7396",
+        "size": 18834378,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/ORXAnalytics-0.4.2-internal-preview-dev-macos13-arm64.zip"
+      },
+      {
+        "name": "orx_analytics-0.4.2-py3-none-any.whl",
+        "digest": "sha256:284d07741306347630f70f52b9be4a5322efbe2c84e41f05ccffff4cc956584d",
+        "size": 101116,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/orx_analytics-0.4.2-py3-none-any.whl"
+      },
+      {
+        "name": "orx_analytics-0.4.2.tar.gz",
+        "digest": "sha256:751a1011ca6e00c351c662c43d6af9a8c49481419b2b946dbaacecf3df4ef924",
+        "size": 205528,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/orx_analytics-0.4.2.tar.gz"
+      },
+      {
+        "name": "SHA256SUMS.txt",
+        "digest": "sha256:f02097a9e8917e353109a1a50579bef686acf2353fee5cfba74953ebed19d689",
+        "size": 419,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.2/SHA256SUMS.txt"
+      }
+    ]
+  },
+  {
+    "repository": "aderan/orx-analytics",
+    "tag_name": "v0.4.3",
+    "html_url": "https://github.com/aderan/orx-analytics/releases/tag/v0.4.3",
+    "prerelease": true,
+    "published_at": "2026-10-19T10:21:27Z",
+    "assets": [
+      {
+        "name": "compatibility-orx-0.4.0-analytics-0.4.3.md",
+        "digest": "sha256:e98323734a5e259470bef49759b207371f20dda829f0890901e3c476587aa60f",
+        "size": 6609,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/compatibility-orx-0.4.0-analytics-0.4.3.md"
+      },
+      {
+        "name": "manifest.json",
+        "digest": "sha256:203c279d2cb968c2fc317657f24301216069cef890c99a4012d4c3adccd8c437",
+        "size": 11683,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/manifest.json"
+      },
+      {
+        "name": "ORXAnalytics-0.4.3-internal-preview-dev-macos13-arm64.zip",
+        "digest": "sha256:461a2f037f9e94125d559ad57def4166383ba6f06a50d55c7014813909d63824",
+        "size": 18884221,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/ORXAnalytics-0.4.3-internal-preview-dev-macos13-arm64.zip"
+      },
+      {
+        "name": "orx_analytics-0.4.3-py3-none-any.whl",
+        "digest": "sha256:7f7c6692a1559e5c736d732a3db780f5588500f505245b2b0dd2bf01aba73ef9",
+        "size": 105333,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/orx_analytics-0.4.3-py3-none-any.whl"
+      },
+      {
+        "name": "orx_analytics-0.4.3.tar.gz",
+        "digest": "sha256:b25327a8f8d456eaba912282d83043ee858d24822d1cc76b3be60161ed989a2b",
+        "size": 234830,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/orx_analytics-0.4.3.tar.gz"
+      },
+      {
+        "name": "SHA256SUMS.txt",
+        "digest": "sha256:8e046521a172f5c018f7cf458de340eaf44ab8eb89314890ed851dee88292ded",
+        "size": 419,
+        "browser_download_url": "https://github.com/aderan/orx-analytics/releases/download/v0.4.3/SHA256SUMS.txt"
+      }
+    ]
+  }
+]
