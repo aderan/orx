@@ -3745,22 +3745,25 @@ def stage_monorepo(work_dir: Path, log: StageLog, commit: str, channel: str,
 
     checks = {}
 
-    def run(name: str, command: list[str], cwd: Path, **extra_env: str) -> None:
+    def run(name: str, command: list[str], cwd: Path,
+            **extra_env: str) -> subprocess.CompletedProcess:
         result = _run(command, cwd=cwd, env={**env, **extra_env},
                       timeout=_BATTERY_TIMEOUT_SEC)
         log.command(command, result, env_note=f"frozen monorepo: {name}")
         checks[name] = result.returncode
         _require(result.returncode == 0, f"{name} failed (see {log.rel})")
+        return result
 
-    analytics_python = ["uv", "run", "--no-project", "--python", "3.12",
+    orx_python = ["uv", "run", "--locked", "--python", sys.executable]
+    analytics_python = ["uv", "run", "--no-project", "--python", sys.executable,
                         "--with-editable", f"{analytics}[dev]", "python"]
     run("orx_build", ["uv", "build", "--out-dir", str(dist)], checkout)
     run("analytics_build", ["uv", "build", "--out-dir", str(dist)], analytics)
-    run("orx_install", ["uv", "run", "--locked", "python", "scripts/check_release.py"],
+    run("orx_install", [*orx_python, "python", "scripts/check_release.py"],
         checkout)
     run("analytics_install", [*analytics_python, "scripts/check_install.py"], analytics)
     run("analytics_pytest", [*analytics_python, "-m", "pytest"], analytics)
-    run("app_packaging_pytest", ["uv", "run", "--locked", "pytest", "-q",
+    run("app_packaging_pytest", [*orx_python, "pytest", "-q",
                                 "apps/macos/tests_python"], checkout)
     wire = work_dir / "wire"
     run("swift_wire_fixtures", [*analytics_python,
@@ -3794,6 +3797,22 @@ def stage_monorepo(work_dir: Path, log: StageLog, commit: str, channel: str,
         _require(wheel == sdist and wheel["Name"] == distribution,
                  f"{package} wheel/sdist metadata mismatch")
         bundles[package] = wheel["Version"]
+
+    record = json.loads(paths["app_build_record"].read_text())
+    _require(record["source_commit"] == commit and record["channel"] == channel
+             and record["sha256"] == artifacts["app_archive"]["sha256"],
+             "App build record differs from the frozen archive")
+
+    venv = work_dir / "analytics-venv"
+    run("analytics_candidate_venv",
+        ["uv", "venv", "--python", sys.executable, str(venv)], work_dir)
+    run("analytics_candidate_install",
+        ["uv", "pip", "install", "--python", str(venv / "bin" / "python"),
+         "--no-index", "--no-deps", str(paths["analytics_wheel"])], work_dir)
+    probe = run("analytics_candidate_version",
+                [str(venv / "bin" / "orx-analytics"), "--version"], work_dir)
+    _require(probe.stdout.strip() == bundles["analytics"],
+             "installed candidate Analytics version disagrees with the wheel")
 
     app_dir = extract_app_archive(paths["app_archive"], work_dir / "app")
     facts = gather_app_facts(app_dir)

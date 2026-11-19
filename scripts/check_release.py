@@ -190,7 +190,8 @@ def install_wheel(wheel: Path, venv_dir: Path | str) -> Path:
     """
     venv_dir = Path(venv_dir)
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
-    created = _run(["uv", "venv", str(venv_dir)], cwd=venv_dir.parent)
+    created = _run(["uv", "venv", "--python", sys.executable, str(venv_dir)],
+                   cwd=venv_dir.parent)
     if created.returncode != 0:
         raise ReleaseCheckError(
             f"uv venv failed (exit {created.returncode})\n{created.stderr}"
