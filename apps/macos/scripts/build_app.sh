@@ -153,62 +153,8 @@ echo "$PBS_SHA256  $TARBALL" | shasum -a 256 -c - >/dev/null \
   || { echo "build_app.sh: SHA256 mismatch for $TARBALL" >&2; exit 1; }
 echo "runtime: $PBS_NAME (sha256 verified)"
 
-# ---- 1. Swift release binary (SwiftPM, Xcode-free) ------------------------
-"$APP_DIR/scripts/build_macos_app.sh" release
-BIN="$APP_DIR/.build/release/ORXAnalyticsApp"
-
-ARCH=$(lipo -info "$BIN" 2>/dev/null || file "$BIN")
-case "$ARCH" in
-  *arm64*) ;;
-  *) echo "build_app.sh: $BIN is not an arm64 build: $ARCH" >&2; exit 1 ;;
-esac
-MIN_OS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')
-case "$MIN_OS" in
-  13.*|1[4-9].*) ;;
-  *) echo "build_app.sh: unexpected deployment target '$MIN_OS' (want >= 13.0)" >&2; exit 1 ;;
-esac
-
-# ---- 2. assemble the .app bundle ------------------------------------------
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-
-cp "$BIN" "$APP/Contents/MacOS/ORXAnalyticsApp"
-
-# Python runtime: install_only tarball ships a relocatable python/ tree.
-tar -xzf "$TARBALL" -C "$APP/Contents/Resources"
-mv "$APP/Contents/Resources/python" "$APP/Contents/Resources/python.tmp"
-mv "$APP/Contents/Resources/python.tmp" "$APP/Contents/Resources/python"
-
-# Analytics code: stdlib-only package copied beside the runtime; the app
-# runs `<bundled python> -m orxanalytics.engine` with PYTHONPATH here.
-rm -rf "$APP/Contents/Resources/orxanalytics"
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-  "$ANALYTICS_DIR/src/orxanalytics/" "$APP/Contents/Resources/orxanalytics/"
-[ -f "$APP/Contents/Resources/orxanalytics/__init__.py" ] \
-  || { echo "build_app.sh: analytics package missing from staging" >&2; exit 1; }
-# The app's upgrade guard reads this to decide backup-before-migrate.
-printf '%s\n' "$VERSION" > "$APP/Contents/Resources/orxanalytics-version.txt"
-
-# Engine serve entry the app launches: the checked-in wrapper around
-# the engine's public serve API (acquire + start_server + supervisor).
-# `python -m orxanalytics.engine` currently never binds the socket —
-# see the wrapper's docstring and docs/app-installation.md.
-cp "$APP_DIR/Resources/orx_engine_serve.py" \
-   "$APP/Contents/Resources/orx_engine_serve.py"
-
-# In-app distribution manifest: channel, audience, Gatekeeper limit,
-# version and the COMPLETE source commit travel inside the artifact.
-"$PY" - "$WORK/channel-info.json" "$APP/Contents/Resources/distribution.json" <<'PYEOF'
-import json, sys
-info = json.loads(open(sys.argv[1], encoding="utf-8").read())
-with open(sys.argv[2], "w", encoding="utf-8") as fh:
-    json.dump(info["in_app_manifest"], fh, indent=2, ensure_ascii=False,
-              sort_keys=True)
-    fh.write("\n")
-PYEOF
-
-printf 'APPL????' > "$APP/Contents/PkgInfo"
-cat > "$APP/Contents/Info.plist" <<PLIST
+# Use one metadata file for both macOS bundle-identity lookups.
+cat > "$WORK/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -257,6 +203,69 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# ---- 1. Swift release binary (SwiftPM, Xcode-free) ------------------------
+ORX_APP_LINK_INFO_PLIST="$WORK/Info.plist" "$APP_DIR/scripts/build_macos_app.sh" release
+BIN="$APP_DIR/.build/release/ORXAnalyticsApp"
+
+otool -P "$BIN" > "$WORK/embedded-plist.txt"
+sed -n '/^<?xml /,/^<\/plist>/p' "$WORK/embedded-plist.txt" > "$WORK/embedded.plist"
+cmp -s "$WORK/Info.plist" "$WORK/embedded.plist" \
+  || { echo "build_app.sh: embedded Info.plist differs from bundle metadata" >&2; exit 1; }
+echo "info-plist: embedded and packaged metadata match"
+
+ARCH=$(lipo -info "$BIN" 2>/dev/null || file "$BIN")
+case "$ARCH" in
+  *arm64*) ;;
+  *) echo "build_app.sh: $BIN is not an arm64 build: $ARCH" >&2; exit 1 ;;
+esac
+MIN_OS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f && /minos/{print $2; exit}')
+case "$MIN_OS" in
+  13.*|1[4-9].*) ;;
+  *) echo "build_app.sh: unexpected deployment target '$MIN_OS' (want >= 13.0)" >&2; exit 1 ;;
+esac
+
+# ---- 2. assemble the .app bundle ------------------------------------------
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+cp "$BIN" "$APP/Contents/MacOS/ORXAnalyticsApp"
+cp "$WORK/Info.plist" "$APP/Contents/Info.plist"
+
+# Python runtime: install_only tarball ships a relocatable python/ tree.
+tar -xzf "$TARBALL" -C "$APP/Contents/Resources"
+mv "$APP/Contents/Resources/python" "$APP/Contents/Resources/python.tmp"
+mv "$APP/Contents/Resources/python.tmp" "$APP/Contents/Resources/python"
+
+# Analytics code: stdlib-only package copied beside the runtime; the app
+# runs `<bundled python> -m orxanalytics.engine` with PYTHONPATH here.
+rm -rf "$APP/Contents/Resources/orxanalytics"
+rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+  "$ANALYTICS_DIR/src/orxanalytics/" "$APP/Contents/Resources/orxanalytics/"
+[ -f "$APP/Contents/Resources/orxanalytics/__init__.py" ] \
+  || { echo "build_app.sh: analytics package missing from staging" >&2; exit 1; }
+# The app's upgrade guard reads this to decide backup-before-migrate.
+printf '%s\n' "$VERSION" > "$APP/Contents/Resources/orxanalytics-version.txt"
+
+# Engine serve entry the app launches: the checked-in wrapper around
+# the engine's public serve API (acquire + start_server + supervisor).
+# `python -m orxanalytics.engine` currently never binds the socket —
+# see the wrapper's docstring and docs/app-installation.md.
+cp "$APP_DIR/Resources/orx_engine_serve.py" \
+   "$APP/Contents/Resources/orx_engine_serve.py"
+
+# In-app distribution manifest: channel, audience, Gatekeeper limit,
+# version and the COMPLETE source commit travel inside the artifact.
+"$PY" - "$WORK/channel-info.json" "$APP/Contents/Resources/distribution.json" <<'PYEOF'
+import json, sys
+info = json.loads(open(sys.argv[1], encoding="utf-8").read())
+with open(sys.argv[2], "w", encoding="utf-8") as fh:
+    json.dump(info["in_app_manifest"], fh, indent=2, ensure_ascii=False,
+              sort_keys=True)
+    fh.write("\n")
+PYEOF
+
+printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # ---- 3. bounded self-test: the bundled runtime really runs the engine ----
 # Fully synthetic: an empty ORX_DATA_DIR means discovery finds no projects,

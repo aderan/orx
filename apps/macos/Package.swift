@@ -5,10 +5,11 @@ import Foundation
 import PackageDescription
 
 // The executable is a menu-bar-only app (LSUIElement). SwiftPM builds a
-// bare executable, so the Info.plist is embedded into the __TEXT,__info_plist
-// section; the Stage-5 .app bundle reuses the same plist file.
+// bare executable with development metadata by default. Distribution builds
+// link the same channel-specific plist they copy into the signed bundle.
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-let embeddedInfoPlist = packageRoot
+let embeddedInfoPlist = ProcessInfo.processInfo.environment["ORX_APP_LINK_INFO_PLIST"]
+    ?? packageRoot
     .appendingPathComponent("Resources/Info.plist").path
 
 let package = Package(
