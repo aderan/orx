@@ -143,3 +143,10 @@ Bundle ID `org.orxanalytics.macos.dev`，用公开的
 12:58:42.921 又将改名后的 host 加入 blocked list。探针进程仍存活。
 因此只改菜单栏项目的保存名也无法解除该账户的屏蔽。原 0.4.4
 安装及实际数据保留，已停止探针并清理探针专用设置。
+
+对同一探针副本只更换为本机 Apple Development 签名，保持 Bundle ID
+与已验项目名不变，严格验签通过。13:00:54.383 控制中心仍将该
+host 加入 blocked list。当前账户的屏蔽可以在 ad-hoc 及 Apple
+Development 签名下复现。系统公开的偏好查询未返回该应用的归属表。
+该签名仅用于本机对照，正式渠道仍无 Developer ID Application 身份。
+临时探针已停止，原 0.4.4 安装通过严格验签。
