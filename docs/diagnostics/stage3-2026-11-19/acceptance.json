@@ -1,0 +1,477 @@
+{
+  "date": "2026-11-19",
+  "source_commit": "5c85be6",
+  "tests": {
+    "command": ".venv/bin/python -m pytest -q",
+    "passed": 1224
+  },
+  "hosts": [
+    {
+      "controller": "codex",
+      "mode": "current Codex session",
+      "project": "/tmp/orx-stage3-live.zwV58q/codex/project",
+      "deep_candidates": [
+        {
+          "profile": "claude-plan",
+          "tier": "T2"
+        },
+        {
+          "profile": "codex-review",
+          "tier": "T0"
+        }
+      ],
+      "runs": [
+        {
+          "phase": "original",
+          "goal": "G001",
+          "run": {
+            "id": "R001",
+            "status": "done",
+            "started_at": "2026-11-19T02:16:36.228668+00:00",
+            "completed_at": "2026-11-19T02:22:53.297539+00:00"
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "deep",
+            "planner_profile": "claude-plan",
+            "status": "active"
+          },
+          "final_status": "/tmp/orx-stage3-live.zwV58q/codex/out/final-status.json",
+          "worker_1_resolution": {
+            "spec": {
+              "provider": null,
+              "family": null,
+              "version": null,
+              "id": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "effort": "medium",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "strategy": "isolated_provider_selection",
+            "requested_effort": "medium",
+            "native_effort": "high"
+          },
+          "worker_2_resolution": {
+            "spec": {
+              "provider": null,
+              "family": "grok",
+              "version": "4.7",
+              "id": null,
+              "effort": "max",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "grok-4.7-xhigh",
+            "strategy": "catalog_variant",
+            "bracket_params": [],
+            "catalog_generation": 0,
+            "requested_effort": "max",
+            "native_effort": "max"
+          },
+          "dependency_artifacts": [
+            {
+              "task": "T001",
+              "revision": 1,
+              "attempt": 2,
+              "artifacts": [
+                {
+                  "path": "contracts/fahrenheit.json",
+                  "exists": true
+                }
+              ]
+            }
+          ],
+          "verdict": "pass",
+          "output": "100.0",
+          "attempts": [
+            {
+              "id": 1,
+              "role": "planner",
+              "profile": "claude-plan",
+              "harness": "claude",
+              "requested_effort": "high",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 135.3
+            },
+            {
+              "id": 2,
+              "role": "worker",
+              "profile": "make-contract",
+              "harness": "zcode",
+              "requested_effort": "medium",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 107.9
+            },
+            {
+              "id": 3,
+              "role": "worker",
+              "profile": "wire-cli",
+              "harness": "cursor",
+              "requested_effort": "max",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 135.8
+            },
+            {
+              "id": 4,
+              "role": "verifier",
+              "profile": "codex-review",
+              "harness": "codex",
+              "requested_effort": "low",
+              "result": "pass",
+              "failure_reason": null,
+              "duration_sec": 19.0
+            }
+          ]
+        },
+        {
+          "phase": "replay",
+          "goal": "G002",
+          "run": {
+            "id": "R002",
+            "status": "done",
+            "started_at": "2026-11-19T02:23:06.188639+00:00",
+            "completed_at": "2026-11-19T02:32:18.234520+00:00"
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "standard",
+            "planner_profile": "host-manual",
+            "status": "active"
+          },
+          "final_status": "/tmp/orx-stage3-live.zwV58q/codex/out/replay/final-status.json",
+          "worker_1_resolution": {
+            "spec": {
+              "provider": null,
+              "family": null,
+              "version": null,
+              "id": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "effort": "low",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "strategy": "isolated_provider_selection",
+            "requested_effort": "low",
+            "native_effort": "low"
+          },
+          "worker_2_resolution": {
+            "spec": {
+              "provider": null,
+              "family": "grok",
+              "version": "4.7",
+              "id": null,
+              "effort": "max",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "grok-4.7-xhigh",
+            "strategy": "catalog_variant",
+            "bracket_params": [],
+            "catalog_generation": 0,
+            "requested_effort": "max",
+            "native_effort": "xhigh"
+          },
+          "dependency_artifacts": [
+            {
+              "task": "T001",
+              "revision": 1,
+              "attempt": 6,
+              "artifacts": [
+                {
+                  "path": "contracts/fahrenheit.json",
+                  "exists": true
+                }
+              ]
+            }
+          ],
+          "verdict": "pass",
+          "output": "100.0",
+          "attempts": [
+            {
+              "id": 5,
+              "role": "worker",
+              "profile": "make-contract",
+              "harness": "zcode",
+              "requested_effort": "medium",
+              "result": "failed",
+              "failure_reason": "timed out after 240s",
+              "duration_sec": 240.3
+            },
+            {
+              "id": 6,
+              "role": "worker",
+              "profile": "make-contract",
+              "harness": "zcode",
+              "requested_effort": "low",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 25.1
+            },
+            {
+              "id": 7,
+              "role": "worker",
+              "profile": "wire-cli",
+              "harness": "cursor",
+              "requested_effort": "max",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 64.5
+            },
+            {
+              "id": 8,
+              "role": "verifier",
+              "profile": "codex-review",
+              "harness": "codex",
+              "requested_effort": "low",
+              "result": "pass",
+              "failure_reason": null,
+              "duration_sec": 16.3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "controller": "zcode",
+      "mode": "real ZCode headless Controller session",
+      "project": "/tmp/orx-stage3-live.zwV58q/zcode/project",
+      "deep_candidates": [
+        {
+          "profile": "claude-plan",
+          "tier": "T2"
+        },
+        {
+          "profile": "codex-review",
+          "tier": "T0"
+        }
+      ],
+      "runs": [
+        {
+          "phase": "original",
+          "goal": "G001",
+          "run": {
+            "id": "R001",
+            "status": "done",
+            "started_at": "2026-11-19T02:17:16.139526+00:00",
+            "completed_at": "2026-11-19T02:22:06.956754+00:00"
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "deep",
+            "planner_profile": "claude-plan",
+            "status": "active"
+          },
+          "final_status": "/tmp/orx-stage3-live.zwV58q/zcode/out/final-status.json",
+          "worker_1_resolution": {
+            "spec": {
+              "provider": null,
+              "family": null,
+              "version": null,
+              "id": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "effort": "medium",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "strategy": "isolated_provider_selection",
+            "requested_effort": "medium",
+            "native_effort": "high"
+          },
+          "worker_2_resolution": {
+            "spec": {
+              "provider": null,
+              "family": "grok",
+              "version": "4.7",
+              "id": null,
+              "effort": "max",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "grok-4.7-xhigh",
+            "strategy": "catalog_variant",
+            "bracket_params": [],
+            "catalog_generation": 0,
+            "requested_effort": "max",
+            "native_effort": "max"
+          },
+          "dependency_artifacts": [
+            {
+              "task": "T001",
+              "revision": 1,
+              "attempt": 2,
+              "artifacts": [
+                {
+                  "path": "contracts/fahrenheit_to_celsius.json",
+                  "exists": true
+                }
+              ]
+            }
+          ],
+          "verdict": "pass",
+          "output": "100.0",
+          "attempts": [
+            {
+              "id": 1,
+              "role": "planner",
+              "profile": "claude-plan",
+              "harness": "claude",
+              "requested_effort": "high",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 94.4
+            },
+            {
+              "id": 2,
+              "role": "worker",
+              "profile": "make-contract",
+              "harness": "zcode",
+              "requested_effort": "medium",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 44.9
+            },
+            {
+              "id": 3,
+              "role": "worker",
+              "profile": "wire-cli",
+              "harness": "cursor",
+              "requested_effort": "max",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 97.5
+            },
+            {
+              "id": 4,
+              "role": "verifier",
+              "profile": "codex-review",
+              "harness": "codex",
+              "requested_effort": "low",
+              "result": "pass",
+              "failure_reason": null,
+              "duration_sec": 17.1
+            }
+          ]
+        },
+        {
+          "phase": "replay",
+          "goal": "G002",
+          "run": {
+            "id": "R002",
+            "status": "done",
+            "started_at": "2026-11-19T02:25:35.931490+00:00",
+            "completed_at": "2026-11-19T02:30:12.974125+00:00"
+          },
+          "plan": {
+            "revision": 1,
+            "depth": "standard",
+            "planner_profile": "host-manual",
+            "status": "active"
+          },
+          "final_status": "/tmp/orx-stage3-live.zwV58q/zcode/out/replay/final-status.json",
+          "worker_1_resolution": {
+            "spec": {
+              "provider": null,
+              "family": null,
+              "version": null,
+              "id": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "effort": "medium",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "strategy": "isolated_provider_selection",
+            "requested_effort": "medium",
+            "native_effort": "high"
+          },
+          "worker_2_resolution": {
+            "spec": {
+              "provider": null,
+              "family": "grok",
+              "version": "4.7",
+              "id": null,
+              "effort": "max",
+              "speed": null,
+              "context": null,
+              "capabilities": []
+            },
+            "cli_slug": "grok-4.7-xhigh",
+            "strategy": "catalog_variant",
+            "bracket_params": [],
+            "catalog_generation": 0,
+            "requested_effort": "max",
+            "native_effort": "xhigh"
+          },
+          "dependency_artifacts": [
+            {
+              "task": "T001",
+              "revision": 1,
+              "attempt": 5,
+              "artifacts": [
+                {
+                  "path": "contracts/fahrenheit_to_celsius.json",
+                  "exists": true
+                }
+              ]
+            }
+          ],
+          "verdict": "pass",
+          "output": "100.0",
+          "attempts": [
+            {
+              "id": 5,
+              "role": "worker",
+              "profile": "make-contract",
+              "harness": "zcode",
+              "requested_effort": "medium",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 132.0
+            },
+            {
+              "id": 6,
+              "role": "worker",
+              "profile": "wire-cli",
+              "harness": "cursor",
+              "requested_effort": "max",
+              "result": "completed",
+              "failure_reason": null,
+              "duration_sec": 72.5
+            },
+            {
+              "id": 7,
+              "role": "verifier",
+              "profile": "codex-review",
+              "harness": "codex",
+              "requested_effort": "low",
+              "result": "pass",
+              "failure_reason": null,
+              "duration_sec": 21.7
+            }
+          ]
+        }
+      ],
+      "original_controller_session": "sess_f74cc9a2-ceaa-427e-8ee5-3860caf4e3b5",
+      "replay_controller_session": "sess_a5f0e405-3255-442c-9a13-6a37b2018356"
+    }
+  ],
+  "notes": [
+    "Both original Runs used real Claude Code sonnet planning with explicit deep and configured T2 before T0.",
+    "Replay Runs reused the generated Plan IR under a new Goal identity to verify the corrected Cursor native_effort metadata.",
+    "Original Cursor launch slugs were xhigh while their native_effort field incorrectly said max. The original receipts remain unchanged, with CLI correction notes.",
+    "The Codex replay encountered a GLM high-reasoning timeout at 240 seconds. Its retained log was truncated and showed reasoning deltas, with no observed tool or permission events. A local low-effort retry recovered.",
+    "The timeout was also misclassified as rate_limited by the existing generic text classifier. The isolated test used an explicit resource override. The classifier issue is recorded in docs/backlog.md.",
+    "S received configuration and capability-routing regression coverage. No specialized OCR or Decision Model service was invoked.",
+    "Native launch parameters are recorded separately from abstract effort. Upstream effective effort remains unknown where the CLI does not report it."
+  ]
+}

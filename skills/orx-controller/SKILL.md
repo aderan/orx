@@ -194,6 +194,18 @@ state to select the next command:
 | No runnable or verifying work | Inspect `failed`, `routing_errors`, `recovery`, and pending assignments. Follow the recovery rules below or report the blocker. |
 | Run is done | Report the results and their verification evidence. |
 
+Choose planning depth before calling `orx plan` or `orx replan`, then pass
+`--depth light|standard|deep`. Use light for a clear local change, standard
+for ordinary task decomposition, and deep for investigation of key unknowns,
+cross-module effects, or recovery design. Project configuration supplies each
+depth's ordered candidates. Without a choice, ORX uses the configured depth,
+with legacy `auto` resolving to standard.
+
+Tier profiles use T0–T3 for general models and S for a specialized capability.
+Effort is independently low, medium, high, or max. Use the profile's
+`native_effort` override when configured and the CLI's resolution record to
+inspect the actual launch parameter. A legacy class does not establish a tier.
+
 Use `next_actions` from `status`, `run`, and `verify` when available. For a
 host assignment, use the claim or verdict submission commands in that same
 response. Worker `inputs` and verifier `evidence` show the delivered paths

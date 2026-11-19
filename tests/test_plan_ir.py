@@ -164,18 +164,18 @@ def test_explicit_depth_overrides_tokens():
     assert resolve("fix a typo", "deep") is plan_mod.PlanDepth.DEEP
 
 
-def test_high_risk_tokens_mean_deep():
+def test_keywords_do_not_choose_planning_depth():
     for text in ("plan the migration", "refactor payments", "public api change", "breaking release"):
-        assert plan_mod.resolve_depth(text) is plan_mod.PlanDepth.DEEP
+        assert plan_mod.resolve_depth(text) is plan_mod.PlanDepth.STANDARD
 
 
-def test_small_scope_tokens_mean_light():
+def test_small_scope_words_keep_standard_without_controller_choice():
     for text in ("fix a typo", "rename the variable", "add a comment", "tiny tweak"):
-        assert plan_mod.resolve_depth(text) is plan_mod.PlanDepth.LIGHT
+        assert plan_mod.resolve_depth(text) is plan_mod.PlanDepth.STANDARD
 
 
-def test_high_risk_beats_small_scope():
-    assert plan_mod.resolve_depth("refactor this tiny module") is plan_mod.PlanDepth.DEEP
+def test_mixed_keywords_keep_standard_without_controller_choice():
+    assert plan_mod.resolve_depth("refactor this tiny module") is plan_mod.PlanDepth.STANDARD
 
 
 def test_plain_goal_is_standard():

@@ -47,6 +47,35 @@ uv run orx usage --json        # per-profile tasks, runtime, tokens + accuracy
 Every command takes `--json` for a machine envelope:
 `{"ok": true, ...}` or `{"ok": false, "error": "..."}` (exit 0/1; 2 = usage).
 
+## Model tiers and effort
+
+New profiles declare `tier = "T0" | "T1" | "T2" | "T3" | "S"` and
+`effort = "low" | "medium" | "high" | "max"`. Tier and effort are independent.
+S profiles require a named specialized capability, such as `ocr`, and
+participate only when the task explicitly requests it.
+
+```toml
+[profiles.project-planner]
+driver = "cli"
+harness = "claude"
+model = "sonnet"
+tier = "T1"
+effort = "high"
+capabilities = ["coding"]
+```
+
+The Controller selects `orx plan --depth light|standard|deep`. ORX uses the
+project's ordered candidates for that depth and filters unavailable or
+incompatible profiles. Standard is the default, including for legacy
+`plan.depth = "auto"`. The old `allow_class_downgrade` setting is accepted
+for compatibility.
+
+Existing `class` profiles and `xhigh` keep their old execution behavior.
+New profiles can explicitly set `native_effort` for a model-specific
+parameter. See [tier and effort mapping](docs/routing-strategy.md) for the
+harness mappings and [model configuration](docs/model-selection.md) for
+migration examples.
+
 ## Profiles (`.orx/profiles.toml`)
 
 - `driver = "host"` — you (or your host agent) do it: `task claim` →
@@ -278,7 +307,8 @@ in this repository.
   skipped; `constrained` is a last resort. Resource status never rewrites TOML
   ordering.
 - An explicitly pinned `--profile` never silently falls back.
-- Deep planning refuses classes below `frontier` unless policy allows it.
+- Planning depth selects a project-configured candidate list. The Controller
+  chooses `--depth`; all depths accept their configured general model tiers.
 - M0 write execution is serial: effective CLI parallelism is 1 (one process
   per `orx run`; more are reported as `deferred`).
 

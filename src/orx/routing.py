@@ -98,15 +98,17 @@ class RouteRequest:
 class Candidate:
     profile: str
     resource_status: str
-    model_class: str
+    model_class: str | None
     kept: bool
     reject_reason: str | None = None
+    tier: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "profile": self.profile,
             "resource_status": self.resource_status,
             "class": self.model_class,
+            "tier": self.tier,
             "kept": self.kept,
             "reject_reason": self.reject_reason,
         }
@@ -140,12 +142,6 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             + (f" at depth '{req.depth.value}'" if req.depth else "")
         )
         return result
-
-    class_filter_active = (
-        req.role is Role.PLANNER
-        and req.depth is records.PlanDepth.DEEP
-        and not req.allow_class_downgrade
-    )
 
     # G009 T005: shared-quota failure domains. Profiles that declare the
     # same `quota_domain` draw one provider account's quota; when ANY member
@@ -211,10 +207,12 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             own_row = store.resource_row(name)
             if own_row is None or not own_row.override:
                 reject = f"quota_domain_exhausted:{profile.quota_domain}"
-        if reject is None and class_filter_active and profile.model_class is not records.ModelClass.FRONTIER:
-            reject = "class_below_frontier"
-        elif reject is None and req.controller is not None:
+        if reject is None and req.controller is not None:
             reject = req.controller.rejection(profile)
+        if reject is None and profile.tier is records.ModelTier.S:
+            specialized = set(profile.capabilities) - records.GENERIC_CAPABILITIES
+            if not specialized.intersection(req.required_capabilities):
+                reject = "specialized_capability_required"
         if reject is None:
             missing = sorted(set(req.required_capabilities) - set(profile.capabilities))
             if missing:
@@ -232,17 +230,14 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
             Candidate(
                 profile=name,
                 resource_status=resource.value,
-                model_class=profile.model_class.value,
+                model_class=profile.model_class.value if profile.model_class is not None else None,
+                tier=profile.tier.value if profile.tier is not None else None,
                 kept=reject is None,
                 reject_reason=reject,
             )
         )
 
     kept = [c for c in result.candidates if c.kept]
-    result.downgrade_blocked = class_filter_active and not kept and any(
-        c.reject_reason == "class_below_frontier" for c in result.candidates
-    )
-
     if req.pinned_profile is not None:
         # An explicitly pinned profile never falls back.
         if not kept:
@@ -253,9 +248,6 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
                 f"pinned profile '{req.pinned_profile}' is not usable and fallback is"
                 f" disabled for pinned profiles ({reasons})"
             )
-            if result.downgrade_blocked:
-                result.error += " [deep planning refuses classes below frontier;"
-                result.error += " set [plan] allow_class_downgrade = true to permit it]"
             return result
         chosen = kept[0]
         result.selected = chosen.profile
@@ -269,7 +261,7 @@ def route(store: Store, config: Config, profiles: dict[str, Profile], req: Route
         summary = ", ".join(
             f"{c.profile}: {c.reject_reason}" for c in result.candidates if not c.kept
         )
-        detail = "downgrade blocked: every candidate is below frontier class" if result.downgrade_blocked else summary
+        detail = summary
         result.error = f"no usable profile for role '{req.role.value}' ({detail})"
         return result
 

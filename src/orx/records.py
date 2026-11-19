@@ -109,6 +109,17 @@ class ModelClass(str, Enum):
     ECONOMY = "economy"
 
 
+class ModelTier(str, Enum):
+    T0 = "T0"
+    T1 = "T1"
+    T2 = "T2"
+    T3 = "T3"
+    S = "S"
+
+
+GENERIC_CAPABILITIES = frozenset({"coding", "vision", "host_context"})
+
+
 class Effort(str, Enum):
     LOW = "low"
     MEDIUM = "medium"

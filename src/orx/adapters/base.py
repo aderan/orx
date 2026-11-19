@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -18,11 +18,9 @@ from typing import Protocol
 from orx.models import ModelSpec
 from orx.records import ORXError
 
-# ORX effort -> provider reasoning level (codex model_reasoning_effort,
-# cursor model bracket effort=). Defined once; adapters reference this.
-# The vocabularies currently coincide; the map stays as the seam so a
-# provider that diverges is a one-line change. Adapters validate the mapped
-# level against the provider catalog and fall back to provider_default.
+# Legacy effort vocabulary. Tier profiles first map harness settings via
+# native_model_spec and model-aware adapter resolution. Unsupported legacy
+# bare profiles can retain the provider default.
 EFFORT_MAP: dict[str, str] = {
     "low": "low",
     "medium": "medium",
@@ -62,6 +60,20 @@ def effective_model_spec(profile) -> ModelSpec:
     if profile.model_spec is not None:
         return profile.model_spec
     return ModelSpec(model_id=profile.model, effort=profile.effort.value)
+
+
+def native_model_spec(profile) -> ModelSpec:
+    """Map tier profiles to harness parameters, retaining legacy effort verbatim."""
+    spec = effective_model_spec(profile)
+    if profile.native_effort is not None:
+        return replace(spec, effort=profile.native_effort)
+    if profile.tier is None:
+        return spec
+    level = spec.effort
+    harness = profile.harness.value
+    if harness == "zcode" and level == "medium":
+        level = "high"
+    return replace(spec, effort=level)
 
 
 def identity_token(spec: ModelSpec) -> str:

@@ -99,14 +99,13 @@ def test_pinned_profile_reason_is_pinned(project):
     assert result.ok and result.reason == "pinned" and result.fallback_used is False
 
 
-def test_deep_planning_refuses_below_frontier(project):
-    # [plan.deep] = ["host-frontier", "host-planner"]; make frontier unusable.
+def test_deep_planning_follows_config_after_unavailable_candidate(project):
     project.store.resource_set("host-frontier", ResourceStatus.UNAVAILABLE)
     result = route(project, role=Role.PLANNER, depth=PlanDepth.DEEP,
                    allow_class_downgrade=False)
-    assert not result.ok
-    assert result.downgrade_blocked is True
-    assert any(c.reject_reason == "class_below_frontier" for c in result.candidates)
+    assert result.ok
+    assert result.selected == "host-planner"
+    assert result.downgrade_blocked is False
 
 
 def test_deep_planning_selects_frontier_when_available(project):

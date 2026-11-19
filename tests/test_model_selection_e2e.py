@@ -1090,4 +1090,4 @@ capabilities = ["coding", "vision"]
     assert outcomes["semantic"]["planner_deep"]["selected"] == "frontier-a"
     assert outcomes["semantic"]["verifier_vision"]["selected"] == \
         "verify-vision"
-    assert outcomes["semantic"]["deep_downgrade_blocked"]["downgrade_blocked"]
+    assert not outcomes["semantic"]["deep_downgrade_blocked"]["downgrade_blocked"]

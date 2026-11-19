@@ -6,6 +6,45 @@ The *policy* layer — which class of model each role should use — is unchange
 and lives in [routing-strategy.md](routing-strategy.md); the config surface is
 described in the [README](../README.md#profiles-orxprofilestoml).
 
+## Stage 3 profile migration
+
+Use an explicit `tier` on new profiles and one of four abstract effort
+levels, low / medium / high / max. Tier values are T0–T3 for general
+models, or S for a named specialized capability. Legacy class profiles
+retain their previous effort behavior, including xhigh. Existing
+historical rows and class values are preserved.
+
+Migrate each profile by choosing its tier, replacing the class field,
+and choosing the abstract effort. For an existing xhigh profile that must
+keep exactly that native launch parameter, use, for example,
+
+```toml
+[profiles.worker]
+driver = "cli"
+harness = "codex"
+model = "gpt-6.1-sol"
+tier = "T1"
+effort = "max"
+native_effort = "xhigh"
+capabilities = ["coding"]
+```
+
+Native overrides accept low / medium / high / xhigh / max / ultra.
+The adapter validates what the target harness and model can express.
+A new Codex profile fails before launch when its native effort cannot be
+validated against the catalog. ZCode supports low, high, and max.
+The default ZCode mapping sends medium as high. Codex and Cursor map max
+to xhigh when their model catalog offers xhigh and lacks max. Claude Code
+passes the four abstract values directly. See
+[routing strategy](routing-strategy.md) for depth and candidate selection.
+
+Model tables continue to restate the abstract profile effort only
+identically. The native parameter is separate. Resolution records expose
+`requested_effort` and `native_effort`, and keep `spec.effort` as the
+requested abstract value. Upstream effective effort retains its observed
+source or remains unknown.
+
+
 ## The three layers and their boundary
 
 G008 splits model selection into three layers with one direction of flow:

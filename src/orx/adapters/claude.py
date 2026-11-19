@@ -8,7 +8,7 @@ from orx.verify import VERDICT_SCHEMA
 
 from .base import (
     Capture, DELIVERY_CHANNEL_MESSAGE, EffortOutcome, Launch, ModelResolutionError,
-    captured_stdout, effective_model_spec, identity_token, miss_without_usage, native_usage,
+    captured_stdout, effective_model_spec, native_model_spec, identity_token, miss_without_usage, native_usage,
 )
 from .headless import events, probe_headless, terminal_result
 
@@ -25,7 +25,9 @@ class ClaudeAdapter:
         if spec.speed is not None or spec.context_tokens is not None:
             raise ModelResolutionError("Claude Code expects an explicit model id for speed/context variants")
         model = identity_token(spec)
-        effort = profile.effort.value
+        effort = native_model_spec(profile).effort
+        if effort not in ("low", "medium", "high", "xhigh", "max"):
+            raise ModelResolutionError(f"Claude Code native effort {effort!r} unsupported")
         argv = [
             "claude", "--print", "--output-format", "stream-json", "--verbose",
             "--dangerously-skip-permissions", "--model", model, "--effort", effort,
@@ -34,9 +36,10 @@ class ClaudeAdapter:
             argv += ["--json-schema", schema]
         return Launch(
             argv=[*argv, "--", prompt], cwd=root, timeout=timeout, stdin_text="",
-            label=f"claude:{profile.name}", planned_effort=EffortOutcome(effort, actual=""),
+            label=f"claude:{profile.name}", planned_effort=EffortOutcome(profile.effort.value, actual=""),
             model_resolution={"spec": spec.to_dict(), "cli_slug": model,
-                              "strategy": "native_flag", "requested_effort": effort},
+                              "strategy": "native_flag", "requested_effort": profile.effort.value,
+                              "native_effort": effort},
         )
 
     def build_planner_launch(self, *, root, scratch, profile, prompt, timeout, schema_path=None):
