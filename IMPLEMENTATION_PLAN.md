@@ -5,14 +5,14 @@
 **Goal**: 保存可恢复的源提交，完成机械导入，分别构建和安装两个包。
 **Success Criteria**: 文件模式与哈希可核对，普通 Git 目录无外部检出依赖。
 **Tests**: 干净克隆执行 ORX 安装闭环，Analytics 隔离安装并分析合成原生会话。
-**Status**: In Progress
+**Status**: Complete（`2dd49d9`、`e516ff7`；[验收证据](docs/diagnostics/analytics-monorepo/stage-1.md)）
 
 ## Stage 2: 适配构建和兼容验收
 
 **Goal**: 同一冻结提交构建两套包和 App，保留历史联合验收入口。
 **Success Criteria**: 发布清单绑定版本、源码和哈希，兼容性通过实测。
 **Tests**: 两套安装检查、Swift 测试、包内引擎、WAL、历史及未知 schema、混合客户端与引擎。
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 3: 统一 ORX 桌面入口
 
