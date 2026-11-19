@@ -175,6 +175,8 @@ cat > "$WORK/Info.plist" <<PLIST
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
 	<string>ORXAnalyticsApp</string>
+	<key>CFBundleIconFile</key>
+	<string>ORXAppIcon.icns</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<!-- Accessory app: no Dock icon. Finder can open its main window. -->
@@ -233,6 +235,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/ORXAnalyticsApp"
 cp "$WORK/Info.plist" "$APP/Contents/Info.plist"
+cp "$APP_DIR/Resources/ORXAppIcon.icns" "$APP/Contents/Resources/"
 
 # Python runtime: install_only tarball ships a relocatable python/ tree.
 tar -xzf "$TARBALL" -C "$APP/Contents/Resources"
@@ -269,7 +272,9 @@ PYEOF
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# ---- 3. bounded self-test: the bundled runtime really runs the engine ----
+# ---- 3. bounded self-tests: app assets and bundled engine ----------------
+"$APP/Contents/MacOS/ORXAnalyticsApp" --smoke-test
+
 # Fully synthetic: an empty ORX_DATA_DIR means discovery finds no projects,
 # so the self-test never reads the developer's real sessions (CONTRIBUTING).
 # G011 T006 fix: this runs BEFORE the signature gates and with bytecode

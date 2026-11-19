@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
+  <title>ORX</title>
+  <defs>
+    <linearGradient id="tile" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0" stop-color="#30383C"/>
+      <stop offset="1" stop-color="#191E21"/>
+    </linearGradient>
+  </defs>
+  <rect x="9" y="9" width="82" height="82" rx="20" fill="url(#tile)"/>
+  <rect x="9.55" y="9.55" width="80.9" height="80.9" rx="19.45"
+        fill="none" stroke="#FFFFFF" stroke-opacity=".14" stroke-width="1.1"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 65 29 L 59 23 H 41 L 25 39 V 59 L 41 75 H 60 L 76 59 V 50"
+          stroke="#F1F4F2" stroke-width="7.5"/>
+    <path d="M 37 48 L 48 59 L 78 29"
+          stroke="#9CE7C6" stroke-width="8"/>
+  </g>
+</svg>

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import ORXAnalyticsCore
 
 /// Xcode-free smoke self-check, run by the executable itself when started
@@ -18,6 +18,15 @@ enum SmokeRunner {
         results.append(("overview-fetch", checkOverviewFetch(), nil2s(ovErr)))
         results.append(("metrics-freeze-rules", checkMetricsRules(), nil2s(mxErr)))
         results.append(("detail-fetch-two-calibers", checkDetailFetch(), nil2s(dtErr)))
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
+            let iconURL = iconName.flatMap {
+                Bundle.main.resourceURL?.appendingPathComponent($0)
+            }
+            let icon = iconURL.flatMap { NSImage(contentsOf: $0) }
+            let valid = icon?.isValid == true
+            results.append(("app-icon", valid, valid ? "" : "bundle icon is missing or unreadable"))
+        }
 
         var allPass = true
         for (name, pass, note) in results {
