@@ -106,12 +106,12 @@ def resource_error_kind(text: str) -> str:
     Chinese provider vocabulary that pass cannot see (the GLM 1308
     incident's original message). Unrecognized text stays process_failure —
     the safe default that never auto-retries."""
-    from orx.adapters.base import error_kind_from_text
+    from orx.adapters.base import error_kind_from_text, failure_messages
     kind = error_kind_from_text(text)
     if kind != "process_failure":
         return kind
     from orx import quota
-    return quota.provider_error_kind(text) or "process_failure"
+    return quota.provider_error_kind(failure_messages(text)) or "process_failure"
 
 
 def failure_class(result: str | None, failure_reason: str | None) -> str:

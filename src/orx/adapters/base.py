@@ -630,7 +630,6 @@ _CLASSIFICATION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("billing", "quota_exhausted"),
     ("rate limit", "rate_limited"),
     ("too many requests", "rate_limited"),
-    ("429", "rate_limited"),
     ("context length", "context_exceeded"),
     ("context window", "context_exceeded"),
     ("prompt is too long", "context_exceeded"),
@@ -650,6 +649,71 @@ _CLASSIFICATION_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+_HTTP_RATE_LIMIT = re.compile(
+    r"\b(?:http(?:/\d(?:\.\d)?)?\s+429|"
+    r"(?:status(?:[ _]?code)?|response code)\s*[:=]?\s*429|"
+    r"429\s+(?:too many requests|rate limit(?:ed)?))\b",
+    re.IGNORECASE,
+)
+_ERROR_EVENTS = frozenset({
+    "error", "turn.failed", "turn.error", "response.failed",
+    "model_request_failed", "model_request_error",
+})
+
+
+def _structured_error_messages(value: dict, *, error: bool = False) -> list[str]:
+    """Read error envelopes without inspecting generated text or tool output."""
+    event = value.get("type", value.get("kind"))
+    error = error or (isinstance(event, str) and event in _ERROR_EVENTS) or value.get("is_error") is True
+    messages = []
+    if error:
+        for key in ("message", "detail", "description", "reason", "result", "code", "type"):
+            field = value.get(key)
+            if isinstance(field, str):
+                messages.append(field)
+                if key in ("code", "type"):
+                    messages.append(field.replace("_", " "))
+        for key in ("status", "status_code", "statusCode", "code"):
+            if value.get(key) in (429, "429"):
+                messages.append("HTTP 429")
+    nested_error = value.get("error")
+    if isinstance(nested_error, dict):
+        messages.extend(_structured_error_messages(nested_error, error=True))
+    elif isinstance(nested_error, str):
+        messages.append(nested_error)
+    if error:
+        errors = value.get("errors", [])
+        if isinstance(errors, list):
+            for item in errors:
+                if isinstance(item, str):
+                    messages.append(item)
+                elif isinstance(item, dict):
+                    messages.extend(_structured_error_messages(item, error=True))
+    payload = value.get("payload")
+    if isinstance(payload, dict):
+        messages.extend(_structured_error_messages(payload, error=error))
+    return messages
+
+
+def failure_messages(text: str) -> str:
+    """Keep plain diagnostics and structured error fields from mixed JSONL."""
+    messages = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(("{", "[")):
+            messages.append(line)
+            continue
+        try:
+            value = json.loads(stripped)
+        except ValueError:
+            if re.match(r"^\[[A-Za-z][A-Za-z _-]*\]\s+\S", stripped):
+                messages.append(line)
+            continue
+        if isinstance(value, dict):
+            messages.extend(_structured_error_messages(value))
+    return "\n".join(messages)
+
+
 def error_kind_from_text(text: str) -> str:
     """Best-effort ErrorKind for one blob of harness/process text (the
     shared pattern pass `classify_failure` applies to a launch's captured
@@ -657,17 +721,23 @@ def error_kind_from_text(text: str) -> str:
     decisions classify history and live launches with one vocabulary).
     Anything unrecognized is PROCESS_FAILURE — the safe default that never
     auto-retries."""
-    lowered = (text or "").lower()
+    lowered = failure_messages(text or "").lower()
+    if re.search(r"\btimed out after\s+\d", lowered):
+        return "timeout"
     if lowered.strip():
         for needle, kind in _CLASSIFICATION_PATTERNS:
             if needle in lowered:
                 return kind
+        if _HTTP_RATE_LIMIT.search(lowered):
+            return "rate_limited"
     return "process_failure"
 
 
 def classify_failure(run_result) -> str:
     """Best-effort ErrorKind for a failed launch. Anything unrecognized is
     PROCESS_FAILURE — the safe default that never auto-retries."""
+    if getattr(run_result, "timed_out", False):
+        return "timeout"
     return error_kind_from_text(
         captured_stderr(run_result) + "\n" + captured_stdout(run_result)
     )
