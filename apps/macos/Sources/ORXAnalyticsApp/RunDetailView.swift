@@ -12,14 +12,27 @@ struct RunDetailHostView: View {
     @State private var hostWindow: NSWindow?
 
     var body: some View {
-        Group {
-            if let selection = model.selectedRun {
-                RunDetailView(identity: selection, client: model.client)
-                    .id(selection)
-            } else {
-                HistoryQueryView(history: model.historyModel)
+        VStack(spacing: 0) {
+            Picker("页面", selection: $model.mainPage) {
+                Text("执行").tag(DesktopPage.execution)
+                Text("模型与路由").tag(DesktopPage.routing)
+                Text("用量分析").tag(DesktopPage.usage)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 400)
+            .padding(.vertical, 10)
+            Divider()
+            switch model.mainPage {
+            case .execution:
+                execution(page: .execution)
+            case .usage:
+                execution(page: .usage)
+            case .routing:
+                RoutingView()
             }
         }
+        .frame(minWidth: 800, minHeight: 615)
         .background(WindowAccessor(window: $hostWindow))
         // 首次打开（窗口出现）与每次选中项变化（连续点击不同项目 /
         // 通知深链）都把窗口前置并取得键盘焦点；面板点击路径
@@ -27,6 +40,16 @@ struct RunDetailHostView: View {
         .onAppear { DetailWindowRouting.focus(hostWindow) }
         .onChange(of: model.selectedRun) { _ in
             DetailWindowRouting.focus(hostWindow)
+        }
+    }
+
+    @ViewBuilder
+    private func execution(page: DesktopPage) -> some View {
+        if let selection = model.selectedRun {
+            RunDetailView(identity: selection, client: model.client, page: page)
+                .id(selection)
+        } else {
+            HistoryQueryView(history: model.historyModel, page: page)
         }
     }
 }
@@ -61,12 +84,14 @@ struct RunDetailView: View {
     @EnvironmentObject private var app: AppModel
     @StateObject private var model: RunDetailModel
     let identity: RunIdentity
+    let page: DesktopPage
 
     /// Revision rows the user expanded (default: none — Revision 默认收起).
     @State private var expandedRevisions: Set<Int> = []
 
-    init(identity: RunIdentity, client: EngineClientProtocol) {
+    init(identity: RunIdentity, client: EngineClientProtocol, page: DesktopPage) {
         self.identity = identity
+        self.page = page
         _model = StateObject(wrappedValue: RunDetailModel(client: client,
                                                           identity: identity))
     }
@@ -77,12 +102,16 @@ struct RunDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         toolbar(run: run)
-                        factsZone(envelope, run)
-                        Divider()
+                        if page == .execution {
+                            factsZone(envelope, run)
+                            Divider()
+                        }
                         taskListZone(envelope, run)
                         Divider()
-                        consumptionZone(envelope)
-                        Divider()
+                        if page == .usage {
+                            consumptionZone(envelope)
+                            Divider()
+                        }
                         evidenceZone(envelope)
                     }
                     .padding(16)
@@ -117,7 +146,7 @@ struct RunDetailView: View {
             // Back to the history query that led here (filters and page
             // are kept); closing the window still keeps the app resident.
             Button {
-                app.openAllRuns()
+                app.openAllRuns(page: page)
             } label: {
                 Label("历史查询", systemImage: "chevron.backward")
             }
@@ -360,7 +389,11 @@ struct RunDetailView: View {
     // MARK: zone 3 — 消耗分析（两口径并列，不相加）
 
     private func consumptionZone(_ envelope: RunDetailEnvelope) -> some View {
-        zone("消耗分析") {
+        zone("用量分析") {
+            Button("查看此项目的模型与路由") {
+                app.openRouting(project: identity.project)
+            }
+            .buttonStyle(.link)
             // 两个口径并排：ORX 已记录用量 / 原生会话预览。
             // 结构上不相加——两组行各自来自引擎，没有混合总数。
             let calibers = DetailCalibers(usage: envelope.usage,
@@ -570,6 +603,12 @@ struct RunDetailView: View {
 
     private func evidenceZone(_ envelope: RunDetailEnvelope) -> some View {
         zone("尝试与证据") {
+            if model.selectedTask != nil {
+                Button("查看此项目的模型与路由") {
+                    app.openRouting(project: identity.project)
+                }
+                .buttonStyle(.link)
+            }
             if let selected = model.selectedTask {
                 if let taskDetail = model.taskDetail, taskDetail.found {
                     taskBreakdown(selected, taskDetail)

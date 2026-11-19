@@ -33,7 +33,7 @@ enum DetailWindowRouting {
     /// Title fragment of the run-detail window — the fallback match for
     /// environments where SwiftUI does not expose the plain scene id as
     /// the NSWindow identifier.
-    private static let runDetailTitleFragment = "执行详情"
+    private static let runDetailTitle = "ORX"
 
     /// Open (or reuse) the run-detail window at the front with keyboard
     /// focus. Main-actor UI action; the selection must already be set
@@ -73,6 +73,6 @@ enum DetailWindowRouting {
     @MainActor
     private static func isRunDetailWindow(_ window: NSWindow) -> Bool {
         window.identifier?.rawValue.contains(runDetailWindowID) == true
-            || window.title.contains(runDetailTitleFragment)
+            || window.title == runDetailTitle
     }
 }

@@ -20,14 +20,17 @@ alongside in ``model_spec``.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
 import re
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 from pathlib import Path
+from typing import Callable
 
 from orx import models
 from orx import records
@@ -784,6 +787,8 @@ def load_effective(
     user_config: Path | None = None,
     user_profiles: Path | None = None,
     check_references: bool = True,
+    *,
+    config_draft: tuple[str, dict] | None = None,
 ) -> EffectiveConfig:
     """Assemble the effective configuration across layers.
 
@@ -800,8 +805,11 @@ def load_effective(
     user_config = user_config or user_config_path()
     user_profiles = user_profiles or user_profiles_path()
 
-    project_raw = _read_layer(config_path, LAYER_PROJECT, errors)
-    user_raw = _read_layer(user_config, LAYER_USER, errors)
+    draft_layer, draft_values = config_draft or (None, {})
+    project_raw = (draft_values if draft_layer == LAYER_PROJECT else
+                   _read_layer(config_path, LAYER_PROJECT, errors))
+    user_raw = (draft_values if draft_layer == LAYER_USER else
+                _read_layer(user_config, LAYER_USER, errors))
     if errors:
         raise ConfigError(errors)
     if project_raw:
@@ -1083,6 +1091,83 @@ def config_entries(effective: EffectiveConfig) -> list[dict]:
     ]
 
 
+ROUTING_EDIT_KEYS = frozenset({
+    "controller.profile", "plan.depth", "plan.light.profiles",
+    "plan.standard.profiles", "plan.deep.profiles", "worker.profiles",
+    "verify.profiles",
+})
+
+
+def _configuration_revision(paths: tuple[Path, ...]) -> str:
+    files = []
+    for path in paths:
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            digest = None
+        except OSError as exc:
+            raise ConfigError([f"{path}: {exc}"]) from exc
+        files.append((str(path.resolve()), digest))
+    return hashlib.sha256(json.dumps(files).encode()).hexdigest()
+
+
+def _check_config_revision(paths: tuple[Path, ...], expected: str) -> None:
+    if _configuration_revision(paths) != expected:
+        raise ConfigError(["configuration changed since it was loaded; reload and try again"])
+
+
+def routing_edit(project_root: Path | None, request: dict | None,
+                 *, apply: bool) -> tuple[EffectiveConfig, dict]:
+    """Read, preview or atomically save the desktop's scoped routing settings."""
+    user = user_config_path()
+    user_profiles = user_profiles_path()
+    scope = LAYER_PROJECT if project_root is not None else LAYER_USER
+    project = (project_root / ".orx" / "config.toml" if project_root is not None
+               else Path("/__orx_no_project__/config.toml"))
+    profiles = project.with_name("profiles.toml")
+    target = project if project_root is not None else user
+    paths = ((user, user_profiles, project, profiles) if project_root is not None
+             else (user, user_profiles))
+    revision = _configuration_revision(paths)
+    current = load_effective(project, profiles, user, user_profiles, check_references=False)
+    _check_config_revision(paths, revision)
+    if request is None:
+        if apply:
+            raise ConfigError(["saving requires a request with a revision and changes"])
+        return current, {"target_path": str(target.resolve()), "revision": revision}
+    if set(request) != {"revision", "changes"} or request["revision"] != revision:
+        raise ConfigError(["configuration changed since it was loaded; reload and try again"])
+    changes = request["changes"]
+    if not isinstance(changes, dict) or not changes:
+        raise ConfigError(["changes must contain at least one routing setting"])
+    doc, _ = _load_config_document(target, create=True)
+    for key, value in changes.items():
+        if key not in ROUTING_EDIT_KEYS:
+            raise ConfigError([f"{key}: editing this setting is unsupported"])
+        if key.endswith(".profiles") and isinstance(value, list):
+            raw = json.dumps(value)
+        elif key in ("plan.depth", "controller.profile") and isinstance(value, str):
+            raw = value
+        else:
+            raise ConfigError([f"{key}: invalid value type"])
+        parsed = parse_config_value(key, raw, profile_names=set(current.profiles))
+        _assign_dotted(doc, key, parsed)
+    text = _checked_config_text(doc)
+    preview = load_effective(project, profiles, user, user_profiles, check_references=False,
+                             config_draft=(scope, doc))
+    _check_config_revision(paths, revision)
+    if apply:
+        try:
+            _atomic_write_text(target, text,
+                               before_replace=lambda: _check_config_revision(paths, revision))
+        except OSError as exc:
+            raise ConfigError([f"{target}: {exc}"]) from exc
+        # The write is already committed. The client reads again to
+        # reconcile any edits made after this save.
+        revision = _configuration_revision(paths)
+    return preview, {"target_path": str(target.resolve()), "revision": revision}
+
+
 def profile_names_in(path: Path) -> set[str]:
     """Profile names defined in one profiles.toml. A missing file contributes
     nothing. A present but unreadable file is an error (the caller must not
@@ -1122,23 +1207,14 @@ def set_config_value(
     On every failure the target bytes are left untouched.
     """
     parsed = parse_config_value(key, raw, profile_names=profile_names)
+    paths = (path,)
+    revision = _configuration_revision(paths)
     doc, existed = _load_config_document(path, create=create)
-    doc = copy.deepcopy(doc)
-    schema = doc.get("schema_version")
     _assign_dotted(doc, key, parsed)
-    if doc.get("schema_version") != schema:
-        raise ConfigError(["schema_version cannot be changed"])
-    text = _dump_toml(doc)
+    text = _checked_config_text(doc)
     try:
-        rewritten = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError([f"refusing to write: generated TOML is invalid: {exc}"]) from exc
-    if _canonical(rewritten) != _canonical(doc):
-        raise ConfigError([
-            "refusing to write: rewriting the file would drop or change existing values"
-        ])
-    try:
-        _atomic_write_text(path, text)
+        _atomic_write_text(path, text,
+                           before_replace=lambda: _check_config_revision(paths, revision))
     except OSError as exc:
         raise ConfigError([f"{path}: {exc}"]) from exc
     return {
@@ -1329,15 +1405,40 @@ def _assign_dotted(doc: dict, key: str, value) -> None:
     node[parts[-1]] = value
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+def _checked_config_text(doc: dict) -> str:
+    text = _dump_toml(doc)
     try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
+        rewritten = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError([f"refusing to write: generated TOML is invalid: {exc}"]) from exc
+    if _canonical(rewritten) != _canonical(doc):
+        raise ConfigError([
+            "refusing to write: rewriting the file would drop or change existing values"
+        ])
+    return text
+
+
+def _atomic_write_text(path: Path, text: str, *, before_replace: Callable[[], None]) -> None:
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", delete=False) as handle:
+            temporary = Path(handle.name)
+            try:
+                handle.write(text)
+                handle.close()
+                if path.is_file():
+                    temporary.chmod(path.stat().st_mode & 0o777)
+                before_replace()
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        os.close(directory)
 
 
 def _canonical(value):

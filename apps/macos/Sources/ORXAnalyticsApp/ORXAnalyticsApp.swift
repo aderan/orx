@@ -91,7 +91,7 @@ struct ORXAnalyticsApp: App {
         // 执行) and the four-zone run detail of a selected run. Keeping
         // it a separate scene preserves "关闭窗口后继续驻留" — only the
         // panel's 退出 ends the app.
-        Window("历史查询 / 执行详情", id: "run-detail") {
+        Window("ORX", id: "run-detail") {
             RunDetailHostView()
                 .environmentObject(model)
         }

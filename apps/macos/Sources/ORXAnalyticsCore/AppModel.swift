@@ -34,6 +34,8 @@ public final class AppModel: ObservableObject {
     /// list). Set before opening the window so the view keeps the
     /// project + run context (design §3: 保留项目和执行上下文).
     @Published public private(set) var selectedRun: RunIdentity?
+    @Published public var mainPage: DesktopPage = .execution
+    @Published public private(set) var routingProject: String?
 
     // T011 (design §4/§8/§9): settings, notifications, diagnostics,
     // sleep/wake resync.
@@ -129,13 +131,20 @@ public final class AppModel: ObservableObject {
     // MARK: - detail navigation
 
     /// Point the detail window at one run and let the caller open it.
-    public func openRunDetail(project: String, runID: String) {
+    public func openRunDetail(project: String, runID: String, page: DesktopPage = .execution) {
         selectedRun = RunIdentity(project: project, runID: runID)
+        mainPage = page
     }
 
     /// Show the all-runs entry list instead of a specific run.
-    public func openAllRuns() {
+    public func openAllRuns(page: DesktopPage = .execution) {
         selectedRun = nil
+        mainPage = page
+    }
+
+    public func openRouting(project: String?) {
+        routingProject = project
+        mainPage = .routing
     }
 
     /// One refresh round: negotiate -> request collection -> fetch the

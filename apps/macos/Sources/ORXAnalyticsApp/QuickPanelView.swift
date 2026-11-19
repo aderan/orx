@@ -46,7 +46,7 @@ struct QuickPanelView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
-                    Text("ORX Analytics").font(.headline)
+                    Text("ORX").font(.headline)
                     if model.isRefreshing {
                         ProgressView()
                             .controlSize(.small)

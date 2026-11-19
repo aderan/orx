@@ -21,8 +21,11 @@ struct HistoryQueryView: View {
     @EnvironmentObject private var app: AppModel
     @ObservedObject private var history: HistoryModel
 
-    init(history: HistoryModel) {
+    private let page: DesktopPage
+
+    init(history: HistoryModel, page: DesktopPage = .execution) {
         self.history = history
+        self.page = page
     }
 
     var body: some View {
@@ -181,7 +184,7 @@ struct HistoryQueryView: View {
         List(history.rows) { row in
             HistoryRunRowView(row: row) {
                 app.openRunDetail(project: row.run.project,
-                                  runID: row.run.runID)
+                                  runID: row.run.runID, page: page)
             }
         }
         .listStyle(.inset)

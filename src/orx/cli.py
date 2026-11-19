@@ -436,6 +436,45 @@ def config_models(json_out: bool = JsonOpt) -> None:
         _render_model_selection(selection, root)
 
 
+@config_app.command("routing")
+@handle_errors
+def config_routing(
+    scope: str = typer.Option(..., help="Configuration scope: user or project."),
+    project_root: Optional[Path] = typer.Option(
+        None, "--project-root", help="Absolute root of the selected ORX project."),
+    request: Optional[Path] = typer.Option(
+        None, "--request", help="JSON preview revision and routing changes."),
+    apply: bool = typer.Option(False, "--apply", help="Save the validated request."),
+    json_out: bool = JsonOpt,
+) -> None:
+    """Read, preview or save the desktop routing configuration without opening state.db."""
+    if scope not in ("user", "project") or (scope == "project") != (project_root is not None):
+        raise ConfigError(["choose user scope or specify the project scope and project root"])
+    if project_root is not None:
+        if not project_root.is_absolute() or not (project_root / ".orx").is_dir():
+            raise ConfigError(["project root must be an absolute ORX project directory"])
+        project_root = project_root.resolve()
+    draft = None
+    if request is not None:
+        try:
+            draft = json.loads(request.read_text())
+        except (OSError, ValueError) as exc:
+            raise ConfigError([f"cannot read routing request: {exc}"]) from exc
+        if not isinstance(draft, dict):
+            raise ConfigError(["routing request must be a JSON object"])
+    effective, metadata = config_mod.routing_edit(project_root, draft, apply=apply)
+    selection = _model_selection(effective)
+    _ok(json_out, contract=1, orx_version=__version__, scope=scope,
+        project_root=str(project_root) if project_root else None,
+        model_selection=selection,
+        values=[entry for entry in config_mod.config_entries(effective)
+                if entry["key"] in config_mod.ROUTING_EDIT_KEYS],
+        available_profiles=sorted(effective.profiles), **metadata)
+    if not json_out:
+        typer.echo(f"Target ({scope}): {metadata['target_path']}")
+        _render_model_selection(selection, project_root)
+
+
 @config_app.command("get")
 @handle_errors
 def config_get(

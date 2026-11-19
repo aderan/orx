@@ -78,7 +78,7 @@ struct SettingsView: View {
         case .granted:
             return "已授权"
         case .denied:
-            return "系统已拒绝：请在 系统设置 → 通知 中允许 ORX Analytics"
+            return "系统已拒绝：请在 系统设置 → 通知 中允许 ORX"
         }
     }
 
