@@ -150,3 +150,9 @@ host 加入 blocked list。当前账户的屏蔽可以在 ad-hoc 及 Apple
 Development 签名下复现。系统公开的偏好查询未返回该应用的归属表。
 该签名仅用于本机对照，正式渠道仍无 Developer ID Application 身份。
 临时探针已停止，原 0.4.4 安装通过严格验签。
+
+系统布局重置前后的日志仍来自原 Control Center 进程。已确认其由
+当前图形会话的系统 LaunchAgent 管理。尝试使用
+`launchctl kickstart -kp "gui/$(id -u)/com.apple.controlcenter"`
+独立重启该进程，系统完整性保护以退出码 150 拒绝。复查原进程
+仍在运行，当前安装仍为严格验签通过的 0.4.4。图形会话重登尚未演练。
