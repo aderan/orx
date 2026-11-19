@@ -6,8 +6,15 @@ enum ORXMenuIcon {
     }
 
     private static let normal: NSImage = {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
-            // The open O and check from ORXAppIcon.svg, fitted to the status bar.
+        let side = ORXLayout.menuBarMarkSize
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
+            defer { context.restoreGState() }
+            let scale = side / 18
+            context.scaleBy(x: scale, y: scale)
+
+            // The open O and check from ORXAppIcon.svg use an 18-point coordinate space.
             let outline = NSBezierPath()
             outline.move(to: NSPoint(x: 12, y: 4.3))
             outline.line(to: NSPoint(x: 10.5, y: 2.8))
@@ -40,7 +47,7 @@ enum ORXMenuIcon {
             .withSymbolConfiguration(configuration) else { return normal }
 
         let brandFrame = NSRect(origin: .zero, size: normal.size)
-        let warningFrame = NSRect(x: brandFrame.maxX + 4,
+        let warningFrame = NSRect(x: brandFrame.maxX + ORXSpace.xs,
                                   y: brandFrame.midY - warning.size.height / 2,
                                   width: warning.size.width, height: warning.size.height)
         let size = NSSize(width: ceil(warningFrame.maxX), height: brandFrame.height)

@@ -20,11 +20,12 @@ enum SmokeRunner {
         results.append(("detail-fetch-two-calibers", checkDetailFetch(), nil2s(dtErr)))
         let normal = ORXMenuIcon.image(showsAttention: false)
         let attention = ORXMenuIcon.image(showsAttention: true)
-        let hasAdjacentWarning = normal.isTemplate && attention.isTemplate
+        let isCompactMenuIcon = normal.size == NSSize(width: 14, height: 14)
+            && normal.isTemplate && attention.isTemplate
             && attention.size.height == normal.size.height
             && attention.size.width > normal.size.width
-        results.append(("menu-bar-icon", hasAdjacentWarning,
-                        hasAdjacentWarning ? "" : "attention needs room for a second symbol"))
+        results.append(("menu-bar-icon", isCompactMenuIcon,
+                        isCompactMenuIcon ? "" : "expected a 14-point template with a separate attention symbol"))
         if Bundle.main.bundleURL.pathExtension == "app" {
             let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
             let iconURL = iconName.flatMap {
