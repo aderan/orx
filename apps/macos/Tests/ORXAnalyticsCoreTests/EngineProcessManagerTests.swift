@@ -189,9 +189,13 @@ final class EngineProcessManagerTests: XCTestCase {
         clock = base
         let dir = makeTempDir()
         if dataDirNeedingIO {
-            // Real upgrade-guard IO: a database that exists.
-            try? "db".write(to: EngineUpgradeGuard.databaseURL(dataDir: dir),
-                            atomically: true, encoding: .utf8)
+            // Use an actual SQLite database for the backup gate.
+            var fixture: OpaquePointer?
+            let db = EngineUpgradeGuard.databaseURL(dataDir: dir)
+            XCTAssertEqual(sqlite3_open(db.path, &fixture), SQLITE_OK)
+            XCTAssertEqual(sqlite3_exec(fixture, "CREATE TABLE history(tokens INTEGER)",
+                                        nil, nil, nil), SQLITE_OK)
+            sqlite3_close(fixture)
         }
         let manager = EngineProcessManager(
             location: location,
@@ -247,9 +251,9 @@ final class EngineProcessManagerTests: XCTestCase {
         let out = await manager.ensureRunning(socketPath: "/tmp/s.sock", dataDir: dataDir)
         XCTAssertEqual(out, .started)
         XCTAssertEqual(launchedChildren.count, 1)
-        XCTAssertEqual(launchedChildren[0].launchArguments,
-                       ["/fake/orx_engine_serve.py", dataDir])
-        XCTAssertEqual(launchedChildren[0].launchCount, 1)
+        guard let child = launchedChildren.first else { return }
+        XCTAssertEqual(child.launchArguments, ["/fake/orx_engine_serve.py", dataDir])
+        XCTAssertEqual(child.launchCount, 1)
     }
 
     func testSocketNeverComingUpFailsThenBacksOff() async {
