@@ -253,3 +253,10 @@ Window Server 报告一个可见的 ORX 主窗口。新版的菜单栏开关为�
 旧 Bundle ID，因此通知授权通过操作者在新版设置中触发。实际
 重新登录由操作者执行。确认前保留已登记的登录项和已验证的 Finder
 入口。系统登记、授权和实际重登分别验收。
+
+通知续验：操作者完成授权后，macOS「应用通知 → ORX (Internal Preview)」
+显示 `allow-notifications` 为开启，应用通知偏好也为开启。此后从 Finder
+打开现有进程，Window Server 报告唯一的 `ORX` 主窗口。系统仍只登记了
+一条新版登录项。该进程的 Launch Services 启动来源为 Spotlight；
+控制中心 PID 和控制台登录起始时间均未变化。此轮未取得系统重登的证据。
+已正常退出 ORX，准备验证下一次 macOS 登录是否自动启动。
