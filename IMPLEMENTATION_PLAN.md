@@ -91,7 +91,11 @@ ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](doc
 
 **Tests**：旧 TOML 和状态库读取、不同 tier/effort 组合、原生 xhigh 的语义、S 的能力匹配、未知映射诊断、历史执行记录可读。遇到 S 的真实场景再接入对应工具。
 
-**Status**：Not Started
+**Status**：Complete
+
+2026-11-19 已实现显式 T0–T3 + S 与四档抽象 Effort，新旧 profile 可混用。旧 class 和 xhigh 保持可读，原生参数可由 native_effort 显式指定，历史数据库记录无需改写。深度由 Controller 通过 --depth 决定，缺省或旧 auto 使用 standard，deep 按项目候选列表路由。S 只匹配明确的专有能力。
+
+当前 Codex 会话和真实 ZCode CLI 会话分别推进了完整 Run。两边 deep 都选中排在 T0 前的 T2 Claude Code sonnet，ZCode Worker 的 medium 映射为 high，Cursor Worker 的 max 解析为 grok-4.7-xhigh，Codex CLI 独立裁决 pass。两项依赖任务及 JSON 产物交接通过，输出 100.0。实测中修正了 Cursor native_effort 的记录错误，随后两边复用原计划完成了新 Run，确认记录与实际启动参数一致。Codex 补测的 GLM 高档推理曾超时，保留失败并改低档恢复；通用日志数字 429 误判限流的问题列入 backlog。全量 1224 项测试通过。来源、逐次 attempt 及限制见 [Stage 3 验收记录](docs/diagnostics/stage3-2026-11-19/acceptance.json)。
 
 ## Stage 4: 验收日常 Run 并切换默认配置
 
