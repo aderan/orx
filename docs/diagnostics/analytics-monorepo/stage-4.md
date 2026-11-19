@@ -133,3 +133,13 @@ Bundle ID 验证菜单栏启动、菜单内退出、通知授权迁移和重登�
 按约定移出 0.4.5，将原 0.4.4 恢复到原路径并严格验签，
 恢复测试涉及的偏好和缓存。提前退出后，隔离 CLI watch 仍持有
 原引擎；复核后已停止本轮隔离 watch 和引擎。第五阶段仍未启动。
+
+### 区分应用身份和菜单栏项目名
+
+仍在当前 macOS 26.6.2 账户运行单独签名的 AppKit 探针。保留预览
+Bundle ID `org.orxanalytics.macos.dev`，用公开的
+`NSStatusItem.autosaveName` 将项目名称改为 `orx-rehearsal-named`。
+12:58:42.904 Control Center 日志确认将同一 host 从 `Item-0` 改名，
+12:58:42.921 又将改名后的 host 加入 blocked list。探针进程仍存活。
+因此只改菜单栏项目的保存名也无法解除该账户的屏蔽。原 0.4.4
+安装及实际数据保留，已停止探针并清理探针专用设置。
