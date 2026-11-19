@@ -7,20 +7,30 @@ import ORXAnalyticsCore
 /// survive navigating into a detail and back.
 struct RunDetailHostView: View {
     @EnvironmentObject private var model: AppModel
-    /// The hosting NSWindow, captured once SwiftUI mounts the content —
-    /// lets the host front ITS OWN window precisely (G012 用户反馈 2).
-    @State private var hostWindow: NSWindow?
+    let openSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("页面", selection: $model.mainPage) {
-                Text("执行").tag(DesktopPage.execution)
-                Text("模型与路由").tag(DesktopPage.routing)
-                Text("用量分析").tag(DesktopPage.usage)
+            ZStack(alignment: .trailing) {
+                Picker("页面", selection: $model.mainPage) {
+                    Text("执行").tag(DesktopPage.execution)
+                    Text("模型与路由").tag(DesktopPage.routing)
+                    Text("用量分析").tag(DesktopPage.usage)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 400)
+                .frame(maxWidth: .infinity)
+                Menu {
+                    Button("设置…", action: openSettings)
+                    Button("退出 ORX") { NSApp.terminate(nil) }
+                } label: {
+                    Label("应用选项", systemImage: "gearshape")
+                        .labelStyle(.iconOnly)
+                }
+                .help("应用选项")
+                .padding(.trailing, 16)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 400)
             .padding(.vertical, 10)
             Divider()
             switch model.mainPage {
@@ -33,14 +43,6 @@ struct RunDetailHostView: View {
             }
         }
         .frame(minWidth: 800, minHeight: 615)
-        .background(WindowAccessor(window: $hostWindow))
-        // 首次打开（窗口出现）与每次选中项变化（连续点击不同项目 /
-        // 通知深链）都把窗口前置并取得键盘焦点；面板点击路径
-        // (DetailWindowRouting) 同样前置，两条路径互为保障。
-        .onAppear { DetailWindowRouting.focus(hostWindow) }
-        .onChange(of: model.selectedRun) { _ in
-            DetailWindowRouting.focus(hostWindow)
-        }
     }
 
     @ViewBuilder
@@ -52,20 +54,6 @@ struct RunDetailHostView: View {
             HistoryQueryView(history: model.historyModel, page: page)
         }
     }
-}
-
-/// Bridges the SwiftUI view into its hosting NSWindow (nil until the
-/// window materializes; capture is async off the first layout pass).
-private struct WindowAccessor: NSViewRepresentable {
-    @Binding var window: NSWindow?
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { self.window = view.window }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// The run detail window: four zones (design §3/§4/§5).

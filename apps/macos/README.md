@@ -1,9 +1,10 @@
 # ORX — macOS 菜单栏应用（apps/macos）
 
 Swift Package（Xcode-free 构建链）承载设计稿 §7/§9 的原生外壳：
-SwiftUI `MenuBarExtra` 常驻入口（图标 + 进行中 Run 数徽标）、`LSUIElement`
-菜单栏应用形态、引擎 Unix socket 客户端与缓存优先数据层、快速面板三区与
-执行/任务详情四区（设计 §3/§4/§5）。
+AppKit `NSStatusItem` 承载 SwiftUI 快速面板及进行中 Run 数徽标，
+`LSUIElement` 保持菜单栏应用形态。状态项由系统控制可见性，Finder
+可随时打开唯一主窗口。引擎 Unix socket 客户端供应快速面板和执行详情
+（设计 §3/§4/§5）。
 
 ## 构建 / 测试 / 冒烟（不打开 Xcode）
 
@@ -33,7 +34,7 @@ analytics.db 需要跨版本打开，先备份再放行（升级保护）。引�
 | 位置 | 职责 |
 |---|---|
 | `Sources/ORXAnalyticsCore` | 引擎 socket 客户端（overview / runs.get / tasks.get / refresh.request、版本协商、不兼容明确报告）、overview 与详情负载模型（对齐 Python 线格式）、缓存优先存储、AppModel、RunDetailModel、面板三区合并、口径与维度展示规则、引擎进程管理（内置运行时解析、升级备份守卫、有界拉起） |
-| `Sources/ORXAnalyticsApp` | SwiftUI 应用：MenuBarExtra 快速面板三区（需要关注/进行中/最近完成，同一 Run 只出现一次、异常优先）、执行详情窗口四区（执行概况/任务列表/消耗分析/尝试与证据，Revision 默认收起）、设置（骨架）、`--smoke-test` 自检 |
+| `Sources/ORXAnalyticsApp` | AppKit 菜单栏和窗口生命周期；SwiftUI 快速面板、执行详情、模型与路由、用量和设置；`--smoke-test` 自检 |
 | `Resources/Info.plist` | `LSUIElement` 等应用元数据；SwiftPM 构建时嵌入 `__TEXT,__info_plist`，Stage 5 打 `.app` 包时复用 |
 | `Resources/orx_engine_serve.py` | 引擎服务入口（App 拉起）：acquire → start_server → EngineSupervisor；包内分析代码由构建脚本放入 Resources |
 | `Tests/ORXAnalyticsCoreTests` | 合成来源单测（EngineSimulator，不连真实引擎、不读真实会话） |

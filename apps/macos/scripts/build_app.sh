@@ -177,7 +177,7 @@ cat > "$WORK/Info.plist" <<PLIST
 	<string>ORXAnalyticsApp</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
-	<!-- Menu-bar-only app: no Dock icon, no main window (design §7). -->
+	<!-- Accessory app: no Dock icon. Finder can open its main window. -->
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

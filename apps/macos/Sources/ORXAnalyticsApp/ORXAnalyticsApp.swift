@@ -1,10 +1,10 @@
+import AppKit
+import Combine
+import CoreServices
 import SwiftUI
 import ORXAnalyticsCore
 
-/// The one model instance for the whole process. SwiftUI may construct
-/// the App value more than once; routing every construction through the
-/// same instance keeps the runtime coordinator (wake observer,
-/// notification click router) and the UI bound to the same object.
+/// The installed app and its SwiftUI views share one runtime.
 @MainActor
 private enum AppRuntime {
     static let settingsStore: UserDefaultsAppSettingsStore = {
@@ -31,7 +31,6 @@ private enum AppRuntime {
                              settingsStore: settingsStore,
                              notifications: SystemNotificationCenter(),
                              engineLauncher: launcher)
-        RuntimeCoordinator.shared.start(model: model)
         // App start (not just the first panel open) ensures the engine
         // and primes the menu-bar badge. Still cache-first: nothing
         // waits for this round; the panel renders cache whenever it
@@ -41,112 +40,153 @@ private enum AppRuntime {
     }()
 }
 
-/// ORX Analytics menu-bar app (design §3/§7/§9).
-///
-/// - `MenuBarExtra` is the persistent entry: icon + the in-progress Run
-///   count (the number is FIXED to that meaning — never task/session/
-///   token counts). An attention marker appears beside it when
-///   attention > 0, explained in text inside the panel (not color only).
-/// - `LSUIElement` (Resources/Info.plist) makes it a menu-bar-only app:
-///   no Dock icon, no main window; closing windows keeps it resident.
-/// - All data flows through the engine's socket protocol
-///   (`ORXAnalyticsCore`); the Swift layer writes no business SQL and
-///   implements no token math of its own.
 @main
-struct ORXAnalyticsApp: App {
-    @NSApplicationDelegateAdaptor(ORXApplicationDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
-
-    init() {
-        // Xcode-free smoke hook (scripts/smoke_macos_app.sh): verify the
-        // protocol client, cache layer and frozen formatting rules
-        // against a local simulator, then exit before any UI starts.
+struct ORXAnalyticsApp {
+    @MainActor
+    static func main() {
         if CommandLine.arguments.contains("--smoke-test") {
-            let ok = SmokeRunner.runAndReport()
-            exit(ok ? 0 : 1)
+            exit(SmokeRunner.runAndReport() ? 0 : 1)
         }
-        // AFTER the smoke early-exit so the self-check never touches the
-        // real defaults domain, the notification center or the workspace.
-        // SwiftUI constructs the App on the main thread, so the isolated
-        // model bootstrap is safe to assume here.
-        _model = StateObject(wrappedValue: MainActor.assumeIsolated { AppRuntime.model })
-    }
 
-    var body: some Scene {
-        MenuBarExtra {
-            QuickPanelView()
-                .environmentObject(model)
-                .frame(width: 360)
-        } label: {
-            HStack(spacing: 3) {
-                Image(systemName: model.attentionCount > 0
-                      ? "exclamationmark.octagon.fill"
-                      : "circle.grid.2x2")
-                // The number is ALWAYS the in-progress Run count (§3),
-                // rendered through the unified grouping formatter (G012).
-                if model.activeRunCount > 0 {
-                    Text(MetricsFormat.countText(model.activeRunCount))
-                }
-            }
-            // The menu-bar label lives as long as the app does, so it
-            // can donate its `openWindow` action for notification-click
-            // routing (通知点击进入对应执行).
-            .background(OpenWindowDonation())
-        }
-        .menuBarExtraStyle(.window)
-
-        // T009/T010: the same window hosts the history query (查看全部
-        // 执行) and the four-zone run detail of a selected run. Keeping
-        // it a separate scene preserves "关闭窗口后继续驻留" — only the
-        // panel's 退出 ends the app.
-        Window("ORX", id: "run-detail") {
-            RunDetailHostView()
-                .environmentObject(model)
-        }
-        .windowResizability(.contentSize)
-
-        // T011: the diagnostics window (引擎重复失败 / 单源失败入口).
-        Window("诊断", id: "diagnostics") {
-            DiagnosticsView()
-                .environmentObject(model)
-        }
-        .windowResizability(.contentSize)
-
-        Settings {
-            SettingsView()
-                .environmentObject(model)
-        }
+        let app = NSApplication.shared
+        let delegate = ORXApplicationDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) { app.run() }
     }
 }
 
-/// Finder reopens the existing application and brings its one main window forward.
 @MainActor
-private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate {
+private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private lazy var model = AppRuntime.model
+    private lazy var windows = AppWindowController(model: model)
+    private let popover = NSPopover()
+    private var statusItem: NSStatusItem?
+    private var badgeObservation: AnyCancellable?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        installMainMenu()
+        RuntimeCoordinator.shared.start(model: model, openRunDetail: { [weak self] in
+            self?.windows.showMain()
+        })
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Control Center owns visibility. AppKit's item can be hidden
+        // without terminating the application or closing its windows.
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = item
+        item.button?.target = self
+        item.button?.action = #selector(toggleQuickPanel)
+        item.button?.imagePosition = .imageLeading
+        item.button?.setAccessibilityLabel("ORX")
+        popover.behavior = .transient
+        popover.delegate = self
+        badgeObservation = model.$cachedOverview.sink { [weak self] value in
+            self?.updateBadge(value)
+        }
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let launchType = event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue
+        return launchType != OSType(keyAELaunchedAsLogInItem)
+    }
+
+    func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        windows.showMain()
+        return true
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        guard let open = RuntimeCoordinator.shared.windowActions.openRunDetail else {
-            return true
-        }
-        open()
+        windows.showMain()
         return false
     }
-}
 
-/// Invisible helper that captures the label's `openWindow` environment
-/// action into the runtime coordinator's box.
-private struct OpenWindowDonation: View {
-    @Environment(\.openWindow) private var openWindow
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
 
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onAppear {
-                RuntimeCoordinator.shared.windowActions.openRunDetail = {
-                    // Notification deep links reuse the SAME fronting
-                    // routing as panel card clicks (G012 用户反馈 2):
-                    // activate + open/reuse + make key and front.
-                    DetailWindowRouting.openRunDetailFrontmost(openWindow)
-                }
+    func applicationWillTerminate(_ notification: Notification) {
+        model.shutdown()
+    }
+
+    private func updateBadge(_ overview: CachedOverview?) {
+        guard let button = statusItem?.button else { return }
+        let summary = overview?.envelope.summary
+        let active = summary?.activeRuns ?? 0
+        let attention = summary?.attention ?? 0
+        button.image = NSImage(systemSymbolName: attention > 0
+                               ? "exclamationmark.octagon.fill" : "circle.grid.2x2",
+                               accessibilityDescription: "ORX")
+        button.image?.isTemplate = true
+        button.title = active > 0 ? MetricsFormat.countText(active) : ""
+        button.toolTip = "ORX · 进行中 \(active) · 需要关注 \(attention)"
+    }
+
+    @objc private func toggleQuickPanel() {
+        guard let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        let panel = QuickPanelView(
+            openRunWindow: { [weak self] in
+                self?.popover.performClose(nil)
+                self?.windows.showMain()
+            },
+            openDiagnostics: { [weak self] in
+                self?.popover.performClose(nil)
+                self?.windows.showDiagnostics()
+            },
+            openSettings: { [weak self] in
+                self?.popover.performClose(nil)
+                self?.windows.showSettings()
             }
+        )
+        .environmentObject(model)
+        .frame(width: 360)
+        popover.contentViewController = NSHostingController(rootView: panel)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popover.contentViewController = nil
+    }
+
+    @objc private func showMain() { windows.showMain() }
+
+    @objc private func showSettings() { windows.showSettings() }
+
+    @objc private func undo() { NSApp.keyWindow?.firstResponder?.undoManager?.undo() }
+
+    @objc private func redo() { NSApp.keyWindow?.firstResponder?.undoManager?.redo() }
+
+    private func installMainMenu() {
+        let mainMenu = NSMenu()
+        let application = NSMenu(title: "ORX")
+        application.addItem(withTitle: "打开 ORX", action: #selector(showMain), keyEquivalent: "o")
+            .target = self
+        application.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
+            .target = self
+        application.addItem(.separator())
+        application.addItem(withTitle: "退出 ORX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let applicationItem = NSMenuItem()
+        applicationItem.submenu = application
+        mainMenu.addItem(applicationItem)
+
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(withTitle: "撤销", action: #selector(undo), keyEquivalent: "z").target = self
+        edit.addItem(withTitle: "重做", action: #selector(redo), keyEquivalent: "Z").target = self
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editItem = NSMenuItem()
+        editItem.submenu = edit
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
     }
 }

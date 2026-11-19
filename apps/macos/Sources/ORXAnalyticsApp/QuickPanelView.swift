@@ -17,7 +17,9 @@ import ORXAnalyticsCore
 ///   path never waits for a collection round to finish.
 struct QuickPanelView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
+    let openRunWindow: () -> Void
+    let openDiagnostics: () -> Void
+    let openSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -143,7 +145,7 @@ struct QuickPanelView: View {
     private var diagnosticsEntry: some View {
         if model.showDiagnosticsEntry {
             Button {
-                openWindow(id: "diagnostics")
+                openDiagnostics()
             } label: {
                 Label("引擎连续失败——打开诊断…", systemImage: "stethoscope")
                     .font(.caption)
@@ -206,9 +208,7 @@ struct QuickPanelView: View {
                          panel: PanelModel) -> some View {
         Button {
             model.openRunDetail(project: card.run.project, runID: card.run.runID)
-            // G012 用户反馈 2: 激活应用并把（已存在或新建的）单一详情
-            // 窗口前置取键——openWindow 本身不保证前置被遮挡的窗口。
-            DetailWindowRouting.openRunDetailFrontmost(openWindow)
+            openRunWindow()
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
@@ -292,27 +292,18 @@ struct QuickPanelView: View {
         HStack {
             Button("查看全部执行…") {
                 model.openAllRuns()
-                DetailWindowRouting.openRunDetailFrontmost(openWindow)
+                openRunWindow()
             }
             Spacer()
             Button("设置…") {
-                Self.openSettingsWindow()
+                openSettings()
             }
             Button("退出") {
-                model.shutdown()
                 NSApp.terminate(nil)
             }
         }
         .buttonStyle(.link)
         .font(.callout)
-    }
-
-    /// macOS renamed the settings action across versions; try both.
-    static func openSettingsWindow() {
-        for selector in [Selector(("showSettingsWindow:")),
-                         Selector(("showPreferencesWindow:"))] {
-            if NSApp.sendAction(selector, to: nil, from: nil) { return }
-        }
     }
 
     // MARK: helpers

@@ -59,29 +59,22 @@ final class SystemNotificationCenter: NotificationPosting {
 /// - the sleep/wake observer (design §8: 睡眠期间不判定停摆，唤醒后
 ///   重新同步) — on wake the model re-syncs immediately;
 /// - the notification click router (通知点击进入对应执行): a click sets
-///   the app's run selection and opens the detail window;
-/// - the captured SwiftUI `openWindow` action (the menu-bar label is
-///   always alive, so it can safely donate its environment action).
+///   the app's run selection and opens the detail window.
 final class RuntimeCoordinator: NSObject, UNUserNotificationCenterDelegate {
     static let shared = RuntimeCoordinator()
 
-    /// The captured window-opening action, donated by the menu-bar label.
-    final class WindowActionBox {
-        var openRunDetail: (() -> Void)?
-    }
-    let windowActions = WindowActionBox()
-
     private weak var model: AppModel?
+    private var openRunDetail: (() -> Void)?
 
     private override init() {
         super.init()
     }
 
-    /// Idempotent; called from the app entry point with the one model
-    /// instance (AppRuntime keeps it identical across App re-inits).
+    /// Called during application launch with the shared model and window action.
     @MainActor
-    func start(model: AppModel) {
+    func start(model: AppModel, openRunDetail: @escaping () -> Void) {
         self.model = model
+        self.openRunDetail = openRunDetail
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(systemDidWake(_:)),
             name: NSWorkspace.didWakeNotification, object: nil)
@@ -127,8 +120,7 @@ final class RuntimeCoordinator: NSObject, UNUserNotificationCenterDelegate {
             defer { completionHandler() }
             guard let self, let project, let runID else { return }
             self.model?.openRunDetail(project: project, runID: runID)
-            NSApp.activate(ignoringOtherApps: true)
-            self.windowActions.openRunDetail?()
+            self.openRunDetail?()
         }
     }
 }

@@ -2,7 +2,9 @@
 
 App 交付物是自带 Python 运行时的 `ORX.app`：干净、无开发环境的
 Mac（最低 macOS 13，Apple Silicon）无需预装 Python、uv 或 Homebrew。
-应用复制到「应用程序」后，从 Finder 首次启动并确认菜单栏出现 ORX 图标。
+应用复制到「应用程序」后，从 Finder 首次启动并确认 ORX 主窗口。系统允许
+显示 ORX 时，菜单栏也会出现图标。系统隐藏图标时，从 Finder 双击 ORX
+仍可打开主窗口，右上角的「应用选项」可打开设置或退出。
 本文是安装、升级、回退、卸载与缓存的
 唯一操作说明；CLI 安装见 [installation.md](installation.md)。
 
@@ -72,7 +74,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
    `xattr -dr com.apple.quarantine "/Applications/ORX (Internal Preview).app"`。
    **此绕过步骤只属于内部预览渠道，永远不得作为正式渠道的安装验证
    证据**（正式渠道的通过标准见下一节，与 quarantine 无关）。
-3. 菜单栏出现 ORX 图标即安装成功；「诊断 → 构建渠道」会显示内部预览
+3. 确认 Finder 能打开 ORX 主窗口；「诊断 → 构建渠道」会显示内部预览
    标注与完整来源提交。
 
 ### 正式分发（Developer ID ＋ 公证）
