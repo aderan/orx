@@ -77,3 +77,31 @@ Analytics 当前历史 Release 为 `v0.4.3`、`v0.4.2`。旧仓未归档，
 注册及重登检查仍待验。正式渠道缺少可用的 Developer ID Application
 签名身份和可验证的历史正式安装包。第四阶段发布门禁未通过，第五阶段保持
 未启动。远端标签、Release、下载资产、旧仓入口和归档状态保持原状。
+
+## 菜单栏身份对照与真实系统接口
+
+在同一账户构建四个带匹配内外层 plist 的 ad-hoc 签名最小应用。
+测试应用均不读取 ORX 数据。新 Bundle ID 下，SwiftUI `MenuBarExtra` 和
+AppKit `NSStatusItem` 都完成注册并持续运行。复用
+`org.orxanalytics.macos.dev` 后，两种实现均被 Control Center 列入
+blocked list。SwiftUI 收到 `NSStatusItemChangeVisibilityAction` 后退出，
+AppKit 进程保活但图标仍被屏蔽。通过系统设置将两个可见的 ORX 开关分别
+关闭再开启，屏蔽依旧，开关恢复为测试前的开启状态。四个探针均已结束。
+
+[类似的 macOS 26 实测报告](https://github.com/steipete/CodexBar/issues/1440)
+描述了跨应用残留映射的相同日志序列。本机对相关 Control Center group
+container 偏好文件的只读访问被系统拒绝，映射原因尚未确认。
+
+另以[临时 Bundle ID 的同源码桌面对照版](stage-3.md#finder-与配置逐屏验收)
+完成以下系统交互：
+
+- App 的「登录时启动」通过 SMAppService 登记，App 显示已登记。
+  macOS「登录项与扩展」的「登录时打开」实际出现且仅出现一条临时 App
+  项。用 App 取消登记后，两处均显示已移除。
+- 以 macOS 退出命令退出临时 App。退出前共享引擎有 `background` 和
+  `ui` 需求，退出后 App 进程已结束，`ui` 需求释放，CLI watch
+  仍持有需求且引擎 PID 不变。最后停止隔离测试的 watch 和引擎。
+
+这些操作验证了当前代码的桌面和系统接口。实际预览渠道仍须使用原
+Bundle ID 验证菜单栏启动、菜单内退出、通知授权迁移和重登；正式渠道
+仍受签名及历史安装包条件限制。阶段五保持未启动。
