@@ -38,10 +38,11 @@ def routing_world(tmp_path, monkeypatch):
     return user, projects[0], projects[1], tmp_path / "draft.json"
 
 
-def invoke(project: Path | None, *args):
+def invoke(project: Path | None, *args, host=None):
     scope = ["--scope", "user"] if project is None else [
         "--scope", "project", "--project-root", str(project)]
-    result = CliRunner().invoke(app, ["config", "routing", "--json", *scope, *args])
+    prefix = ["--host", host] if host else []
+    result = CliRunner().invoke(app, [*prefix, "config", "routing", "--json", *scope, *args])
     assert result.exit_code in (0, 1), (result.output, result.exception)
     return result.exit_code, json.loads(result.output)
 
@@ -126,3 +127,40 @@ def test_desktop_project_preview_reads_a_current_host_candidate(routing_world):
     candidate = preview["model_selection"]["worker"]["candidates"][0]
     assert candidate["profile"] == "current-host"
     assert candidate["harness"] == "current"
+    assert candidate["host_blocked_reason"].startswith("host_not_declared")
+    assert candidate["capabilities"] == ["coding", "host_context"]
+
+    _, bound = invoke(project, host="codex")
+    assert bound["model_selection"]["controller"]["session_harness"] == "codex"
+    bound_candidate = bound["model_selection"]["worker"]["candidates"][0]
+    assert bound_candidate["declared_harness"] == "current"
+    assert bound_candidate["harness"] == "codex"
+    assert bound_candidate["host_blocked_reason"] is None
+
+
+def test_desktop_contract_exposes_model_definition_and_effective_default(routing_world):
+    user, _, project, request = routing_world
+    with (user / "profiles.toml").open("a") as profiles:
+        profiles.write(
+            '[profiles.ocr]\ndriver = "cli"\nharness = "codex"\n'
+            'model = { family = "example", version = "2", context = 32000 }\n'
+            'tier = "S"\neffort = "max"\nnative_effort = "xhigh"\n'
+            'capabilities = ["ocr"]\n'
+        )
+    _, initial = invoke(project)
+    draft(request, initial["revision"], **{"plan.depth": "auto", "worker.profiles": ["ocr"]})
+
+    code, preview = invoke(project, "--request", str(request))
+
+    assert code == 0, preview
+    assert preview["contract"] == 1
+    selection = preview["model_selection"]
+    assert selection["planner"]["depth"] == "auto"
+    assert selection["planner"]["effective_depth"] == "standard"
+    candidate = selection["worker"]["candidates"][0]
+    assert candidate["tier"] == "S"
+    assert candidate["capabilities"] == ["ocr"]
+    assert candidate["effort"] == "max"
+    assert candidate["native_effort"] == "xhigh"
+    assert candidate["model_spec"]["family"] == "example"
+    assert candidate["model_spec"]["context"] == 32000

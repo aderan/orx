@@ -22,6 +22,13 @@
 **Status**: Complete（自动化、Finder 双项目逐屏交互及已安装预览的路由接口复验通过；
 临时 Bundle ID 的验收边界见[证据](docs/diagnostics/analytics-monorepo/stage-3.md)）
 
+### ORX 0.5 开发线的路由语义
+
+**Goal**: 用 ORX 的同一读写接口展示配置候选和历史派发事实。
+**Success Criteria**: 当次 Controller、配置顺序和实际派发各按其来源展示，旧配置及历史可读。
+**Tests**: 无宿主与显式宿主、两种配置范围与预览保存、旧引擎响应、带路由日志的尝试。
+**Status**: In Progress
+
 ## Stage 4: 演练安装、升级与回退
 
 **Goal**: 以真实旧安装包演示替换、备份、共享引擎和回退。

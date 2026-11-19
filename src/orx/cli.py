@@ -21,7 +21,7 @@ from orx import routing
 from orx import skills as skills_mod
 from orx import sources as sources_mod
 from orx import update as update_mod
-from orx.plan import ReplanCheckFailed
+from orx.plan import ReplanCheckFailed, resolve_depth
 from orx.records import ConfigError, NotFoundError, ORXError, PlanDepth, Role
 from orx.verify import DeliveryRejected
 
@@ -368,8 +368,10 @@ def _model_selection(
             "harness": profile.harness.value,
             "declared_harness": declared_harness,
             "model": profile.model,
+            "model_spec": profile.model_spec.to_dict() if profile.model_spec else None,
             "tier": profile.tier.value if profile.tier is not None else None,
             "legacy_class": profile.model_class.value if profile.model_class is not None else None,
+            "capabilities": list(profile.capabilities),
             "effort": profile.effort.value,
             "native_effort": profile.native_effort,
             "host_mode": profile.host_mode if profile.driver.value == "host" else None,
@@ -394,6 +396,9 @@ def _model_selection(
         },
         "planner": {
             "depth": cfg.plan_depth_default,
+            "effective_depth": resolve_depth(
+                "", cfg.plan_depth_default if cfg.plan_depth_default != "auto" else None
+            ).value,
             "depth_origin": effective.origins["plan.depth"],
             "depths": {
                 depth.value: candidates(f"plan.{depth.value}.profiles", Role.PLANNER, depth)
@@ -454,11 +459,10 @@ def _render_model_selection(selection: dict, root: Path | None) -> None:
 def config_models(json_out: bool = JsonOpt) -> None:
     """Preview configured models and fallback order without launching agents.
 
-    Shows the effective Controller profile, each Planner depth, Worker, and
-    Verifier, including which layer supplied each list and profile. Model and
-    effort are requested values. Host self assignments use the current
-    session. Set ORX_CONTROLLER_HARNESS and ORX_CONTROLLER_AGENTS as for
-    dispatch to see incompatible host candidates.
+    Shows the declared Controller session and compatibility profile, each
+    Planner depth, Worker, and Verifier, with configuration origins.
+    Model and effort are requested values. Use the root --host and
+    --host-agent options to preview candidate compatibility for a session.
     """
     root = _project_root()
     selection = _model_selection(_load_effective(root))
