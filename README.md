@@ -76,6 +76,13 @@ parameter. See [tier and effort mapping](docs/routing-strategy.md) for the
 harness mappings and [model configuration](docs/model-selection.md) for
 migration examples.
 
+This checkout's [project routing](.orx/config.toml) uses Claude Code Sonnet
+for planning, ZCode then Cursor for implementation, and Codex CLI for
+semantic verification. CLI profiles are explicit in
+[profiles.toml](.orx/profiles.toml); compatible native fallbacks remain
+inherited from user configuration. See the [Stage 4 acceptance](docs/diagnostics/stage4-2026-11-19/README.md)
+for the coding Run, injected recovery checks, and measurement limits.
+
 ## Profiles (`.orx/profiles.toml`)
 
 - `driver = "host"` — you (or your host agent) do it: `task claim` →
@@ -119,6 +126,12 @@ permission settings. Run them in trusted projects or an externally isolated
 environment. Cursor `--force` honors explicit denies and leaves sandboxing to
 Cursor configuration. See the [task authorization backlog](docs/backlog.md).
 - `driver = "external"` — parked at `waiting_external`; you finish it.
+
+Failed CLI launches record process timeouts as `timeout` in health classification.
+Structured output contributes provider errors through its error envelopes.
+Ordinary JSONL timestamps, event IDs, token counts, generated reasoning, and
+successful tool output do not trigger rate-limit cooldowns. Plain diagnostics
+require an explicit HTTP/status 429 or a rate-limit message.
 
 When a CLI verifier disconnects, times out, or returns an invalid result,
 `orx verify --json` reports a verifier attempt error with a null verdict.

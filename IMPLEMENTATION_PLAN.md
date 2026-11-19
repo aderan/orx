@@ -105,7 +105,11 @@ ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](doc
 
 **Tests**：执行真实跨 harness Run，覆盖一条确定性验收和一条语义验收。用隔离场景演练从失败裁决进入产品修复、从验证器故障只重验及从控制会话中断续接。比较人工介入次数、首轮通过率和每个验证成功任务的总成本。用量不全时标明缺口。
 
-**Status**：Not Started
+**Status**：Complete
+
+2026-11-19 当前 Codex 会话在隔离项目发起真实日志诊断工具 G001/R001。Claude Code sonnet / T1 / low 规划，ZCode GLM-5.3 / T2 / low 实现 T001，Cursor Grok 4.7 / T2 / medium 通过依赖产物交接实现 T002，Codex CLI Sol / T1 / low 独立审查。故意注入命令检查仍通过的重复实现缺陷，真实 Verifier 给出合法 fail，随后 Cursor 在同一计划修复 T002。再对第二条语义检查注入畸形裁决，ORX 保留交付及第一条 pass，仅报告 retryable protocol_error。新的真实 ZCode CLI 主控会话续接同一个 Run，只启动剩余一条 Codex 验证；既有 18 条检查记录及 Worker attempt 不变，最终两项任务 passed，R001 done。
+
+项目默认值切换为已实测 CLI 职责，并在 Codex/ZCode 环境预览原生候选筛选；没有增加终端主控代启动。7 次真实模型执行未见权限卡住或超时，另外 1 次为明确标注的协议替身。Stage 3 的数字 429 误判由 a2bb804 修复，新增 25 项回归，全量 1249 项通过。成本记录保留缺口，不把 token 或缺失主控用量折算为完整金额。见 [Stage 4 验收说明](docs/diagnostics/stage4-2026-11-19/README.md) 和 [逐项证据](docs/diagnostics/stage4-2026-11-19/acceptance.json)。
 
 # 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
 
