@@ -397,6 +397,38 @@ def test_rejects_missing_launch_evidence_with_intact_bundle(capable_python,
     assert rounds[0]["engine_process_observed"] is False
 
 
+def test_rejects_exit_after_the_engine_answers(capable_python, tmp_path,
+                                               short_data_dir):
+    app = build_stand_in_app(tmp_path, capable_python, force_flag=True)
+    engine = app / "Contents/Resources/orx_engine_serve.py"
+    engine.write_text(SERVE_SCRIPT.replace(
+        "connection.close()",
+        'connection.close()\n        open(os.path.join(data_dir, "probed"), "a").close()',
+    ), encoding="utf-8")
+    executable = app / "Contents/MacOS/ORXAnalyticsApp"
+    _write_executable(executable, executable.read_text(encoding="utf-8").replace(
+        'mkdir -p "$DATA/logs"',
+        'mkdir -p "$DATA/logs"\nrm -f "$DATA/probed"',
+    ).replace("exec sleep 2147483647", """
+while [ ! -f "$DATA/probed" ]; do sleep 0.05; done
+sleep 0.5
+exit 0
+"""))
+    adhoc_sign(app)
+    evidence = tmp_path / "evidence"
+
+    result = run_seal_check(app, evidence, "--launch-timeout", "6",
+                            "--data-dir", str(short_data_dir))
+    report = load_report(evidence)
+    assert result.returncode == 1, report
+    assert "launch-evidence-missing" in failure_codes(report)
+    first = report["rounds"][0]
+    assert first["socket_observed"] and first["engine_process_observed"]
+    assert first["app_exit_code_before_stop"] == 0
+    assert first["bundle_processes_after_stop"] == []
+    assert report["codesign_after"]["exit_code"] == 0
+
+
 def test_refuses_evidence_dir_inside_the_app(tmp_path):
     """Evidence (and by extension runtime data) may never be written
     into the bundle the check is guarding — and the refusal itself must

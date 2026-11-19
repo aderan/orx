@@ -24,8 +24,9 @@ This check verifies the FIXED app on an installed copy, end to end:
 5. fail closed on: any bundle content change (added bytecode is called
    out explicitly but ANY mutation fails), either strict verification
    failing, missing REAL app-launch evidence (live socket + engine
-   process attributable to the launched app + engine launch log), or an
-   engine that cannot be stopped between rounds.
+   process attributable to the launched app + engine launch log), an app
+   that exits during the startup observation, or an engine that cannot
+   be stopped between rounds.
 
 Honesty constraints (what this check must NEVER do to look green):
 
@@ -55,6 +56,7 @@ logs are written into the evidence dir.
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -84,6 +86,9 @@ DEV_OVERRIDE_VARS = (
 HOSTILE_BYTECODE_VALUE = "0"
 
 STOP_GRACE_SECONDS = 10.0
+# An engine socket can answer before the menu bar app exits. Observe the
+# app after engine readiness so that brief overlap cannot pass the check.
+STARTUP_OBSERVATION_SECONDS = 1.0
 PS_COLUMNS = "pid=,ppid=,command="
 
 
@@ -299,8 +304,8 @@ def launch_round(app: Path, executable: Path, data_dir: Path,
     """Launch the app itself, wait for REAL engine-up evidence, then stop
     the app and the engine. Evidence is only complete when the socket
     accepts connections AND a live engine process is attributable to the
-    launched app (its parent) AND the app's engine launch log exists —
-    all under the app's data dir, outside the bundle."""
+    launched app (its parent) AND the app's engine launch log exists.
+    The app must remain alive through the post-readiness observation."""
     env, stripped = app_launch_environment(data_dir)
     started = time.monotonic()
     try:
@@ -325,11 +330,14 @@ def launch_round(app: Path, executable: Path, data_dir: Path,
         "engine_process_observed": False,
         "engine": None,
         "engine_launch_log": None,
+        "app_exit_code_before_stop": None,
         "waited_seconds": None,
     }
     engine_entry = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
         if not evidence["socket_observed"]:
             evidence["socket_observed"] = socket_connects(
                 data_dir / "engine.sock")
@@ -342,8 +350,11 @@ def launch_round(app: Path, executable: Path, data_dir: Path,
                 engine_entry = candidates[0]
                 evidence["engine_process_observed"] = True
         if evidence["socket_observed"] and evidence["engine_process_observed"]:
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=STARTUP_OBSERVATION_SECONDS)
             break
         time.sleep(0.25)
+    evidence["app_exit_code_before_stop"] = process.poll()
     evidence["waited_seconds"] = round(time.monotonic() - started, 1)
     if engine_entry is not None:
         evidence["engine"] = {
@@ -359,6 +370,9 @@ def launch_round(app: Path, executable: Path, data_dir: Path,
         }
 
     missing = []
+    if evidence["app_exit_code_before_stop"] is not None:
+        missing.append(f"app exited during startup with status "
+                       f"{evidence['app_exit_code_before_stop']}; see {launch_log}")
     if not evidence["socket_observed"]:
         missing.append(f"engine socket never accepted connections at "
                        f"{evidence['socket_path']}")
@@ -425,6 +439,7 @@ def run_check(app: Path, evidence_dir: Path, data_dir: Path,
         "app_executable": str(executable),
         "data_dir": str(data_dir),
         "evidence_dir": str(evidence_dir),
+        "startup_observation_seconds": STARTUP_OBSERVATION_SECONDS,
         "hostile_child_env": {"PYTHONDONTWRITEBYTECODE":
                               HOSTILE_BYTECODE_VALUE},
         "hostile_rationale": (
