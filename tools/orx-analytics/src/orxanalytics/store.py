@@ -46,8 +46,7 @@ def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
     """In-place additive upgrades of the analytics store itself. v1 -> v2:
     orx_attempts gains the ORX v11 `nonce` column (identity anchors).
     v2 -> v3: adds the `orx_receipts` mirror table (ORX v15 completion
-    receipts). SCHEMA already creates it idempotently on open; the branch
-    keeps the explicit step so a migrated store is provably complete.
+    receipts). SCHEMA creates it in the same initialization transaction.
     v3 -> v4: zc_requests gains the model_usage token columns; the zcode
     model_usage rowid cursor is reset so the next import re-reads already
     mirrored rows and backfills the new fields (upserts by natural key —
@@ -57,8 +56,6 @@ def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(orx_attempts)")}
         if cols and "nonce" not in cols:
             conn.execute("ALTER TABLE orx_attempts ADD COLUMN nonce TEXT")
-    if v < 3:
-        conn.executescript(_RECEIPTS_TABLE)
     if v < 4:
         cols = {r["name"] for r in conn.execute(
             "PRAGMA table_info(zc_requests)")}
@@ -74,7 +71,7 @@ def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
             "DELETE FROM import_state WHERE key='model_usage_rowid'")
     conn.execute(
         "UPDATE meta SET value=? WHERE key='store_version'", (STORE_VERSION,))
-    conn.commit()
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -321,23 +318,42 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        meta = self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
-        row = (self.conn.execute(
-            "SELECT value FROM meta WHERE key='store_version'").fetchone() if meta else None)
-        version = row["value"] if row else None
-        if row and version != STORE_VERSION and version not in _MIGRATABLE_FROM:
+        try:
+            self._initialize_schema()
+        except BaseException:
             self.conn.close()
+            raise
+
+    def _initialize_schema(self) -> None:
+        tables = {row[0] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ('meta', 'orx_routing_decisions')")}
+        version = self._stored_version() if "meta" in tables else None
+        if version == STORE_VERSION and "orx_routing_decisions" in tables:
+            return
+        self._check_supported_version(version)
+        with self.conn:
+            # Recheck after taking the write lock. Another registrar
+            # may have finished initialization while we were waiting.
+            self.conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+            version = self._stored_version()
+            self._check_supported_version(version)
+            if version is None:
+                self.conn.execute(
+                    "INSERT INTO meta VALUES ('store_version', ?)", (STORE_VERSION,))
+            elif version in _MIGRATABLE_FROM:
+                _migrate_store(self.conn, version)
+
+    def _stored_version(self) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key='store_version'").fetchone()
+        return row[0] if row is not None else None
+
+    @staticmethod
+    def _check_supported_version(version: str | None) -> None:
+        if version is not None and version != STORE_VERSION and version not in _MIGRATABLE_FROM:
             raise RuntimeError(
                 f"analytics.db store_version {version} != {STORE_VERSION}; "
                 "this reader cannot open it")
-        self.conn.executescript(SCHEMA)
-        if row is None:
-            self.conn.execute(
-                "INSERT INTO meta VALUES ('store_version', ?)", (STORE_VERSION,))
-            self.conn.commit()
-        elif version in _MIGRATABLE_FROM:
-            _migrate_store(self.conn, version)
 
     # -- generic helpers -------------------------------------------------
     def upsert(self, table: str, row: dict[str, Any],

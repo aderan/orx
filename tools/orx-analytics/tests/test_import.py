@@ -541,3 +541,20 @@ def test_cursor_import_preserves_usage_across_rounds(world):
     ws = world["store"].conn.execute(
         "SELECT folder FROM cur_workspaces").fetchone()
     assert ws["folder"] == "file://" + world["proj_a"]
+
+
+
+def test_unknown_store_refusal_does_not_apply_schema_ddl(tmp_path):
+    import pytest
+    from orxanalytics.store import Store
+
+    db = tmp_path / "analytics.db"
+    connection = sqlite3.connect(db)
+    with connection:
+        connection.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO meta VALUES ('store_version', '99')")
+    connection.close()
+    before = db.read_bytes()
+    with pytest.raises(RuntimeError, match="store_version 99"):
+        Store(tmp_path)
+    assert db.read_bytes() == before
