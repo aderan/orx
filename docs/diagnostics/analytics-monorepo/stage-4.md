@@ -260,3 +260,17 @@ Window Server 报告一个可见的 ORX 主窗口。新版的菜单栏开关为�
 一条新版登录项。该进程的 Launch Services 启动来源为 Spotlight；
 控制中心 PID 和控制台登录起始时间均未变化。此轮未取得系统重登的证据。
 已正常退出 ORX，准备验证下一次 macOS 登录是否自动启动。
+
+### 不注销时的菜单栏归属排查
+
+在当前已安装的 `com.aderan.orx.dev` 进程运行期间，经「系统设置 →
+菜单栏」将其显示开关关闭后再开启。复查开关为开启，控制中心仍将
+同一 PID 的状态项列为 blocked。Window Server 同时报告一个可见的
+ORX 主窗口，应用与 Finder 入口保持可用。
+
+同一新身份第一次正常注册，随后在 Codex 环境里从终端直接启动测试副本时
+被屏蔽，之后从 Finder 打开仍被屏蔽。工具调用的应用祖先包含
+`com.openai.codex`，当前系统设置中的 ChatGPT 菜单栏开关为关闭。
+[macOS 26 另一应用的复现](https://github.com/steipete/CodexBar/issues/1440)
+已记录过归属到同一 Codex 身份导致的屏蔽。对 ORX 而言仍是待验证的
+假设。尚未更改 ChatGPT 设置，等待是否可以短暂开启后恢复的确认。
