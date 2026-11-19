@@ -19,7 +19,7 @@
 **Goal**: 在现有菜单栏应用中提供执行、模型与路由、用量分析。
 **Success Criteria**: 执行和用量走 Analytics，项目和用户配置通过 ORX 可预览并保存。
 **Tests**: 双项目、用量跳转、Finder、错误引用、并发修改、ORX 缺失或不兼容。
-**Status**: Complete（自动化和 Finder 双项目逐屏交互通过；
+**Status**: Complete（自动化、Finder 双项目逐屏交互及已安装预览的路由接口复验通过；
 临时 Bundle ID 的验收边界见[证据](docs/diagnostics/analytics-monorepo/stage-3.md)）
 
 ## Stage 4: 演练安装、升级与回退
