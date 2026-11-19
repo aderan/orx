@@ -44,3 +44,5 @@ CLI watch，再用 Launch Services 启动候选。候选写入了隔离项目的
 发布门禁保留。在 GitHub 实查，ORX 当前 Release 仍为 `v0.4.0`，
 Analytics 当前历史 Release 为 `v0.4.3`、`v0.4.2`。旧仓未归档，
 旧 README 和发布入口保持原状。未创建新远端标签或 Release。
+
+操作者随后确认快速面板没有打开。真实预览安装的桌面门禁仍未通过。
