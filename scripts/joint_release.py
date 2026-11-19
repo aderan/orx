@@ -2110,7 +2110,8 @@ def bundle_engine_refresh(handle: dict, analytics_db: Path,
 
 def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
                     *, app_dir: Path, stand_in: bool,
-                    bounded_snapshots: bool = False) -> dict:
+                    bounded_snapshots: bool = False,
+                    controller_host: str | None = None) -> dict:
     """The full joint exercise: installed-wheel CLI lifecycle on an
     isolated project + the app-bundle engine connection. ``stand_in``
     only changes HONESTY LABELING (the record says so); the machinery
@@ -2132,11 +2133,15 @@ def exercise_driver(work_dir: Path, manifest: dict, log: StageLog,
     # /tmp -> /private/tmp); talk to the engine with the same key.
     project_key = str(proj)
     facts: dict = {"stand_in_app_delivery": stand_in, "project": "isolated"}
+    prefix = [str(orx_bin)]
+    if controller_host is not None:
+        prefix.extend(["--host", controller_host])
 
     def cli(label: str, args: list[str], expect: int = 0) -> dict:
-        proc = _run([str(orx_bin), *args], cwd=proj, env=env)
-        log.command([str(orx_bin), *args], proc)
-        step = {"step": label, "command": "orx " + " ".join(args),
+        command = [*prefix, *args]
+        proc = _run(command, cwd=proj, env=env)
+        log.command(command, proc)
+        step = {"step": label, "command": "orx " + " ".join(command[1:]),
                 "exit_code": proc.returncode}
         if "--json" in args:
             try:
@@ -3836,7 +3841,7 @@ def stage_monorepo(work_dir: Path, log: StageLog, commit: str, channel: str,
     run("app_smoke", [str(executable), "--smoke-test"], work_dir)
     exercise = exercise_driver(work_dir, {"binding": {}, "artifacts": artifacts},
                                log, app_dir=app_dir, stand_in=False,
-                               bounded_snapshots=True)
+                               bounded_snapshots=True, controller_host="codex")
     checks["exercise"] = 0
     report = {
         "format": "orx-monorepo-candidate-v1",
