@@ -1,4 +1,52 @@
 schema_version = 1
 
-# Profile definitions live in the user layer (~/.config/orx/profiles.toml)
-# since M1; this project keeps only routing (config.toml).
+# Project CLI choices. Native host profiles remain available from the user layer.
+
+[profiles.claude-plan]
+driver = "cli"
+harness = "claude"
+model = "sonnet"
+tier = "T1"
+effort = "low"
+capabilities = ["coding"]
+
+# Current Controller self work, including tasks that need host context.
+[profiles.orx-host]
+driver = "host"
+harness = "current"
+model = "unconfigured"
+tier = "T2"
+effort = "medium"
+capabilities = ["coding", "host_context"]
+
+[profiles.claude-plan-deep]
+driver = "cli"
+harness = "claude"
+model = "sonnet"
+tier = "T1"
+effort = "high"
+capabilities = ["coding"]
+
+[profiles.zcode-cli-worker]
+driver = "cli"
+harness = "zcode"
+model = "account:bigmodel-individual-coding-plan/GLM-5.3"
+tier = "T2"
+effort = "low"
+capabilities = ["coding"]
+
+[profiles.cursor-cli-worker]
+driver = "cli"
+harness = "cursor"
+model = {family = "grok", version = "4.7"}
+tier = "T2"
+effort = "medium"
+capabilities = ["coding"]
+
+[profiles.codex-verify]
+driver = "cli"
+harness = "codex"
+model = "gpt-6.1-sol"
+tier = "T1"
+effort = "low"
+capabilities = ["coding"]

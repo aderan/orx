@@ -1,0 +1,1811 @@
+{
+  "stage": 4,
+  "date": "2026-11-19",
+  "source_fix_commit": "a2bb804",
+  "result": "passed",
+  "test_results": {
+    "new_regression_cases": 25,
+    "relevant_batch_passed": 211,
+    "full_suite_command": ".venv/bin/python -m pytest -q",
+    "full_suite_passed": 1249,
+    "full_suite_duration_sec": 231.3,
+    "regression_file": "tests/test_failure_classification.py",
+    "archived_log_replay": {
+      "source_log": "/tmp/orx-stage3-live.zwV58q/codex/project/.orx/runs/R002/exec/T001-5.log",
+      "sha256": "26582b505e193649e72dccd3cdabd054e6e030c0792e60949c9375d0071a262f",
+      "bytes": 2104384,
+      "with_process_timeout": "timeout",
+      "stream_only": "process_failure",
+      "limitation": "The retained stream was truncated by capture limits. Its visible reasoning/metadata contains no observed tool call or approval refusal; no inference about the unseen span."
+    }
+  },
+  "project": "/tmp/orx-stage4-live.dkAkvK/project",
+  "state_access": "All mutations used public ORX CLI; evidence SQL used mode=ro only.",
+  "goal": {
+    "id": "G001",
+    "objective": "Build an offline log diagnostic CLI using ORX failure classification.",
+    "acceptance": [
+      "log_report.py exports classify_log(text, timed_out=False), using ORX classification to return process_failure for ordinary metadata, rate_limited for the HTTP 429 fixture, and timeout for timed-out reasoning.",
+      "diagnose_cli.py imports and invokes log_report.classify_log, reads one UTF-8 log path, supports --timed-out, prints the error kind, and exits nonzero on input read errors."
+    ],
+    "constraints": [
+      "Exactly two tasks: T001 writes only log_report.py. T002 depends on T001, writes only diagnose_cli.py, and has empty preread so its log_report.py input must arrive through the dependency handoff. Each worker reports its file in structured artifacts. Use only Python stdlib and the already installed orx package.",
+      "T001 has one Python command check covering all three classification cases using fixtures/metadata.jsonl and fixtures/rate-limit.jsonl. T002 has one command check covering rate-limit output, --timed-out metadata output, and nonzero exit on a missing path. T002 has exactly two independent semantic agent entries: first inspect both artifacts and verify importing/invoking log_report.classify_log with no duplicate implementation; second inspect UTF-8 reading, error handling, and --timed-out forwarding. Keep deterministic checks short and quote-safe. No commits or network needed."
+    ],
+    "status": "active"
+  },
+  "plan_ir": {
+    "approach": {
+      "decisions": [
+        "T001 wraps orx.adapters.base.error_kind_from_text with a thin classify_log(text, timed_out=False): timed_out=True short-circuits to 'timeout', matching classify_failure's semantics",
+        "T002 reads the log with explicit UTF-8 encoding, prints only the classification token, uses argparse with --timed-out store_true, and exits 1 with a stderr message on OSError/UnicodeDecodeError",
+        "Deterministic shell checks embed the three fixture-driven assertions inline so no test files are created inside the two-file scope",
+        "Semantic properties a CLI run cannot prove (single implementation, no duplicated classification logic; UTF-8/error-handling/flag forwarding) are covered by two independent agent verifiers in T002"
+      ],
+      "summary": "Two-task chain: T001 wraps ORX's error_kind_from_text in log_report.classify_log (verified against both fixtures plus the timed_out path), then T002 builds diagnose_cli.py on top of it, receiving log_report.py only via the dependency handoff."
+    },
+    "exploration": {
+      "assumptions": [
+        "the installed orx package is importable as orx.adapters.base by plain python3 from the project root",
+        "printing the classification token as the sole stdout line and exiting 1 with a stderr message on read errors satisfies the CLI acceptance criteria"
+      ],
+      "relevant_components": [
+        "fixtures/metadata.jsonl (ordinary metadata; classifies process_failure via orx.adapters.base.error_kind_from_text)",
+        "fixtures/rate-limit.jsonl (JSONL error record with status 429; classifies rate_limited)",
+        "orx.adapters.base.error_kind_from_text / classify_failure (stdlib-only classification; timed_out short-circuits to timeout)"
+      ],
+      "risks": [
+        "A worker could reimplement classification instead of reusing orx — covered by T002's semantic agent check for duplicate implementation",
+        "CLI could print the right token while mishandling read errors — mitigated by the explicit nonzero-exit check on a missing path"
+      ],
+      "summary": "Repo is a fresh project (only README.md, fixtures/, .orx state) with no existing Python code. The installed orx package exposes orx.adapters.base.error_kind_from_text(text) -> str, verified live: fixtures/metadata.jsonl -> 'process_failure', fixtures/rate-limit.jsonl -> 'rate_limited'; classify_failure shows the timed_out=True -> 'timeout' short-circuit to mirror in classify_log.",
+      "unknowns": [
+        "exact CLI output format beyond 'prints the error kind' — plan pins the classification token on its own stdout line so checks are deterministic"
+      ]
+    },
+    "goal": "G001",
+    "replan": null,
+    "tasks": [
+      {
+        "acceptance": [
+          "log_report.py exports classify_log(text, timed_out=False), using ORX classification to return process_failure for ordinary metadata, rate_limited for the HTTP 429 fixture, and timeout for timed-out reasoning."
+        ],
+        "dependencies": [],
+        "id": "T001",
+        "objective": "Write log_report.py exporting classify_log(text, timed_out=False) that delegates to ORX classification (orx.adapters.base.error_kind_from_text) and returns 'timeout' when timed_out is true.",
+        "preread": [
+          "fixtures/metadata.jsonl",
+          "fixtures/rate-limit.jsonl"
+        ],
+        "routing": {
+          "complexity": "low",
+          "required_capabilities": [
+            "coding"
+          ]
+        },
+        "scope": {
+          "allowed": [
+            "log_report.py"
+          ]
+        },
+        "verification": [
+          "python3 -m py_compile log_report.py",
+          "python3 -c \"from log_report import classify_log; m=open('fixtures/metadata.jsonl').read(); r=open('fixtures/rate-limit.jsonl').read(); assert classify_log(m)=='process_failure' and classify_log(r)=='rate_limited' and classify_log(m, timed_out=True)=='timeout'\""
+        ]
+      },
+      {
+        "acceptance": [
+          "diagnose_cli.py imports and invokes log_report.classify_log, reads one UTF-8 log path, supports --timed-out, prints the error kind, and exits nonzero on input read errors."
+        ],
+        "dependencies": [
+          "T001"
+        ],
+        "id": "T002",
+        "objective": "Write diagnose_cli.py: argparse CLI taking one log path plus --timed-out; reads the file as UTF-8; imports and invokes log_report.classify_log (no duplicate classification logic); prints the resulting error kind to stdout; on read errors prints a message to stderr and exits nonzero.",
+        "preread": [],
+        "routing": {
+          "complexity": "medium",
+          "required_capabilities": [
+            "coding"
+          ]
+        },
+        "scope": {
+          "allowed": [
+            "diagnose_cli.py"
+          ]
+        },
+        "verification": [
+          "python3 -m py_compile diagnose_cli.py",
+          "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+          "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+          "agent: Inspect diagnose_cli.py: verify the log file is opened/read as UTF-8 (explicit encoding), that OSError/UnicodeDecodeError from reading are caught and produce a nonzero exit with a diagnostic message, and that --timed-out is forwarded to classify_log as timed_out=True."
+        ]
+      }
+    ]
+  },
+  "controllers": {
+    "initial": {
+      "harness": "codex",
+      "kind": "current ADE conversation",
+      "terminal_controller_launcher_added": false
+    },
+    "resumed": {
+      "harness": "zcode",
+      "kind": "fresh real CLI session",
+      "session_ref": "sess_79744b40-611e-48df-a54c-1dcc79616bdf",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+      "requested_effort": "low",
+      "mode": "yolo",
+      "result": "Existing R001 done with one pending semantic verification; no new plan or Worker attempt.",
+      "own_native_usage": {
+        "source": "provider",
+        "modelRequestCount": 6,
+        "inputTokens": 179995,
+        "outputTokens": 1046,
+        "totalTokens": 181041,
+        "cacheReadTokens": 126848,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "webFetchRequests": 0,
+        "webSearchRequests": 0
+      },
+      "native_trace_sha256": "e12dd4a05234457e62aecb9cd8ad2a0afc03c91ae975b422e8f67371b0dfdc28"
+    }
+  },
+  "attempts": [
+    {
+      "id": 1,
+      "role": "planner",
+      "task_id": null,
+      "profile": "claude-plan",
+      "harness": "claude",
+      "model": "sonnet",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "actual_model": "zcode/GLM-5.3[1m]",
+      "result": "completed",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:22:55.487430+00:00",
+      "ended_at": "2026-11-19T03:24:30.520916+00:00",
+      "session_ref": "8baec589-960e-4a0f-8d67-5391247b322e",
+      "verify_entry": null,
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 95.033
+    },
+    {
+      "id": 2,
+      "role": "worker",
+      "task_id": "T001",
+      "profile": "zcode-cli-worker",
+      "harness": "zcode",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "result": "completed",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:25:00.890359+00:00",
+      "ended_at": "2026-11-19T03:25:39.451161+00:00",
+      "session_ref": "sess_d369d5ca-ecba-487f-ad8d-e051219546ab",
+      "verify_entry": null,
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 38.561
+    },
+    {
+      "id": 3,
+      "role": "worker",
+      "task_id": "T002",
+      "profile": "cursor-cli-worker",
+      "harness": "cursor",
+      "model": "grok@4.7",
+      "requested_effort": "medium",
+      "actual_effort": "medium",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "completed",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:26:43.194375+00:00",
+      "ended_at": "2026-11-19T03:28:49.305355+00:00",
+      "session_ref": "e4614e93-fd36-4876-af89-99941366a205",
+      "verify_entry": null,
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 126.111
+    },
+    {
+      "id": 4,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "fail",
+      "failure_reason": "agent verifier: fail: Inspected both files: diagnose_cli.py fabricates log_report via SimpleNamespace and reimplements classification instead of importing log_report.classify_log.",
+      "started_at": "2026-11-19T03:30:00.769034+00:00",
+      "ended_at": "2026-11-19T03:30:19.019406+00:00",
+      "session_ref": "01a1f1da-a6fd-78f0-ad9b-9ffb76d55c91",
+      "verify_entry": "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 18.25
+    },
+    {
+      "id": 5,
+      "role": "worker",
+      "task_id": "T002",
+      "profile": "cursor-cli-worker",
+      "harness": "cursor",
+      "model": "grok@4.7",
+      "requested_effort": "medium",
+      "actual_effort": "medium",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "completed",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:30:39.077118+00:00",
+      "ended_at": "2026-11-19T03:33:08.554988+00:00",
+      "session_ref": "86e55f58-c060-4736-ad84-971fdd7b2af7",
+      "verify_entry": null,
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 149.478
+    },
+    {
+      "id": 6,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:33:45.557489+00:00",
+      "ended_at": "2026-11-19T03:34:03.603767+00:00",
+      "session_ref": "01a1f1de-14ea-7e72-b2a5-775ee66fe802",
+      "verify_entry": "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 18.046
+    },
+    {
+      "id": 7,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "failed",
+      "failure_reason": "protocol_error: missing or invalid verifier verdict",
+      "started_at": "2026-11-19T03:34:03.614741+00:00",
+      "ended_at": "2026-11-19T03:34:03.758354+00:00",
+      "session_ref": null,
+      "verify_entry": "agent: Inspect diagnose_cli.py: verify the log file is opened/read as UTF-8 (explicit encoding), that OSError/UnicodeDecodeError from reading are caught and produce a nonzero exit with a diagnostic message, and that --timed-out is forwarded to classify_log as timed_out=True.",
+      "usage_missing_reason": "harness_omitted",
+      "real_model_invoked": false,
+      "duration_sec": 0.144
+    },
+    {
+      "id": 8,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "started_at": "2026-11-19T03:34:59.671829+00:00",
+      "ended_at": "2026-11-19T03:35:16.979878+00:00",
+      "session_ref": "01a1f1df-35fb-7760-89cb-9bcc27e88ea5",
+      "verify_entry": "agent: Inspect diagnose_cli.py: verify the log file is opened/read as UTF-8 (explicit encoding), that OSError/UnicodeDecodeError from reading are caught and produce a nonzero exit with a diagnostic message, and that --timed-out is forwarded to classify_log as timed_out=True.",
+      "usage_missing_reason": null,
+      "real_model_invoked": true,
+      "duration_sec": 17.308
+    }
+  ],
+  "dependency_handoff": {
+    "T002_preread": [],
+    "T002_inputs": {
+      "goal": {
+        "id": "G001",
+        "objective": "Build an offline log diagnostic CLI using ORX failure classification.",
+        "constraints": [
+          "Exactly two tasks: T001 writes only log_report.py. T002 depends on T001, writes only diagnose_cli.py, and has empty preread so its log_report.py input must arrive through the dependency handoff. Each worker reports its file in structured artifacts. Use only Python stdlib and the already installed orx package.",
+          "T001 has one Python command check covering all three classification cases using fixtures/metadata.jsonl and fixtures/rate-limit.jsonl. T002 has one command check covering rate-limit output, --timed-out metadata output, and nonzero exit on a missing path. T002 has exactly two independent semantic agent entries: first inspect both artifacts and verify importing/invoking log_report.classify_log with no duplicate implementation; second inspect UTF-8 reading, error handling, and --timed-out forwarding. Keep deterministic checks short and quote-safe. No commits or network needed."
+        ],
+        "context": ""
+      },
+      "revision": 1,
+      "task": "T002",
+      "objective": "Write diagnose_cli.py: argparse CLI taking one log path plus --timed-out; reads the file as UTF-8; imports and invokes log_report.classify_log (no duplicate classification logic); prints the resulting error kind to stdout; on read errors prints a message to stderr and exits nonzero.",
+      "scope": {
+        "allowed": [
+          "diagnose_cli.py"
+        ]
+      },
+      "preread": [],
+      "acceptance": [
+        "diagnose_cli.py imports and invokes log_report.classify_log, reads one UTF-8 log path, supports --timed-out, prints the error kind, and exits nonzero on input read errors."
+      ],
+      "required_capabilities": [
+        "coding"
+      ],
+      "checks": [
+        {
+          "kind": "command",
+          "raw": "python3 -m py_compile diagnose_cli.py",
+          "command": "python3 -m py_compile diagnose_cli.py",
+          "denial": null,
+          "token": "python3",
+          "token_status": "found",
+          "token_path": "/Users/flb/Sources/Products/ORX/.venv/bin/python3",
+          "blocked": false,
+          "reason": "denylist allowed; first token 'python3' found on PATH (/Users/flb/Sources/Products/ORX/.venv/bin/python3)"
+        },
+        {
+          "kind": "command",
+          "raw": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+          "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+          "denial": null,
+          "token": "python3",
+          "token_status": "found",
+          "token_path": "/Users/flb/Sources/Products/ORX/.venv/bin/python3",
+          "blocked": false,
+          "reason": "denylist allowed; first token 'python3' found on PATH (/Users/flb/Sources/Products/ORX/.venv/bin/python3)"
+        },
+        {
+          "kind": "agent",
+          "raw": "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+          "command": null,
+          "denial": null,
+          "token": null,
+          "token_status": null,
+          "token_path": null,
+          "blocked": false,
+          "reason": "agent entries are judged by an independent verifier; not part of the command gate"
+        },
+        {
+          "kind": "agent",
+          "raw": "agent: Inspect diagnose_cli.py: verify the log file is opened/read as UTF-8 (explicit encoding), that OSError/UnicodeDecodeError from reading are caught and produce a nonzero exit with a diagnostic message, and that --timed-out is forwarded to classify_log as timed_out=True.",
+          "command": null,
+          "denial": null,
+          "token": null,
+          "token_status": null,
+          "token_path": null,
+          "blocked": false,
+          "reason": "agent entries are judged by an independent verifier; not part of the command gate"
+        }
+      ],
+      "check_budget": 3,
+      "prior_failure": "",
+      "replan_context": "",
+      "dependency_artifacts": [
+        {
+          "task": "T001",
+          "revision": 1,
+          "attempt": 2,
+          "artifacts": [
+            {
+              "path": "log_report.py",
+              "exists": true
+            }
+          ]
+        }
+      ],
+      "workdir": "/private/tmp/orx-stage4-live.dkAkvK/project",
+      "profile": "cursor-cli-worker",
+      "harness": "cursor",
+      "driver": "cli",
+      "requested_model": "grok@4.7",
+      "tier": "T2",
+      "requested_effort": "medium",
+      "native_effort": null
+    },
+    "final_verifier_evidence": {
+      "worker_attempt": 5,
+      "artifacts": [
+        {
+          "path": "diagnose_cli.py",
+          "exists": true
+        }
+      ],
+      "paths": [
+        {
+          "kind": "execution",
+          "path": ".orx/runs/R001/exec/T002-5.log"
+        },
+        {
+          "kind": "completion",
+          "path": ".orx/runs/R001/exec/T002-5.delivery.json"
+        }
+      ],
+      "command_checks": [
+        {
+          "command": "python3 -m py_compile diagnose_cli.py",
+          "passed": true,
+          "exit_code": 0,
+          "log": ".orx/runs/R001/check/T002/01-0012-command.log",
+          "attempt": 5
+        },
+        {
+          "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+          "passed": true,
+          "exit_code": 0,
+          "log": ".orx/runs/R001/check/T002/02-0013-command.log",
+          "attempt": 5
+        }
+      ],
+      "dependency_artifacts": [
+        {
+          "task": "T001",
+          "revision": 1,
+          "attempt": 2,
+          "artifacts": [
+            {
+              "path": "log_report.py",
+              "exists": true
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "faults": {
+    "product": {
+      "injected": true,
+      "note": {
+        "injected": true,
+        "file": "diagnose_cli.py",
+        "reason": "Duplicate classification while preserving command outputs, violating explicit semantic reuse acceptance."
+      },
+      "deterministic_checks_still_passed": true,
+      "real_verifier_attempt": 4,
+      "real_verdict": "fail",
+      "real_detail": "fail: Inspected both files: diagnose_cli.py fabricates log_report via SimpleNamespace and reimplements classification instead of importing log_report.classify_log.",
+      "after_fail_states": {
+        "T001": "passed",
+        "T002": "failed"
+      },
+      "retry_command": "orx task retry T002",
+      "repair_worker_attempt": 5,
+      "repair_input_prior_failure": "\nA previous attempt at this task FAILED with:\n  verification failed: fail: Inspected both files: diagnose_cli.py fabricates log_report via SimpleNamespace and reimplements classification instead of importing log_report.classify_log.\nFix that specific problem; do not redo the task blindly.\n"
+    },
+    "verifier_protocol": {
+      "injected": true,
+      "real_model_invoked": false,
+      "attempt": 7,
+      "shim_source": "#!/usr/bin/env python3\nimport json\nimport os\nfrom pathlib import Path\nimport sys\n\nroot = Path('/tmp/orx-stage4-live.dkAkvK')\nargs = sys.argv[1:]\nif args and args[0] == \"exec\" and \"--help\" not in args:\n    counter = root / \"out\" / \"verifier-exec-count.txt\"\n    count = int(counter.read_text()) + 1 if counter.exists() else 1\n    counter.write_text(str(count))\n    if count == 2:\n        last = Path(args[args.index(\"--output-last-message\") + 1])\n        last.parent.mkdir(parents=True, exist_ok=True)\n        last.write_text(\"ORX_VERDICT=pass extra text\")\n        (root / \"out\" / \"protocol-fault.json\").write_text(json.dumps({\n            \"injected\": True, \"exec\": count, \"kind\": \"invalid_verdict\",\n            \"real_model_invoked\": False\n        }, indent=2))\n        print(json.dumps({\"type\": \"turn.completed\"}))\n        sys.exit(0)\nos.execv('/opt/homebrew/bin/codex', ['/opt/homebrew/bin/codex', *args])\n",
+      "verdict": null,
+      "error_kind": "protocol_error",
+      "retryable": true,
+      "next_actions": [
+        {
+          "action": "verify",
+          "tasks": [
+            "T002"
+          ],
+          "command": "orx verify --json"
+        }
+      ]
+    }
+  },
+  "continuation_proof": {
+    "before_task_states": {
+      "T001": "passed",
+      "T002": "verifying"
+    },
+    "before_verifications": [
+      {
+        "id": 1,
+        "task_id": "T001",
+        "attempt_id": 2,
+        "kind": "command",
+        "command": "python3 -m py_compile log_report.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T001/01-0000-command.log"
+      },
+      {
+        "id": 2,
+        "task_id": "T001",
+        "attempt_id": 2,
+        "kind": "command",
+        "command": "python3 -c \"from log_report import classify_log; m=open('fixtures/metadata.jsonl').read(); r=open('fixtures/rate-limit.jsonl').read(); assert classify_log(m)=='process_failure' and classify_log(r)=='rate_limited' and classify_log(m, timed_out=True)=='timeout'\"",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T001/02-0001-command.log"
+      },
+      {
+        "id": 3,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 0,
+        "exit_code": 1,
+        "output_path": ".orx/runs/R001/check/T002/01-0000-command.log"
+      },
+      {
+        "id": 4,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 0,
+        "exit_code": 1,
+        "output_path": ".orx/runs/R001/check/T002/02-0001-command.log"
+      },
+      {
+        "id": 5,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0002-command.log"
+      },
+      {
+        "id": 6,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 0,
+        "exit_code": 1,
+        "output_path": ".orx/runs/R001/check/T002/02-0003-command.log"
+      },
+      {
+        "id": 7,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0004-command.log"
+      },
+      {
+        "id": 8,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/02-0005-command.log"
+      },
+      {
+        "id": 9,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0006-command.log"
+      },
+      {
+        "id": 10,
+        "task_id": "T002",
+        "attempt_id": 3,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/02-0007-command.log"
+      },
+      {
+        "id": 11,
+        "task_id": "T002",
+        "attempt_id": 4,
+        "kind": "agent",
+        "command": "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+        "passed": 0,
+        "exit_code": null,
+        "output_path": ".orx/runs/R001/exec/verify-T002-4.log"
+      },
+      {
+        "id": 12,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0008-command.log"
+      },
+      {
+        "id": 13,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 0,
+        "exit_code": 1,
+        "output_path": ".orx/runs/R001/check/T002/02-0009-command.log"
+      },
+      {
+        "id": 14,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0010-command.log"
+      },
+      {
+        "id": 15,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/02-0011-command.log"
+      },
+      {
+        "id": 16,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 -m py_compile diagnose_cli.py",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/01-0012-command.log"
+      },
+      {
+        "id": 17,
+        "task_id": "T002",
+        "attempt_id": 5,
+        "kind": "command",
+        "command": "python3 diagnose_cli.py fixtures/rate-limit.jsonl | grep -qx rate_limited && python3 diagnose_cli.py --timed-out fixtures/metadata.jsonl | grep -qx timeout && if python3 diagnose_cli.py fixtures/no-such-file.jsonl >/dev/null 2>&1; then exit 1; fi",
+        "passed": 1,
+        "exit_code": 0,
+        "output_path": ".orx/runs/R001/check/T002/02-0013-command.log"
+      },
+      {
+        "id": 18,
+        "task_id": "T002",
+        "attempt_id": 6,
+        "kind": "agent",
+        "command": "agent: Inspect both log_report.py and diagnose_cli.py: verify diagnose_cli.py imports log_report and invokes log_report.classify_log for every classification, that no ORX classification logic is duplicated or reimplemented in diagnose_cli.py, and that the CLI prints the error kind returned by that call.",
+        "passed": 1,
+        "exit_code": null,
+        "output_path": ".orx/runs/R001/exec/verify-T002-6.log"
+      }
+    ],
+    "new_verifications": [
+      {
+        "id": 19,
+        "task_id": "T002",
+        "attempt_id": 8,
+        "kind": "agent",
+        "command": "agent: Inspect diagnose_cli.py: verify the log file is opened/read as UTF-8 (explicit encoding), that OSError/UnicodeDecodeError from reading are caught and produce a nonzero exit with a diagnostic message, and that --timed-out is forwarded to classify_log as timed_out=True.",
+        "passed": 1,
+        "exit_code": null,
+        "output_path": ".orx/runs/R001/exec/verify-T002-8.log"
+      }
+    ],
+    "passed_semantic_row_preserved": 18,
+    "worker_attempts_unchanged": true,
+    "resumed_launched_attempts": [
+      8
+    ],
+    "resumed_entry_is_previously_pending_entry": true,
+    "same_worker_attempt": 5,
+    "same_plan_revision": 1,
+    "after_existing_rows_values_equal": true
+  },
+  "final": {
+    "goal_id": "G001",
+    "goal_status": "done",
+    "run": {
+      "id": "R001",
+      "status": "done",
+      "started_at": "2026-11-19T03:24:30.522036+00:00",
+      "completed_at": "2026-11-19T03:35:16.980625+00:00"
+    },
+    "task_states": {
+      "T001": "passed",
+      "T002": "passed"
+    },
+    "verification": {
+      "passed": 9,
+      "failed": 1,
+      "awaiting_agent": 0
+    },
+    "next_actions": [
+      {
+        "action": "done"
+      }
+    ],
+    "outputs": {
+      "metadata": "process_failure",
+      "http_429": "rate_limited",
+      "timed_out_metadata": "timeout"
+    },
+    "artifacts": {
+      "log_report.py": {
+        "sha256": "af753676b33c3d95e3650667e8d4b7e1e05338974cef3185b593598b155ec7c9",
+        "content": "\"\"\"Log diagnostic helpers built on ORX failure classification.\"\"\"\n\nfrom orx.adapters.base import error_kind_from_text\n\n\ndef classify_log(text, timed_out=False):\n    \"\"\"Classify a log text using ORX, overriding to 'timeout' when reasoning timed out.\"\"\"\n    if timed_out:\n        return \"timeout\"\n    return error_kind_from_text(text)\n"
+      },
+      "diagnose_cli.py": {
+        "sha256": "beffd3a0208c1f5252dd62aa9a0959a43fc816ea9cfc06100fcec2941f05e873",
+        "content": "\"\"\"Offline log diagnostic CLI. Classification lives in log_report.\"\"\"\n\nimport argparse\nimport sys\n\nimport log_report\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(\n        description=\"Classify one log file and print its error kind.\"\n    )\n    parser.add_argument(\"log_path\", help=\"Path to a UTF-8 log file\")\n    parser.add_argument(\n        \"--timed-out\",\n        action=\"store_true\",\n        help=\"Forward timed_out=True to classification\",\n    )\n    args = parser.parse_args(argv)\n\n    try:\n        with open(args.log_path, encoding=\"utf-8\") as handle:\n            text = handle.read()\n    except (OSError, UnicodeDecodeError) as exc:\n        print(f\"diagnose_cli: cannot read {args.log_path}: {exc}\", file=sys.stderr)\n        return 1\n\n    kind = log_report.classify_log(text, timed_out=args.timed_out)\n    print(kind)\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+      },
+      "fixtures/metadata.jsonl": {
+        "sha256": "93f506474a624a2f7baf5b73de2aab387cc43888493f5191f0edac13da7cedaa",
+        "content": "{\"type\": \"model.streaming\", \"timestamp\": 1795054290000, \"eventId\": \"event-429\", \"payload\": {\"kind\": \"reasoning_delta\", \"delta\": \"Discuss quota and rate limit without a provider error.\"}}\n"
+      },
+      "fixtures/rate-limit.jsonl": {
+        "sha256": "51ab8f73119f5737087470f8dbe15d4975c779d0027a3058d171265bb4649c5c",
+        "content": "{\"type\": \"error\", \"status\": 429}\n"
+      }
+    }
+  },
+  "permissions_and_timeout": {
+    "real_model_invocations": 7,
+    "synthetic_protocol_failure_attempts": 1,
+    "observed_cli_timeouts": 0,
+    "observed_permission_blockers": 0,
+    "modes": {
+      "claude": "--dangerously-skip-permissions",
+      "zcode": "--mode yolo",
+      "cursor": "--trust --force (existing sandbox/deny settings remain)",
+      "codex": "--dangerously-bypass-approvals-and-sandbox"
+    },
+    "lab_command_timeout_sec": 180,
+    "project_command_timeout_sec": 1800
+  },
+  "metrics": {
+    "user_interventions_after_intake": 0,
+    "worker_attempts": 3,
+    "worker_attempts_per_completed_task": 1.5,
+    "injected_sample_first_formal_acceptance_passed": 1,
+    "completed_tasks": 2,
+    "first_formal_acceptance_note": "1/2 under intentional product-fault injection; not a natural model pass-rate estimate. Both initial workers passed their command gates.",
+    "run_wall_sec": 646.459,
+    "usage": {
+      "ok": true,
+      "profiles": [
+        {
+          "profile": "claude-plan",
+          "tasks": 0,
+          "runtime_sec": 95.033486,
+          "input_tokens": 19248,
+          "output_tokens": 3122,
+          "cached_input_tokens": 83136,
+          "accuracy": "exact"
+        },
+        {
+          "profile": "zcode-cli-worker",
+          "tasks": 1,
+          "runtime_sec": 38.560802,
+          "input_tokens": 120356,
+          "output_tokens": 578,
+          "cached_input_tokens": 96064,
+          "accuracy": "exact"
+        },
+        {
+          "profile": "cursor-cli-worker",
+          "tasks": 1,
+          "runtime_sec": 275.58885,
+          "input_tokens": 361993,
+          "output_tokens": 16063,
+          "cached_input_tokens": 309760,
+          "accuracy": "exact"
+        },
+        {
+          "profile": "codex-verify",
+          "tasks": 1,
+          "runtime_sec": 53.748312,
+          "input_tokens": 125901,
+          "output_tokens": 425,
+          "cached_input_tokens": 97920,
+          "accuracy": "estimated"
+        }
+      ],
+      "observations": [
+        {
+          "id": 1,
+          "attempt_id": 1,
+          "profile": "claude-plan",
+          "run_id": "R001",
+          "task_id": null,
+          "input_tokens": 19248,
+          "output_tokens": 3122,
+          "cached_input_tokens": 83136,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:24:30.520690+00:00",
+          "session_ref": "8baec589-960e-4a0f-8d67-5391247b322e"
+        },
+        {
+          "id": 2,
+          "attempt_id": 2,
+          "profile": "zcode-cli-worker",
+          "run_id": "R001",
+          "task_id": "T001",
+          "input_tokens": 120356,
+          "output_tokens": 578,
+          "cached_input_tokens": 96064,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:25:39.447091+00:00",
+          "session_ref": "sess_d369d5ca-ecba-487f-ad8d-e051219546ab"
+        },
+        {
+          "id": 3,
+          "attempt_id": 3,
+          "profile": "cursor-cli-worker",
+          "run_id": "R001",
+          "task_id": "T002",
+          "input_tokens": 205385,
+          "output_tokens": 7705,
+          "cached_input_tokens": 103552,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:28:49.303557+00:00",
+          "session_ref": "e4614e93-fd36-4876-af89-99941366a205"
+        },
+        {
+          "id": 4,
+          "attempt_id": 4,
+          "profile": "codex-verify",
+          "run_id": "R001",
+          "task_id": "T002",
+          "input_tokens": 42067,
+          "output_tokens": 139,
+          "cached_input_tokens": 32640,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:30:19.018756+00:00",
+          "session_ref": "01a1f1da-a6fd-78f0-ad9b-9ffb76d55c91"
+        },
+        {
+          "id": 5,
+          "attempt_id": 5,
+          "profile": "cursor-cli-worker",
+          "run_id": "R001",
+          "task_id": "T002",
+          "input_tokens": 156608,
+          "output_tokens": 8358,
+          "cached_input_tokens": 206208,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:33:08.551556+00:00",
+          "session_ref": "86e55f58-c060-4736-ad84-971fdd7b2af7"
+        },
+        {
+          "id": 6,
+          "attempt_id": 6,
+          "profile": "codex-verify",
+          "run_id": "R001",
+          "task_id": "T002",
+          "input_tokens": 41964,
+          "output_tokens": 140,
+          "cached_input_tokens": 32640,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:34:03.596662+00:00",
+          "session_ref": "01a1f1de-14ea-7e72-b2a5-775ee66fe802"
+        },
+        {
+          "id": 7,
+          "attempt_id": 8,
+          "profile": "codex-verify",
+          "run_id": "R001",
+          "task_id": "T002",
+          "input_tokens": 41870,
+          "output_tokens": 146,
+          "cached_input_tokens": 32640,
+          "source": "native_cli",
+          "accuracy": "exact",
+          "created_at": "2026-11-19T03:35:16.979092+00:00",
+          "session_ref": "01a1f1df-35fb-7760-89cb-9bcc27e88ea5"
+        }
+      ],
+      "coverage": [
+        {
+          "profile": "claude-plan",
+          "attempts": 1,
+          "observed": 1,
+          "measurement_accuracy": "exact"
+        },
+        {
+          "profile": "zcode-cli-worker",
+          "attempts": 1,
+          "observed": 1,
+          "measurement_accuracy": "exact"
+        },
+        {
+          "profile": "cursor-cli-worker",
+          "attempts": 2,
+          "observed": 2,
+          "measurement_accuracy": "exact"
+        },
+        {
+          "profile": "codex-verify",
+          "attempts": 4,
+          "observed": 3,
+          "measurement_accuracy": "exact"
+        }
+      ],
+      "sessions": [
+        {
+          "attempt": 1,
+          "role": "planner",
+          "profile": "claude-plan",
+          "task_id": null,
+          "run_id": "R001",
+          "session_ref": "8baec589-960e-4a0f-8d67-5391247b322e",
+          "started_at": "2026-11-19T03:22:55.487430+00:00",
+          "ended_at": "2026-11-19T03:24:30.520916+00:00"
+        },
+        {
+          "attempt": 2,
+          "role": "worker",
+          "profile": "zcode-cli-worker",
+          "task_id": "T001",
+          "run_id": "R001",
+          "session_ref": "sess_d369d5ca-ecba-487f-ad8d-e051219546ab",
+          "started_at": "2026-11-19T03:25:00.890359+00:00",
+          "ended_at": "2026-11-19T03:25:39.451161+00:00"
+        },
+        {
+          "attempt": 3,
+          "role": "worker",
+          "profile": "cursor-cli-worker",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": "e4614e93-fd36-4876-af89-99941366a205",
+          "started_at": "2026-11-19T03:26:43.194375+00:00",
+          "ended_at": "2026-11-19T03:28:49.305355+00:00"
+        },
+        {
+          "attempt": 4,
+          "role": "verifier",
+          "profile": "codex-verify",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": "01a1f1da-a6fd-78f0-ad9b-9ffb76d55c91",
+          "started_at": "2026-11-19T03:30:00.769034+00:00",
+          "ended_at": "2026-11-19T03:30:19.019406+00:00"
+        },
+        {
+          "attempt": 5,
+          "role": "worker",
+          "profile": "cursor-cli-worker",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": "86e55f58-c060-4736-ad84-971fdd7b2af7",
+          "started_at": "2026-11-19T03:30:39.077118+00:00",
+          "ended_at": "2026-11-19T03:33:08.554988+00:00"
+        },
+        {
+          "attempt": 6,
+          "role": "verifier",
+          "profile": "codex-verify",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": "01a1f1de-14ea-7e72-b2a5-775ee66fe802",
+          "started_at": "2026-11-19T03:33:45.557489+00:00",
+          "ended_at": "2026-11-19T03:34:03.603767+00:00"
+        },
+        {
+          "attempt": 7,
+          "role": "verifier",
+          "profile": "codex-verify",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": null,
+          "started_at": "2026-11-19T03:34:03.614741+00:00",
+          "ended_at": "2026-11-19T03:34:03.758354+00:00"
+        },
+        {
+          "attempt": 8,
+          "role": "verifier",
+          "profile": "codex-verify",
+          "task_id": "T002",
+          "run_id": "R001",
+          "session_ref": "01a1f1df-35fb-7760-89cb-9bcc27e88ea5",
+          "started_at": "2026-11-19T03:34:59.671829+00:00",
+          "ended_at": "2026-11-19T03:35:16.979878+00:00"
+        }
+      ],
+      "runs": [
+        {
+          "id": "R001",
+          "status": "done",
+          "started_at": "2026-11-19T03:24:30.522036+00:00",
+          "completed_at": "2026-11-19T03:35:16.980625+00:00"
+        }
+      ],
+      "attribution": {
+        "roles": [
+          {
+            "role": "planner",
+            "attempts": 1,
+            "observed": 1,
+            "unassessed": 0,
+            "missing_reasons": {},
+            "input_tokens": 19248,
+            "output_tokens": 3122,
+            "cached_input_tokens": 83136,
+            "normalized_processing_tokens": 0,
+            "uncached_input_tokens": 0,
+            "normalized_incomplete_observations": 1
+          },
+          {
+            "role": "worker",
+            "attempts": 3,
+            "observed": 3,
+            "unassessed": 0,
+            "missing_reasons": {},
+            "input_tokens": 482349,
+            "output_tokens": 16641,
+            "cached_input_tokens": 405824,
+            "normalized_processing_tokens": 808750,
+            "uncached_input_tokens": 386285,
+            "normalized_incomplete_observations": 0
+          },
+          {
+            "role": "verifier",
+            "attempts": 4,
+            "observed": 3,
+            "unassessed": 0,
+            "missing_reasons": {
+              "harness_omitted": 1
+            },
+            "input_tokens": 125901,
+            "output_tokens": 425,
+            "cached_input_tokens": 97920,
+            "normalized_processing_tokens": 126326,
+            "uncached_input_tokens": 27981,
+            "normalized_incomplete_observations": 0
+          }
+        ],
+        "controller": {
+          "bucket": "controller",
+          "session_ref": null,
+          "status": "unbound",
+          "own": {
+            "requests": 0,
+            "status_counts": {},
+            "input_tokens": null,
+            "output_tokens": null,
+            "cache_read_input_tokens": null,
+            "uncached_input_tokens": null,
+            "normalized_processing_tokens": null,
+            "error_rows_zero_tokens": 0,
+            "duplicate_request_rows_dropped": 0
+          },
+          "unattributed_sessions": [],
+          "unattributed": {
+            "requests": 0,
+            "status_counts": {},
+            "input_tokens": null,
+            "output_tokens": null,
+            "cache_read_input_tokens": null,
+            "uncached_input_tokens": null,
+            "normalized_processing_tokens": null,
+            "error_rows_zero_tokens": 0,
+            "duplicate_request_rows_dropped": 0
+          }
+        },
+        "probe": {
+          "bucket": "probe",
+          "attempts": 0,
+          "observed": 0,
+          "note": "a probe never runs a completion, so this book is empty by design — listed separately so nothing merges into it and no omission is hidden"
+        },
+        "note": "normalized processing is a per-provider volume measure (raw fields kept verbatim); it is not billing"
+      }
+    },
+    "cost_per_verified_successful_task": null,
+    "cost_limitation": "No monetary price observations. Claude normalization is incomplete; the synthetic verifier has no model usage. ZCode Controller own usage is captured separately above; this Codex ADE Controller usage is unavailable. No complete total cost or cross-stage cost comparison is claimed."
+  },
+  "project_default_preview": {
+    "codex": {
+      "controller": {
+        "session_harness": "codex",
+        "origin": "project",
+        "candidate": {
+          "profile": "zcode-controller",
+          "profile_origin": "user",
+          "driver": "host",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "tier": null,
+          "legacy_class": "strong",
+          "effort": "high",
+          "native_effort": null,
+          "host_mode": "self",
+          "agent_ref": null,
+          "host_blocked_reason": null
+        }
+      },
+      "planner": {
+        "depth": "standard",
+        "depth_origin": "project",
+        "depths": {
+          "light": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "standard": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "deep": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan-deep",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "high",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          }
+        }
+      },
+      "worker": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "zcode-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "cursor-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "grok@4.7",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-worker",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": null,
+            "legacy_class": "strong",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-worker",
+            "host_blocked_reason": "host_harness_mismatch:requires zcode, current codex"
+          }
+        ]
+      },
+      "verifier": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "codex-verify",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "codex",
+            "model": "gpt-6.1-sol",
+            "tier": "T1",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-verifier-flash",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-verifier",
+            "host_blocked_reason": "host_harness_mismatch:requires zcode, current codex"
+          },
+          {
+            "profile": "cursor-economy",
+            "profile_origin": "user",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "composer-2.5",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      }
+    },
+    "zcode": {
+      "controller": {
+        "session_harness": "zcode",
+        "origin": "project",
+        "candidate": {
+          "profile": "zcode-controller",
+          "profile_origin": "user",
+          "driver": "host",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "tier": null,
+          "legacy_class": "strong",
+          "effort": "high",
+          "native_effort": null,
+          "host_mode": "self",
+          "agent_ref": null,
+          "host_blocked_reason": null
+        }
+      },
+      "planner": {
+        "depth": "standard",
+        "depth_origin": "project",
+        "depths": {
+          "light": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "standard": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "deep": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan-deep",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "high",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          }
+        }
+      },
+      "worker": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "zcode-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "cursor-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "grok@4.7",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-worker",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": null,
+            "legacy_class": "strong",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-worker",
+            "host_blocked_reason": null
+          }
+        ]
+      },
+      "verifier": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "codex-verify",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "codex",
+            "model": "gpt-6.1-sol",
+            "tier": "T1",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-verifier-flash",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-verifier",
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "cursor-economy",
+            "profile_origin": "user",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "composer-2.5",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      }
+    },
+    "contexts": {
+      "codex": {
+        "harness": "codex",
+        "declared_agents": []
+      },
+      "zcode": {
+        "harness": "zcode",
+        "declared_agents": [
+          "orx-worker",
+          "orx-verifier"
+        ]
+      },
+      "zcode_without_native_agents": {
+        "harness": "zcode",
+        "declared_agents": []
+      }
+    },
+    "zcode_without_native_agents": {
+      "controller": {
+        "session_harness": "zcode",
+        "origin": "project",
+        "candidate": {
+          "profile": "zcode-controller",
+          "profile_origin": "user",
+          "driver": "host",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "tier": null,
+          "legacy_class": "strong",
+          "effort": "high",
+          "native_effort": null,
+          "host_mode": "self",
+          "agent_ref": null,
+          "host_blocked_reason": null
+        }
+      },
+      "planner": {
+        "depth": "standard",
+        "depth_origin": "project",
+        "depths": {
+          "light": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "standard": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "deep": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "claude-plan-deep",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "claude",
+                "model": "sonnet",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "high",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              },
+              {
+                "profile": "codex-verify",
+                "profile_origin": "project",
+                "driver": "cli",
+                "harness": "codex",
+                "model": "gpt-6.1-sol",
+                "tier": "T1",
+                "legacy_class": null,
+                "effort": "low",
+                "native_effort": null,
+                "host_mode": null,
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          }
+        }
+      },
+      "worker": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "zcode-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "cursor-cli-worker",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "grok@4.7",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-worker",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+            "tier": null,
+            "legacy_class": "strong",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-worker",
+            "host_blocked_reason": "host_agent_unavailable:orx-worker"
+          }
+        ]
+      },
+      "verifier": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "codex-verify",
+            "profile_origin": "project",
+            "driver": "cli",
+            "harness": "codex",
+            "model": "gpt-6.1-sol",
+            "tier": "T1",
+            "legacy_class": null,
+            "effort": "low",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          },
+          {
+            "profile": "zcode-verifier-flash",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "max",
+            "native_effort": null,
+            "host_mode": "subagent",
+            "agent_ref": "orx-verifier",
+            "host_blocked_reason": "host_agent_unavailable:orx-verifier"
+          },
+          {
+            "profile": "cursor-economy",
+            "profile_origin": "user",
+            "driver": "cli",
+            "harness": "cursor",
+            "model": "composer-2.5",
+            "tier": null,
+            "legacy_class": "economy",
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": null,
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      }
+    }
+  },
+  "limitations": [
+    "This is one coding-only real Run with deliberate product/protocol fault injection. No natural provider-disconnect was induced; disconnect/timeout behavior is covered by existing automated regressions.",
+    "Native host candidates were previewed for compatibility in both contexts, not executed in this Stage 4 CLI Run. Browser/vision and specialized S tools are outside this acceptance.",
+    "The resumed ZCode natural-language summary said command checks re-ran; immutable verification rows prove they were reused. Machine records govern the result.",
+    "The complete root ORX project state was not replaced by the lab Run. Existing unrelated workspace changes were preserved."
+  ]
+}

@@ -145,7 +145,39 @@ ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](doc
 
 **Tests**：执行真实跨 harness Run，覆盖一条确定性验收和一条语义验收。用隔离场景演练从失败裁决进入产品修复、从验证器故障只重验及从控制会话中断续接。比较人工介入次数、首轮通过率和每个验证成功任务的总成本。用量不全时标明缺口。
 
-**Status**：Not Started
+**Status**：Complete
+
+2026-11-19 当前 Codex 会话在隔离项目发起真实日志诊断工具 G001/R001。Claude Code sonnet / T1 / low 规划，ZCode GLM-5.3 / T2 / low 实现 T001，Cursor Grok 4.7 / T2 / medium 通过依赖产物交接实现 T002，Codex CLI Sol / T1 / low 独立审查。故意注入命令检查仍通过的重复实现缺陷，真实 Verifier 给出合法 fail，随后 Cursor 在同一计划修复 T002。再对第二条语义检查注入畸形裁决，ORX 保留交付及第一条 pass，仅报告 retryable protocol_error。新的真实 ZCode CLI 主控会话续接同一个 Run，只启动剩余一条 Codex 验证；既有 18 条检查记录及 Worker attempt 不变，最终两项任务 passed，R001 done。
+
+项目默认值切换为已实测 CLI 职责，并在 Codex/ZCode 环境预览原生候选筛选；没有增加终端主控代启动。7 次真实模型执行未见权限卡住或超时，另外 1 次为明确标注的协议替身。Stage 3 的数字 429 误判由 a2bb804 修复，新增 25 项回归，全量 1249 项通过。成本记录保留缺口，不把 token 或缺失主控用量折算为完整金额。见 [Stage 4 验收说明](docs/diagnostics/stage4-2026-11-19/README.md) 和 [逐项证据](docs/diagnostics/stage4-2026-11-19/acceptance.json)。
+
+## Stage 5: 跨宿主初始化与安装收口
+
+**Goal**：默认 self profile 与主控品牌解耦，命令入口声明当前主控及原生角色，CLI 职责使用可安装配置。
+
+**Success Criteria**：Codex/ZCode 通过安装产物分别完成依赖任务 Run；无需手写主控环境变量；旧声明兼容，已有指派归属保留；不增加终端主控代启动。
+
+**Tests**：初始化、上下文隔离、原生筛选、指派归属、preset/skill 安装回归；构建 wheel 后使用独立 venv、用户配置、项目和技能目录进行真实验收。
+
+**Status**：Complete
+
+2026-11-19，提交 36d8df5。新增根参数 --host / --host-agent / --host-session，next_actions 保留声明。默认 current profile 仅用于 host self，按调用解析；CLI 与原生品牌 profile 沿用项目配置。提供 cli preset；四种宿主可在空目录安装技能。干净安装发现相对 --home 链接失效，补回归修复后重建并重新验收。
+
+当前 Codex ADE 会话与真实 ZCode CLI 会话分别从非 editable wheel 安装推进 G001/R001：Claude Code sonnet 规划、ZCode GLM-5.3 完成两项依赖任务、Codex CLI 独立验证；两边均为 done，购物清单命令输出 1900。全部 Python 安装源码与受验树哈希一致，配置和技能来自安装包。新增 26 项回归，全量 1275 项通过。终端代启动、内容快照失效、原生代理实测与完整成本归因保持原边界。见 [安装验收说明](docs/diagnostics/host-install-2026-11-19/README.md) 和 [机器证据](docs/diagnostics/host-install-2026-11-19/acceptance.json)。
+
+## Stage 6: 验收证据失效与重验
+
+**Goal**：依据交付及输入内容版本复用验收，输入变化时使相关旧检查失效。
+
+**Success Criteria**：未变只重验未完成条目；产物/preread/依赖变化按任务传播失效；拒收在途旧裁决；历史与日志保留。
+
+**Tests**：内容、mtime、删除恢复、依赖链、无关任务、在途 host/CLI、回执重放、历史兼容、交付门禁水位；真实依赖 Run 的受控协议错误和两类产物变化；全量测试。
+
+**Status**：Complete
+
+2026-11-19，提交 7565e11。新增 verification context 指纹和追加式水位；status 只读提示，run/verify 持久化失效并按依赖重验。旧验证器保留身份，返回陈旧裁决时只关闭执行，不写有效验收。交付门禁之前的自测行保留历史，避免旧失败混入当前版本。新增 23 项回归，全量 1298 项通过。
+
+当前 Codex 会话主控真实 G001/R001：Claude Code sonnet 规划、ZCode 完成两项依赖实现、Codex CLI 验证。未变时只补验第二条；修改 T002 后仅重验 T002；修改 T001 后两项均重新验收。同一计划最终 done，原两次 Worker attempt 不变，26 条历史检查及日志保留，当前有效 10 条通过，CLI 输出 2。原生在途及并发变化由回归覆盖，未加入后台监控或文件系统快照。见 [规则](docs/verification-validity.md) 和 [真实验收](docs/diagnostics/verification-validity-2026-11-19/README.md)。
 
 # 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
 

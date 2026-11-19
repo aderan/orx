@@ -1,40 +1,30 @@
 schema_version = 1
 
-# Routing strategy — the executed form of docs/routing-strategy.md.
-# 2026-10-04: aligned with the zcode preset (orx preset install zcode +
-# `orx config set --user`): ZCode subagents are the primary worker/verifier,
-# Cursor is the fallback; planning stays on the frontier CLI pool.
-# Tiers: frontier (codex/claude flagships) / strong (glm, grok) /
-# economy (flash/compose). Effort: low|medium|high|xhigh|max.
-
-# Controller: the ZCode host session itself (GLM-5.3 strong + high).
+# Daily CLI routing validated in Stage 4. The current ADE conversation is
+# the Controller. This compatibility profile does not launch that session.
 [controller]
-profile = "zcode-controller"
+profile = "orx-host"
 
 [plan]
-depth = "auto"
-allow_class_downgrade = false
+depth = "standard"
 
-# All depths run the frontier pool at high effort (deep keeps the
-# frontier-only gate).
+# The Controller chooses --depth. Each list is an ordered candidate pool.
 [plan.light]
-profiles = ["codex-frontier", "cursor-frontier"]
+profiles = ["claude-plan", "codex-verify"]
 
 [plan.standard]
-profiles = ["codex-frontier", "cursor-frontier"]
+profiles = ["claude-plan", "codex-verify"]
 
 [plan.deep]
-profiles = ["codex-frontier", "cursor-frontier"]
+profiles = ["claude-plan-deep", "codex-verify"]
 
-# Worker ladder: ZCode GLM-5.3 subagent first, Cursor grok-4.7 fallback.
-# A Cursor-first project flips the two entries.
+# Native candidates are filtered against the current host and agent list.
 [worker]
-profiles = ["zcode-worker", "cursor-strong"]
+profiles = ["zcode-cli-worker", "cursor-cli-worker", "zcode-worker", "orx-host"]
 
-# V0 deterministic checks run as shell commands (no LLM). Agent checks:
-# ZCode Flash subagent first (economy), Cursor composer-2.5 fallback.
+# Project commands provide deterministic checks. Agent checks use this pool.
 [verify]
-profiles = ["zcode-verifier-flash", "cursor-economy"]
+profiles = ["codex-verify", "zcode-verifier-flash", "cursor-economy", "orx-host"]
 
 [runtime]
 max_parallel = 1

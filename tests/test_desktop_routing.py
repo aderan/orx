@@ -107,3 +107,22 @@ def test_user_scope_respects_user_defaults_and_project_overrides(routing_world):
     assert code == 0
     assert saved["model_selection"]["planner"]["depth"] == "light"
     assert invoke(project)[1]["model_selection"]["planner"]["depth"] == "deep"
+
+
+def test_desktop_project_preview_reads_a_current_host_candidate(routing_world):
+    _, _, project, _ = routing_world
+    config = project / ".orx/config.toml"
+    config.write_text(config.read_text().replace(
+        '["first", "second"]', '["current-host", "second"]'))
+    (project / ".orx/profiles.toml").write_text(
+        'schema_version = 1\n[profiles.current-host]\ndriver = "host"\n'
+        'harness = "current"\nmodel = "unconfigured"\neffort = "medium"\ntier = "T2"\n'
+        'capabilities = ["coding", "host_context"]\n'
+    )
+
+    code, preview = invoke(project)
+
+    assert code == 0, preview
+    candidate = preview["model_selection"]["worker"]["candidates"][0]
+    assert candidate["profile"] == "current-host"
+    assert candidate["harness"] == "current"

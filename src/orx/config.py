@@ -39,7 +39,7 @@ from orx.records import ConfigError
 SCHEMA_VERSION = 1
 
 VALID_DRIVERS = "host | cli | external"
-VALID_HARNESSES = "zcode | codex | cursor | shell | claude"
+VALID_HARNESSES = "zcode | codex | cursor | shell | claude | current"
 VALID_CLASSES = "frontier | strong | economy"
 VALID_EFFORTS = " | ".join(models.EFFORTS)
 VALID_TRANSPORTS = "stdin | argument | file"
@@ -666,6 +666,8 @@ def _validate_profile(name: str, raw: dict) -> list[str]:
         errors.append(f"{p} agent_ref is required when host_mode = 'subagent'")
     if host_mode == "self" and agent_ref is not None:
         errors.append(f"{p} agent_ref requires host_mode = 'subagent'")
+    if harness == "current" and (driver != "host" or host_mode != "self"):
+        errors.append(f"{p} harness 'current' requires driver 'host' and host_mode 'self'")
 
     # G009 T005: optional shared-quota grouping; informational only, but a
     # present value must be a non-empty string (an empty group name would

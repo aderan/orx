@@ -47,6 +47,48 @@ uv run orx usage --json        # per-profile tasks, runtime, tokens + accuracy
 Every command takes `--json` for a machine envelope:
 `{"ok": true, ...}` or `{"ok": false, "error": "..."}` (exit 0/1; 2 = usage).
 
+## Current Controller and clean setup
+
+Declare the current conversation with root options before the command:
+
+```sh
+orx --host codex skill install       # creates this host's skill links if needed
+orx --host codex init
+orx --host codex config models --json
+orx --host codex plan --json
+# In a ZCode conversation, use --host zcode for the same project.
+```
+
+`--host` identifies the Controller for this invocation. Repeat
+`--host-agent <reference>` for native agents the conversation can actually
+launch; omission declares none. `--host-session <actual-id>` records the
+Controller reference when known. Explicit options replace the legacy
+`ORX_CONTROLLER_HARNESS` / `ORX_CONTROLLER_AGENTS` declaration and are
+retained in executable `next_actions` commands. They do not edit project
+routing or start a Controller process.
+
+Without an installed user preset, `init` creates a host self profile with
+`harness = "current"`. It follows the declared host; a missing declaration
+produces a setup hint. This value is valid only for host self execution.
+Its `model = "unconfigured"` is a placeholder, not a model selection or
+an observation about the current conversation.
+
+For optional CLI defaults on a clean user layer, run `orx preset install cli`
+**before** `init`. The project then inherits editable profiles for Claude
+Code Sonnet planning, ZCode/Cursor implementation, and Codex verification,
+plus current-host self work for tasks requiring host context. Each CLI needs
+its own installation and login; model names are configuration examples.
+Review `config models` before dispatch. Existing project overrides and user
+settings remain effective; installing a preset does not replace them.
+
+`orx --host zcode skill install` also works when that host's skill directory
+does not exist. Codex, ZCode, Cursor and Claude Code are supported targets.
+For isolated installation checks, `skill install/update --home <directory>`
+chooses a separate installation home. PBV remains explicitly opt-in.
+
+See the [clean-install acceptance](docs/diagnostics/host-install-2026-11-19/README.md)
+for real Codex and ZCode Controller Runs using the built wheel.
+
 ## Model tiers and effort
 
 New profiles declare `tier = "T0" | "T1" | "T2" | "T3" | "S"` and
@@ -75,6 +117,13 @@ New profiles can explicitly set `native_effort` for a model-specific
 parameter. See [tier and effort mapping](docs/routing-strategy.md) for the
 harness mappings and [model configuration](docs/model-selection.md) for
 migration examples.
+
+This checkout's [project routing](.orx/config.toml) uses Claude Code Sonnet
+for planning, ZCode then Cursor for implementation, and Codex CLI for
+semantic verification. CLI profiles are explicit in
+[profiles.toml](.orx/profiles.toml); compatible native fallbacks remain
+inherited from user configuration. See the [Stage 4 acceptance](docs/diagnostics/stage4-2026-11-19/README.md)
+for the coding Run, injected recovery checks, and measurement limits.
 
 ## Profiles (`.orx/profiles.toml`)
 
@@ -120,10 +169,20 @@ environment. Cursor `--force` honors explicit denies and leaves sandboxing to
 Cursor configuration. See the [task authorization backlog](docs/backlog.md).
 - `driver = "external"` — parked at `waiting_external`; you finish it.
 
+Failed CLI launches record process timeouts as `timeout` in health classification.
+Structured output contributes provider errors through its error envelopes.
+Ordinary JSONL timestamps, event IDs, token counts, generated reasoning, and
+successful tool output do not trigger rate-limit cooldowns. Plain diagnostics
+require an explicit HTTP/status 429 or a rate-limit message.
+
 When a CLI verifier disconnects, times out, or returns an invalid result,
 `orx verify --json` reports a verifier attempt error with a null verdict.
 Run `orx verify` again to retry pending entries. Previously accepted checks
-on the same worker delivery remain recorded. A valid `fail` verdict puts
+on the same unchanged delivery and inputs remain usable. Artifact, preread,
+or dependency changes invalidate affected checks while retaining their history.
+`status` reports stale inputs read-only; `verify` or `run` applies the invalidation.
+See [verification validity](docs/verification-validity.md) for input versions,
+dependency propagation, and stale in-flight verdicts. A valid `fail` verdict puts
 the task into the worker repair flow.
 
 `orx run --json` returns each worker's `inputs`, including its scope, checks,
@@ -171,9 +230,8 @@ high to low, is environment (`ORX_RUNTIME_MAX_PARALLEL`,
 
 `orx goal new` and `orx goal resume` display the same model selection.
 Candidate order includes fallbacks. Task capabilities and resource status
-determine the route at dispatch. Pass the Controller's
-`ORX_CONTROLLER_HARNESS` and `ORX_CONTROLLER_AGENTS` to flag incompatible
-host candidates. To change the project order, use `orx config set` with
+determine the route at dispatch. Pass `--host` and any `--host-agent`
+declarations to flag incompatible host candidates. To change project order, use `orx config set` with
 `plan.<depth>.profiles`, `worker.profiles`, or `verify.profiles`.
 
 ## Agent discovery

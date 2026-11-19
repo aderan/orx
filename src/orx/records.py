@@ -96,6 +96,7 @@ class Driver(str, Enum):
 
 
 class Harness(str, Enum):
+    CURRENT = "current"  # host self only; resolved from this invocation
     ZCODE = "zcode"
     CODEX = "codex"
     CURSOR = "cursor"
@@ -224,6 +225,7 @@ class ErrorKind(str, Enum):
     CONTEXT_EXCEEDED = "context_exceeded"
     INVALID_REQUEST = "invalid_request"
     PROCESS_FAILURE = "process_failure"
+    TIMEOUT = "timeout"
     CANCELLED = "cancelled"
 
 

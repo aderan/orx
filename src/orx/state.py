@@ -2393,11 +2393,31 @@ class Store:
         ).fetchall()
         return [_verification(r) for r in rows]
 
+    def verification_context(self, revision_row_id: int, task_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT id, reason FROM task_events WHERE revision_id = ? AND task_id = ?"
+            " AND event = 'verification_context' ORDER BY id DESC LIMIT 1",
+            (revision_row_id, task_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            context = json.loads(row["reason"])
+            if (context["version"] != 1 or type(context["verification_after"]) is not int
+                    or context["verification_after"] < 0 or not isinstance(context["manifest"], dict)
+                    or not isinstance(context["digest"], str) or type(context["reusable"]) is not bool
+                    or not (context["worker_attempt"] is None or type(context["worker_attempt"]) is int)):
+                raise ValueError("invalid context fields")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise records.ORXError(f"invalid verification context event {row['id']}; cannot reuse checks") from exc
+        return {**context, "id": row["id"]}
+
     def verifications_current(
         self, revision_row_id: int, task_id: str
     ) -> list[Verification]:
         """The task's CURRENT verification rows: everything recorded in the
-        current attempt window.
+        current attempt window and current content version. A verification
+        context event can advance the row watermark without editing history.
 
         Verification history is append-only per attempt — a retry deletes
         nothing — so "current" is a window over the rows, not the whole
@@ -2410,12 +2430,20 @@ class Store:
         current."""
         current = self.attempt_current_worker_for_task(revision_row_id, task_id)
         boundary = current.id if current is not None else 0
+        context = self.verification_context(revision_row_id, task_id)
+        floor = (context["verification_after"] if context and
+                 context["worker_attempt"] == (current.id if current else None) else 0)
+        # A modern delivery cannot inherit an unbound legacy pass whose
+        # producing Worker/content version is unknown.
+        allow_unbound = not (context and current and context["worker_attempt"] == current.id)
         rows = self.conn.execute(
             "SELECT * FROM verifications"
             " WHERE revision_id = ? AND task_id = ?"
             " AND (attempt_id IS NULL OR attempt_id >= ?)"
+            " AND id > ?"
+            " AND (attempt_id IS NOT NULL OR ?)"
             " ORDER BY id",
-            (revision_row_id, task_id, boundary),
+            (revision_row_id, task_id, boundary, floor, allow_unbound),
         ).fetchall()
         return [_verification(r) for r in rows]
 

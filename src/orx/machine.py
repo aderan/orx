@@ -41,8 +41,8 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
         {TaskStatus.VERIFYING, TaskStatus.FAILED, TaskStatus.CANCELLED}
     ),
     TaskStatus.VERIFYING: frozenset({TaskStatus.PASSED, TaskStatus.FAILED, TaskStatus.CANCELLED}),
-    TaskStatus.PASSED: frozenset(),
-    TaskStatus.FAILED: frozenset({TaskStatus.RUNNABLE}),
+    TaskStatus.PASSED: frozenset({TaskStatus.VERIFYING}),
+    TaskStatus.FAILED: frozenset({TaskStatus.RUNNABLE, TaskStatus.VERIFYING}),
     TaskStatus.BLOCKED: frozenset({TaskStatus.RUNNABLE, TaskStatus.CANCELLED}),
     TaskStatus.CANCELLED: frozenset(),
 }
@@ -201,7 +201,7 @@ def transition(
             task_id,
             to_status,
             failure_reason=failure_reason,
-            clear_failure=(to_status is TaskStatus.RUNNABLE),
+            clear_failure=(to_status is TaskStatus.RUNNABLE or event == "evidence_changed"),
         )
         store.task_event_add(
             revision_row_id, task_id, from_status.value, to_status.value, event, reason

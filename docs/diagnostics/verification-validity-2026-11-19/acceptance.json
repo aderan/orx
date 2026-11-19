@@ -1,0 +1,1561 @@
+{
+  "date": "2026-11-19",
+  "implementation_commit": "7565e11",
+  "result": "passed",
+  "tests": {
+    "new_regressions": 23,
+    "full_suite_passed": 1298,
+    "duration_sec": 218.38,
+    "command": ".venv/bin/python -m pytest -q",
+    "file": "tests/test_verification_freshness.py"
+  },
+  "project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-evidence-final.ef8vcsv1/project",
+  "controller": "current Codex ADE conversation; --host codex; no native agents declared",
+  "setup": {
+    "preflight": {
+      "project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-evidence-live.xcmauu0v/project",
+      "reason": "Same-Worker self-checks before the accepted delivery gate appeared in current counters; gate watermark regression added before final acceptance.",
+      "final_run_is_new_project": true
+    },
+    "configuration": "packaged cli preset in isolated user layer; 240 second agent limit",
+    "state_access": "All state mutations use the public ORX CLI. SQL evidence reads use mode=ro."
+  },
+  "plan_ir": {
+    "approach": {
+      "decisions": [
+        "T001 owns the counting semantics in text_core.count_nonempty_lines; T002 is a thin CLI wrapper that imports and calls it, with no duplicated counting logic.",
+        "Fixture fixtures/sample.txt contains 'alpha', an empty line, and 'beta', so the expected count is 2 and the empty middle line exercises the ignore-empty behavior.",
+        "UTF-8 is opened explicitly via encoding='utf-8'; read failures are caught and reported as a diagnostic on stderr with a nonzero exit rather than a raw traceback.",
+        "Verification quotes arguments defensively (single shell quoting, '2' expected output) so checks stay deterministic and injection-safe.",
+        "T002 preread is intentionally empty: text_core.py arrives via dependency_artifacts from T001, per the Goal constraint."
+      ],
+      "summary": "Two bottom tasks: T001 implements the pure counting function text_core.count_nonempty_lines; T002 builds count_cli.py on top of it via import, reads a UTF-8 path, prints the integer, and fails nonzero with a diagnostic. Verification is deterministic shell checks first, then exactly two semantic agent entries for T002 covering import/no-duplicate-logic and UTF-8/error handling."
+    },
+    "exploration": {
+      "assumptions": [
+        "Python 3 is available on PATH as python3.",
+        "fixtures/sample.txt is stable input evidence: lines 'alpha', '', 'beta' -> expected nonempty count 2.",
+        "The CLI takes the file path as argv[1]; a missing/unreadable path must exit nonzero with a diagnostic on stderr."
+      ],
+      "relevant_components": [
+        "README.md",
+        "fixtures/sample.txt"
+      ],
+      "risks": [
+        "A worker might duplicate counting logic inside count_cli.py instead of importing text_core; the first agent verification entry for T002 guards against this.",
+        "Non-UTF-8 input could crash rather than produce a diagnostic; the error path must catch OSError/UnicodeDecodeError and exit nonzero.",
+        "Shell checks must quote paths and expected outputs to stay deterministic across shells."
+      ],
+      "summary": "Nearly empty repository: only README.md (one line), a fixtures/ directory containing sample.txt (lines: alpha, empty, beta -> 2 nonempty lines), an empty .orx/ scaffold, and a git repo with no commits. Both modules (text_core.py, count_cli.py) are greenfield at the project root. Python 3 stdlib only is sufficient; no tests, build config, or CI exist yet.",
+      "unknowns": [
+        "Exact Python version available on PATH (assume python3 present; stdlib-only keeps this low-risk).",
+        "Whether whitespace-only lines (spaces/tabs) appear in future fixtures; the function must handle them even though sample.txt only has a truly empty line."
+      ]
+    },
+    "goal": "G001",
+    "replan": null,
+    "tasks": [
+      {
+        "acceptance": [
+          "text_core.py exports count_nonempty_lines(text): return 2 for fixtures/sample.txt, 0 for empty text, and ignore whitespace-only lines."
+        ],
+        "dependencies": [],
+        "id": "T001",
+        "objective": "Create text_core.py at the project root exporting count_nonempty_lines(text) that counts lines with non-whitespace content: 2 for fixtures/sample.txt, 0 for empty text, and 0 for text of only whitespace-only lines. Python stdlib only.",
+        "preread": [
+          "fixtures/sample.txt",
+          "README.md"
+        ],
+        "routing": {
+          "complexity": "low",
+          "required_capabilities": [
+            "coding"
+          ]
+        },
+        "scope": {
+          "allowed": [
+            "text_core.py"
+          ]
+        },
+        "verification": [
+          "python3 -c \"import text_core; assert text_core.count_nonempty_lines(open('fixtures/sample.txt', encoding='utf-8').read()) == 2\"",
+          "python3 -c \"import text_core; assert text_core.count_nonempty_lines('') == 0\"",
+          "python3 -c \"import text_core; assert text_core.count_nonempty_lines('   \\n\\t\\n  \\n') == 0\"",
+          "python3 -m py_compile text_core.py"
+        ]
+      },
+      {
+        "acceptance": [
+          "count_cli.py imports and calls text_core.count_nonempty_lines, reads a UTF-8 file path, prints only the integer count, and exits nonzero with a diagnostic for unreadable input."
+        ],
+        "dependencies": [
+          "T001"
+        ],
+        "id": "T002",
+        "objective": "Create count_cli.py at the project root: import text_core and call count_nonempty_lines (no duplicated counting logic), read the file given as argv[1] explicitly as UTF-8, print only the resulting integer, and on unreadable input (missing path, IO error, decode error) print a diagnostic to stderr and exit nonzero. Python stdlib only; report the module path in the structured delivery artifact.",
+        "preread": [],
+        "routing": {
+          "complexity": "low",
+          "required_capabilities": [
+            "coding"
+          ]
+        },
+        "scope": {
+          "allowed": [
+            "count_cli.py"
+          ]
+        },
+        "verification": [
+          "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+          "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+          "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+          "python3 -m py_compile count_cli.py",
+          "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+          "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr."
+        ]
+      }
+    ]
+  },
+  "attempts": [
+    {
+      "id": 1,
+      "role": "planner",
+      "task_id": null,
+      "profile": "claude-plan",
+      "harness": "claude",
+      "model": "sonnet",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "actual_model": "zcode/GLM-5.3[1m]",
+      "result": "completed",
+      "failure_reason": null,
+      "session_ref": "15a5cb5f-ade1-45c1-ba63-d6052ab3a329",
+      "started_at": "2026-11-19T05:06:21.934992+00:00",
+      "ended_at": "2026-11-19T05:07:19.010813+00:00",
+      "verify_entry": null,
+      "duration_sec": 57.076,
+      "real_model_invoked": true
+    },
+    {
+      "id": 2,
+      "role": "worker",
+      "task_id": "T001",
+      "profile": "zcode-cli-worker",
+      "harness": "zcode",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "result": "completed",
+      "failure_reason": null,
+      "session_ref": "sess_7ba36b41-4dec-4408-8402-1ee1ff2eca0e",
+      "started_at": "2026-11-19T05:08:03.152682+00:00",
+      "ended_at": "2026-11-19T05:08:44.348990+00:00",
+      "verify_entry": null,
+      "duration_sec": 41.196,
+      "real_model_invoked": true
+    },
+    {
+      "id": 3,
+      "role": "worker",
+      "task_id": "T002",
+      "profile": "zcode-cli-worker",
+      "harness": "zcode",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "result": "completed",
+      "failure_reason": null,
+      "session_ref": "sess_d7f890a4-e40d-4f41-b8be-406c9188748b",
+      "started_at": "2026-11-19T05:08:46.733463+00:00",
+      "ended_at": "2026-11-19T05:09:10.224519+00:00",
+      "verify_entry": null,
+      "duration_sec": 23.491,
+      "real_model_invoked": true
+    },
+    {
+      "id": 4,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f235-b4bb-7191-9918-e37e902c0732",
+      "started_at": "2026-11-19T05:09:28.134603+00:00",
+      "ended_at": "2026-11-19T05:09:46.696491+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "duration_sec": 18.562,
+      "real_model_invoked": true
+    },
+    {
+      "id": 5,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "failed",
+      "failure_reason": "protocol_error: missing or invalid verifier verdict",
+      "session_ref": null,
+      "started_at": "2026-11-19T05:09:46.698413+00:00",
+      "ended_at": "2026-11-19T05:09:46.726355+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "duration_sec": 0.028,
+      "real_model_invoked": false
+    },
+    {
+      "id": 6,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f236-dd8c-7053-b213-c1eee681995a",
+      "started_at": "2026-11-19T05:10:44.289592+00:00",
+      "ended_at": "2026-11-19T05:11:01.193475+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "duration_sec": 16.904,
+      "real_model_invoked": true
+    },
+    {
+      "id": 7,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f237-c493-7622-8f3a-dede76bbbc78",
+      "started_at": "2026-11-19T05:11:43.425366+00:00",
+      "ended_at": "2026-11-19T05:12:00.610561+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "duration_sec": 17.185,
+      "real_model_invoked": true
+    },
+    {
+      "id": 8,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f238-07b2-7cd3-8c42-1042f2d41278",
+      "started_at": "2026-11-19T05:12:00.612073+00:00",
+      "ended_at": "2026-11-19T05:12:15.602313+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "duration_sec": 14.99,
+      "real_model_invoked": true
+    },
+    {
+      "id": 9,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f238-f94b-77b1-9c0d-f0f72d3c45e8",
+      "started_at": "2026-11-19T05:13:02.472085+00:00",
+      "ended_at": "2026-11-19T05:13:20.283300+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "duration_sec": 17.811,
+      "real_model_invoked": true
+    },
+    {
+      "id": 10,
+      "role": "verifier",
+      "task_id": "T002",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "actual_model": null,
+      "result": "pass",
+      "failure_reason": null,
+      "session_ref": "01a1f239-3ee4-7212-ae9e-2d5f6cb78629",
+      "started_at": "2026-11-19T05:13:20.285520+00:00",
+      "ended_at": "2026-11-19T05:13:37.592743+00:00",
+      "verify_entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "duration_sec": 17.307,
+      "real_model_invoked": true
+    }
+  ],
+  "partial_verification": {
+    "fault": {
+      "injected": true,
+      "real_model_invoked": false,
+      "exec": 2,
+      "output": "ORX_VERDICT=pass extra text"
+    },
+    "launched": [
+      {
+        "task": "T002",
+        "entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+        "attempt": 4,
+        "verdict": "pass",
+        "error_kind": null,
+        "retryable": null
+      },
+      {
+        "task": "T002",
+        "entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+        "attempt": 5,
+        "verdict": null,
+        "error_kind": "protocol_error",
+        "retryable": true
+      }
+    ],
+    "current_rows": {
+      "T001": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "T002": [
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    }
+  },
+  "phases": {
+    "unchanged": {
+      "invalidated": [],
+      "launched": [
+        {
+          "task": "T002",
+          "entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+          "attempt": 6,
+          "profile": "codex-verify",
+          "verdict": "pass",
+          "error_kind": null
+        }
+      ],
+      "history_proof": {
+        "verification_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "rows_identical": true,
+        "log_hashes_identical": true
+      },
+      "before_current": {
+        "T001": {
+          "context_id": 4,
+          "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "T002": {
+          "context_id": 9,
+          "digest": "65f6cf0909f481a6d5ff6777ce36b675156a15ffded2a6a6360c8b341f782835",
+          "verification_ids": [
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        }
+      },
+      "after_current": {
+        "T001": {
+          "context_id": 4,
+          "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "T002": {
+          "context_id": 9,
+          "digest": "65f6cf0909f481a6d5ff6777ce36b675156a15ffded2a6a6360c8b341f782835",
+          "verification_ids": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      }
+    },
+    "artifact": {
+      "invalidated": [
+        {
+          "task": "T002",
+          "context": 15,
+          "reason": "stale",
+          "changed_paths": [
+            "output:count_cli.py"
+          ],
+          "verification_ids": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      ],
+      "launched": [
+        {
+          "task": "T002",
+          "entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+          "attempt": 7,
+          "profile": "codex-verify",
+          "verdict": "pass",
+          "error_kind": null
+        },
+        {
+          "task": "T002",
+          "entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+          "attempt": 8,
+          "profile": "codex-verify",
+          "verdict": "pass",
+          "error_kind": null
+        }
+      ],
+      "history_proof": {
+        "verification_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "rows_identical": true,
+        "log_hashes_identical": true
+      },
+      "before_current": {
+        "T001": {
+          "context_id": 4,
+          "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "T002": {
+          "context_id": 9,
+          "digest": "65f6cf0909f481a6d5ff6777ce36b675156a15ffded2a6a6360c8b341f782835",
+          "verification_ids": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        }
+      },
+      "after_current": {
+        "T001": {
+          "context_id": 4,
+          "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "T002": {
+          "context_id": 15,
+          "digest": "2a4bcd4a7d9a50382289c69dee96c65b168da7888880973d00385aaa88a85d84",
+          "verification_ids": [
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+          ]
+        }
+      }
+    },
+    "dependency": {
+      "invalidated": [
+        {
+          "task": "T001",
+          "context": 20,
+          "reason": "stale",
+          "changed_paths": [
+            "output:text_core.py"
+          ],
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "task": "T002",
+          "context": 22,
+          "reason": "stale",
+          "changed_paths": [
+            "dependency:T001:text_core.py",
+            "dependency:T001"
+          ],
+          "verification_ids": [
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+          ]
+        }
+      ],
+      "launched": [
+        {
+          "task": "T002",
+          "entry": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+          "attempt": 9,
+          "profile": "codex-verify",
+          "verdict": "pass",
+          "error_kind": null
+        },
+        {
+          "task": "T002",
+          "entry": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+          "attempt": 10,
+          "profile": "codex-verify",
+          "verdict": "pass",
+          "error_kind": null
+        }
+      ],
+      "history_proof": {
+        "verification_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16
+        ],
+        "rows_identical": true,
+        "log_hashes_identical": true
+      },
+      "before_current": {
+        "T001": {
+          "context_id": 4,
+          "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+          "verification_ids": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "T002": {
+          "context_id": 15,
+          "digest": "2a4bcd4a7d9a50382289c69dee96c65b168da7888880973d00385aaa88a85d84",
+          "verification_ids": [
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+          ]
+        }
+      },
+      "after_current": {
+        "T001": {
+          "context_id": 20,
+          "digest": "c24bb443e58b6da101588adea2a29c382e584420c4df11d65887346efd31c692",
+          "verification_ids": [
+            17,
+            18,
+            19,
+            20
+          ]
+        },
+        "T002": {
+          "context_id": 22,
+          "digest": "d87896f2a44939cf146e5515a09beeec87493c18586c1066723a7b4f246a3ae0",
+          "verification_ids": [
+            21,
+            22,
+            23,
+            24,
+            25,
+            26
+          ]
+        }
+      }
+    }
+  },
+  "read_only_staleness": {
+    "artifact": {
+      "stale": [
+        {
+          "task": "T002",
+          "state": "stale",
+          "changed_paths": [
+            "output:count_cli.py"
+          ]
+        }
+      ]
+    },
+    "dependency": {
+      "stale": [
+        {
+          "task": "T001",
+          "state": "stale",
+          "changed_paths": [
+            "output:text_core.py"
+          ]
+        },
+        {
+          "task": "T002",
+          "state": "stale",
+          "changed_paths": [
+            "dependency:T001:text_core.py",
+            "dependency:T001"
+          ]
+        }
+      ]
+    }
+  },
+  "context_history": [
+    {
+      "event_id": 4,
+      "task": "T001",
+      "changed_paths": [
+        "output:text_core.py",
+        "preread:README.md",
+        "preread:fixtures/sample.txt"
+      ],
+      "digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+      "invalidated_ids": [],
+      "manifest": {
+        "contract": {
+          "acceptance": [
+            "text_core.py exports count_nonempty_lines(text): return 2 for fixtures/sample.txt, 0 for empty text, and ignore whitespace-only lines."
+          ],
+          "scope": {
+            "allowed": [
+              "text_core.py"
+            ]
+          },
+          "verification": [
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines(open('fixtures/sample.txt', encoding='utf-8').read()) == 2\"",
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines('') == 0\"",
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines('   \\n\\t\\n  \\n') == 0\"",
+            "python3 -m py_compile text_core.py"
+          ]
+        },
+        "dependencies": {},
+        "paths": {
+          "output:text_core.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "aa967d4858fe52dc82376ff980ea335bb777aa8af95f7baddd1e629ab01ff906"
+          },
+          "preread:README.md": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "9827bf57d68c0b7360583b16207749d52949742a459998abb2fb609609b67519"
+          },
+          "preread:fixtures/sample.txt": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "0e937c34625ef864d694878f01fd96318893d29014a51536006dacd150d809ec"
+          }
+        },
+        "revision_id": 1,
+        "task": "T001",
+        "worker_attempt": 2
+      },
+      "reason": "accepted_delivery",
+      "reusable": true,
+      "verification_after": 0,
+      "version": 1,
+      "worker_attempt": 2
+    },
+    {
+      "event_id": 9,
+      "task": "T002",
+      "changed_paths": [
+        "dependency:T001:text_core.py",
+        "output:count_cli.py",
+        "dependency:T001"
+      ],
+      "digest": "65f6cf0909f481a6d5ff6777ce36b675156a15ffded2a6a6360c8b341f782835",
+      "invalidated_ids": [],
+      "manifest": {
+        "contract": {
+          "acceptance": [
+            "count_cli.py imports and calls text_core.count_nonempty_lines, reads a UTF-8 file path, prints only the integer count, and exits nonzero with a diagnostic for unreadable input."
+          ],
+          "scope": {
+            "allowed": [
+              "count_cli.py"
+            ]
+          },
+          "verification": [
+            "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+            "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+            "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+            "python3 -m py_compile count_cli.py",
+            "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+            "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr."
+          ]
+        },
+        "dependencies": {
+          "T001": {
+            "context_digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+            "worker_attempt": 2
+          }
+        },
+        "paths": {
+          "dependency:T001:text_core.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "aa967d4858fe52dc82376ff980ea335bb777aa8af95f7baddd1e629ab01ff906"
+          },
+          "output:count_cli.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "3fc73e798b98aee9f22939e4f1df9d71c94c671671c1e76cfdab75e70cf17f18"
+          }
+        },
+        "revision_id": 1,
+        "task": "T002",
+        "worker_attempt": 3
+      },
+      "reason": "accepted_delivery",
+      "reusable": true,
+      "verification_after": 4,
+      "version": 1,
+      "worker_attempt": 3
+    },
+    {
+      "event_id": 15,
+      "task": "T002",
+      "changed_paths": [
+        "output:count_cli.py"
+      ],
+      "digest": "2a4bcd4a7d9a50382289c69dee96c65b168da7888880973d00385aaa88a85d84",
+      "invalidated_ids": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "manifest": {
+        "contract": {
+          "acceptance": [
+            "count_cli.py imports and calls text_core.count_nonempty_lines, reads a UTF-8 file path, prints only the integer count, and exits nonzero with a diagnostic for unreadable input."
+          ],
+          "scope": {
+            "allowed": [
+              "count_cli.py"
+            ]
+          },
+          "verification": [
+            "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+            "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+            "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+            "python3 -m py_compile count_cli.py",
+            "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+            "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr."
+          ]
+        },
+        "dependencies": {
+          "T001": {
+            "context_digest": "5015821bbff1cb6bbbfafbd628135d8a120d3833fd9c890d3a14b5ff343f4849",
+            "worker_attempt": 2
+          }
+        },
+        "paths": {
+          "dependency:T001:text_core.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "aa967d4858fe52dc82376ff980ea335bb777aa8af95f7baddd1e629ab01ff906"
+          },
+          "output:count_cli.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "6ff52ebdd4a55a7dca83fbca357f080e9d862d6d2640957d6315d63571e6b157"
+          }
+        },
+        "revision_id": 1,
+        "task": "T002",
+        "worker_attempt": 3
+      },
+      "reason": "stale",
+      "reusable": true,
+      "verification_after": 10,
+      "version": 1,
+      "worker_attempt": 3
+    },
+    {
+      "event_id": 20,
+      "task": "T001",
+      "changed_paths": [
+        "output:text_core.py"
+      ],
+      "digest": "c24bb443e58b6da101588adea2a29c382e584420c4df11d65887346efd31c692",
+      "invalidated_ids": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "manifest": {
+        "contract": {
+          "acceptance": [
+            "text_core.py exports count_nonempty_lines(text): return 2 for fixtures/sample.txt, 0 for empty text, and ignore whitespace-only lines."
+          ],
+          "scope": {
+            "allowed": [
+              "text_core.py"
+            ]
+          },
+          "verification": [
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines(open('fixtures/sample.txt', encoding='utf-8').read()) == 2\"",
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines('') == 0\"",
+            "python3 -c \"import text_core; assert text_core.count_nonempty_lines('   \\n\\t\\n  \\n') == 0\"",
+            "python3 -m py_compile text_core.py"
+          ]
+        },
+        "dependencies": {},
+        "paths": {
+          "output:text_core.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "60cba0bac5d2f6c9adb60602ce5f5c858eaa31e7d1e8c13cf5e4cfe2f9b24384"
+          },
+          "preread:README.md": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "9827bf57d68c0b7360583b16207749d52949742a459998abb2fb609609b67519"
+          },
+          "preread:fixtures/sample.txt": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "0e937c34625ef864d694878f01fd96318893d29014a51536006dacd150d809ec"
+          }
+        },
+        "revision_id": 1,
+        "task": "T001",
+        "worker_attempt": 2
+      },
+      "reason": "stale",
+      "reusable": true,
+      "verification_after": 4,
+      "version": 1,
+      "worker_attempt": 2
+    },
+    {
+      "event_id": 22,
+      "task": "T002",
+      "changed_paths": [
+        "dependency:T001:text_core.py",
+        "dependency:T001"
+      ],
+      "digest": "d87896f2a44939cf146e5515a09beeec87493c18586c1066723a7b4f246a3ae0",
+      "invalidated_ids": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "manifest": {
+        "contract": {
+          "acceptance": [
+            "count_cli.py imports and calls text_core.count_nonempty_lines, reads a UTF-8 file path, prints only the integer count, and exits nonzero with a diagnostic for unreadable input."
+          ],
+          "scope": {
+            "allowed": [
+              "count_cli.py"
+            ]
+          },
+          "verification": [
+            "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+            "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+            "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+            "python3 -m py_compile count_cli.py",
+            "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+            "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr."
+          ]
+        },
+        "dependencies": {
+          "T001": {
+            "context_digest": "c24bb443e58b6da101588adea2a29c382e584420c4df11d65887346efd31c692",
+            "worker_attempt": 2
+          }
+        },
+        "paths": {
+          "dependency:T001:text_core.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "60cba0bac5d2f6c9adb60602ce5f5c858eaa31e7d1e8c13cf5e4cfe2f9b24384"
+          },
+          "output:count_cli.py": {
+            "kind": "file",
+            "mode": 420,
+            "sha256": "6ff52ebdd4a55a7dca83fbca357f080e9d862d6d2640957d6315d63571e6b157"
+          }
+        },
+        "revision_id": 1,
+        "task": "T002",
+        "worker_attempt": 3
+      },
+      "reason": "stale",
+      "reusable": true,
+      "verification_after": 16,
+      "version": 1,
+      "worker_attempt": 3
+    }
+  ],
+  "verification_history": [
+    {
+      "id": 1,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines(open('fixtures/sample.txt', encoding='utf-8').read()) == 2\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T001/01-0000-command.log",
+      "created_at": "2026-11-19T05:08:44.366298+00:00"
+    },
+    {
+      "id": 2,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines('') == 0\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T001/02-0001-command.log",
+      "created_at": "2026-11-19T05:08:44.381742+00:00"
+    },
+    {
+      "id": 3,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines('   \\n\\t\\n  \\n') == 0\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T001/03-0002-command.log",
+      "created_at": "2026-11-19T05:08:44.400135+00:00"
+    },
+    {
+      "id": 4,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -m py_compile text_core.py",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T001/04-0003-command.log",
+      "created_at": "2026-11-19T05:08:44.427147+00:00"
+    },
+    {
+      "id": 5,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T002/01-0000-command.log",
+      "created_at": "2026-11-19T05:09:10.240840+00:00"
+    },
+    {
+      "id": 6,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T002/02-0001-command.log",
+      "created_at": "2026-11-19T05:09:10.256764+00:00"
+    },
+    {
+      "id": 7,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T002/03-0002-command.log",
+      "created_at": "2026-11-19T05:09:10.272496+00:00"
+    },
+    {
+      "id": 8,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 -m py_compile count_cli.py",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/check/T002/04-0003-command.log",
+      "created_at": "2026-11-19T05:09:10.297928+00:00"
+    },
+    {
+      "id": 9,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 4,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-4.log",
+      "created_at": "2026-11-19T05:09:46.696529+00:00"
+    },
+    {
+      "id": 10,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 6,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-6.log",
+      "created_at": "2026-11-19T05:11:01.193514+00:00"
+    },
+    {
+      "id": 11,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/01-a003-command-0006.log",
+      "created_at": "2026-11-19T05:11:42.385912+00:00"
+    },
+    {
+      "id": 12,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/02-a003-command-0007.log",
+      "created_at": "2026-11-19T05:11:42.405024+00:00"
+    },
+    {
+      "id": 13,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/03-a003-command-0008.log",
+      "created_at": "2026-11-19T05:11:42.422461+00:00"
+    },
+    {
+      "id": 14,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 -m py_compile count_cli.py",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/04-a003-command-0009.log",
+      "created_at": "2026-11-19T05:11:42.451155+00:00"
+    },
+    {
+      "id": 15,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 7,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-7.log",
+      "created_at": "2026-11-19T05:12:00.610606+00:00"
+    },
+    {
+      "id": 16,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 8,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-8.log",
+      "created_at": "2026-11-19T05:12:15.602349+00:00"
+    },
+    {
+      "id": 17,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines(open('fixtures/sample.txt', encoding='utf-8').read()) == 2\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T001/01-a002-command-0004.log",
+      "created_at": "2026-11-19T05:13:02.261772+00:00"
+    },
+    {
+      "id": 18,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines('') == 0\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T001/02-a002-command-0005.log",
+      "created_at": "2026-11-19T05:13:02.282124+00:00"
+    },
+    {
+      "id": 19,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -c \"import text_core; assert text_core.count_nonempty_lines('   \\n\\t\\n  \\n') == 0\"",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T001/03-a002-command-0006.log",
+      "created_at": "2026-11-19T05:13:02.299553+00:00"
+    },
+    {
+      "id": 20,
+      "revision_id": 1,
+      "task_id": "T001",
+      "attempt_id": 2,
+      "kind": "command",
+      "command": "python3 -m py_compile text_core.py",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T001/04-a002-command-0007.log",
+      "created_at": "2026-11-19T05:13:02.327332+00:00"
+    },
+    {
+      "id": 21,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/sample.txt | grep -qx '2'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/01-a003-command-0012.log",
+      "created_at": "2026-11-19T05:13:02.344655+00:00"
+    },
+    {
+      "id": 22,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "! python3 count_cli.py fixtures/does_not_exist.txt 2>/dev/null",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/02-a003-command-0013.log",
+      "created_at": "2026-11-19T05:13:02.360166+00:00"
+    },
+    {
+      "id": 23,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 count_cli.py fixtures/does_not_exist.txt 2>&1 >/dev/null | grep -q 'fixtures/does_not_exist.txt'",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/03-a003-command-0014.log",
+      "created_at": "2026-11-19T05:13:02.376550+00:00"
+    },
+    {
+      "id": 24,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 3,
+      "kind": "command",
+      "command": "python3 -m py_compile count_cli.py",
+      "required_capabilities_json": "[]",
+      "exit_code": 0,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/verify/T002/04-a003-command-0015.log",
+      "created_at": "2026-11-19T05:13:02.401736+00:00"
+    },
+    {
+      "id": 25,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 9,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it contains an actual import of text_core and a call to text_core.count_nonempty_lines, that no duplicate line-counting logic exists in count_cli.py itself, and that the structured delivery artifact reports the module path.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-9.log",
+      "created_at": "2026-11-19T05:13:20.283374+00:00"
+    },
+    {
+      "id": 26,
+      "revision_id": 1,
+      "task_id": "T002",
+      "attempt_id": 10,
+      "kind": "agent",
+      "command": "agent: Inspect count_cli.py and confirm it opens the input file with explicit UTF-8 encoding, and that every unreadable-input path (missing file, IO error, decode failure) produces a nonzero exit with a clear diagnostic message on stderr.",
+      "required_capabilities_json": "[]",
+      "exit_code": null,
+      "passed": 1,
+      "output_path": ".orx/runs/R001/exec/verify-T002-10.log",
+      "created_at": "2026-11-19T05:13:37.592782+00:00"
+    }
+  ],
+  "verification_log_hashes": {
+    ".orx/runs/R001/check/T001/01-0000-command.log": "bdf001bd2e8e1c9ccd8d7e2325c0c89a8a844b1bfaeef76de79ad49594088fa6",
+    ".orx/runs/R001/check/T001/02-0001-command.log": "7de62821c7ae30c42ae2bf98d9900caca5468f3c32c06df2b71693ac8af41863",
+    ".orx/runs/R001/check/T001/03-0002-command.log": "51fda2bc484104d9579ca3842141941a9d472c7d57d9c1254fafc6ffab94165b",
+    ".orx/runs/R001/check/T001/04-0003-command.log": "d66e07be091a865ba9af76ec94b7b26cafdca4dd40d6417a7571c668621ae3d8",
+    ".orx/runs/R001/check/T002/01-0000-command.log": "c44ff1130d260496ee910140962e82e820ede54c9f635f19d9d7e208bc7ff7e9",
+    ".orx/runs/R001/check/T002/02-0001-command.log": "c10d36d37fe8b4ed3d1c37ac20015b8a5ce370ce8390c2b87e7b27a864d84721",
+    ".orx/runs/R001/check/T002/03-0002-command.log": "691df1ee442b4690620feeb5913868f4f2d6c5825b1d3c0ac8c05c753f0d9928",
+    ".orx/runs/R001/check/T002/04-0003-command.log": "ee2ce15c9747779dc45981bfebd4a0569cf52d3233d50e3596bc0806f53bc2e5",
+    ".orx/runs/R001/exec/verify-T002-4.log": "40be9cefe4de024b63a46c1730fa9b86ef187ba3b42d86c16dda3da09b1d0fb5",
+    ".orx/runs/R001/exec/verify-T002-6.log": "999e94918b482be50c8b559a906a4adb044573c32f7b334762d1aea861d3a4c8",
+    ".orx/runs/R001/verify/T002/01-a003-command-0006.log": "c44ff1130d260496ee910140962e82e820ede54c9f635f19d9d7e208bc7ff7e9",
+    ".orx/runs/R001/verify/T002/02-a003-command-0007.log": "c10d36d37fe8b4ed3d1c37ac20015b8a5ce370ce8390c2b87e7b27a864d84721",
+    ".orx/runs/R001/verify/T002/03-a003-command-0008.log": "691df1ee442b4690620feeb5913868f4f2d6c5825b1d3c0ac8c05c753f0d9928",
+    ".orx/runs/R001/verify/T002/04-a003-command-0009.log": "15857bcdba089e612bbc39b03bdb905ff776a7ca4cf32d4f298bcb8fbd5a04ed",
+    ".orx/runs/R001/exec/verify-T002-7.log": "92494a2973ffbd618d78c6e2727da068b99c9d73ce76da5da45f80f2b506295b",
+    ".orx/runs/R001/exec/verify-T002-8.log": "4a324e83f80e69ce81ddd8575b6d413b960a165a7c7be0260aaf4665e550d54a",
+    ".orx/runs/R001/verify/T001/01-a002-command-0004.log": "1584bfdb202dee1740498f952c741b8f128538770ff772282d35c896f5eca4d1",
+    ".orx/runs/R001/verify/T001/02-a002-command-0005.log": "2e2fdc1a182887b74a3942f9eae56e62cfb9ed9935efe4bc5841d8be51908c76",
+    ".orx/runs/R001/verify/T001/03-a002-command-0006.log": "51fda2bc484104d9579ca3842141941a9d472c7d57d9c1254fafc6ffab94165b",
+    ".orx/runs/R001/verify/T001/04-a002-command-0007.log": "d66e07be091a865ba9af76ec94b7b26cafdca4dd40d6417a7571c668621ae3d8",
+    ".orx/runs/R001/verify/T002/01-a003-command-0012.log": "c44ff1130d260496ee910140962e82e820ede54c9f635f19d9d7e208bc7ff7e9",
+    ".orx/runs/R001/verify/T002/02-a003-command-0013.log": "df961e5c48c1fe906a1b9188d2fd1ccea94f0bde93bac286066c389b55ff638c",
+    ".orx/runs/R001/verify/T002/03-a003-command-0014.log": "691df1ee442b4690620feeb5913868f4f2d6c5825b1d3c0ac8c05c753f0d9928",
+    ".orx/runs/R001/verify/T002/04-a003-command-0015.log": "ee2ce15c9747779dc45981bfebd4a0569cf52d3233d50e3596bc0806f53bc2e5",
+    ".orx/runs/R001/exec/verify-T002-9.log": "e7be31f0f67bb89d87098778280cff55123252c9eb5bc26b033b26d79de8a7f0",
+    ".orx/runs/R001/exec/verify-T002-10.log": "c92d462e76062b9d5cfaf73852319a287d7c4b091810ea780c1f5e036fbecfa5"
+  },
+  "worker_attempts_unchanged": true,
+  "same_goal_run_and_revision": {
+    "goal": "G001",
+    "run": "R001",
+    "revision": 1
+  },
+  "final": {
+    "run": {
+      "id": "R001",
+      "status": "done",
+      "started_at": "2026-11-19T05:07:19.012122+00:00",
+      "completed_at": "2026-11-19T05:13:37.593100+00:00"
+    },
+    "tasks": {
+      "T001": "passed",
+      "T002": "passed"
+    },
+    "verification": {
+      "passed": 10,
+      "failed": 0,
+      "awaiting_agent": 0
+    },
+    "evidence_freshness": {
+      "stale": []
+    },
+    "next_actions": [
+      {
+        "action": "done"
+      }
+    ],
+    "cli_output": "2",
+    "artifacts": {
+      "text_core.py": {
+        "sha256": "60cba0bac5d2f6c9adb60602ce5f5c858eaa31e7d1e8c13cf5e4cfe2f9b24384",
+        "content": "\"\"\"Core text utilities for the offline nonempty-line counter.\"\"\"\n\n\ndef count_nonempty_lines(text):\n    \"\"\"Return the number of lines in *text* that contain non-whitespace content.\"\"\"\n    return sum(1 for line in text.splitlines() if line.strip())\n\n# Acceptance probe: dependency producer content version changed.\n"
+      },
+      "count_cli.py": {
+        "sha256": "6ff52ebdd4a55a7dca83fbca357f080e9d862d6d2640957d6315d63571e6b157",
+        "content": "\"\"\"CLI wrapper: count nonempty lines in a UTF-8 text file using text_core.\"\"\"\n\nimport sys\n\nimport text_core\n\n\ndef main(argv):\n    if len(argv) < 2:\n        print(\"error: missing file path argument\", file=sys.stderr)\n        return 2\n    path = argv[1]\n    try:\n        with open(path, encoding=\"utf-8\") as f:\n            text = f.read()\n    except OSError as exc:\n        print(f\"error: cannot read {path}: {exc}\", file=sys.stderr)\n        return 1\n    except UnicodeDecodeError as exc:\n        print(f\"error: cannot decode {path} as UTF-8: {exc}\", file=sys.stderr)\n        return 1\n    print(text_core.count_nonempty_lines(text))\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main(sys.argv))\n\n# Acceptance probe: artifact content version changed.\n"
+      }
+    }
+  },
+  "usage": {
+    "observations": [
+      {
+        "id": 1,
+        "attempt_id": 1,
+        "profile": "claude-plan",
+        "run_id": "R001",
+        "task_id": null,
+        "input_tokens": 17810,
+        "output_tokens": 2797,
+        "cached_input_tokens": 64896,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:07:19.010544+00:00",
+        "session_ref": "15a5cb5f-ade1-45c1-ba63-d6052ab3a329"
+      },
+      {
+        "id": 2,
+        "attempt_id": 2,
+        "profile": "zcode-cli-worker",
+        "run_id": "R001",
+        "task_id": "T001",
+        "input_tokens": 121091,
+        "output_tokens": 769,
+        "cached_input_tokens": 112192,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:08:44.346228+00:00",
+        "session_ref": "sess_7ba36b41-4dec-4408-8402-1ee1ff2eca0e"
+      },
+      {
+        "id": 3,
+        "attempt_id": 3,
+        "profile": "zcode-cli-worker",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 147930,
+        "output_tokens": 1071,
+        "cached_input_tokens": 124928,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:09:10.221627+00:00",
+        "session_ref": "sess_d7f890a4-e40d-4f41-b8be-406c9188748b"
+      },
+      {
+        "id": 4,
+        "attempt_id": 4,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 64681,
+        "output_tokens": 154,
+        "cached_input_tokens": 49024,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:09:46.694989+00:00",
+        "session_ref": "01a1f235-b4bb-7191-9918-e37e902c0732"
+      },
+      {
+        "id": 5,
+        "attempt_id": 6,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 42038,
+        "output_tokens": 161,
+        "cached_input_tokens": 32768,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:11:01.192351+00:00",
+        "session_ref": "01a1f236-dd8c-7053-b213-c1eee681995a"
+      },
+      {
+        "id": 6,
+        "attempt_id": 7,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 42402,
+        "output_tokens": 149,
+        "cached_input_tokens": 32768,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:12:00.608701+00:00",
+        "session_ref": "01a1f237-c493-7622-8f3a-dede76bbbc78"
+      },
+      {
+        "id": 7,
+        "attempt_id": 8,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 42048,
+        "output_tokens": 144,
+        "cached_input_tokens": 32768,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:12:15.600906+00:00",
+        "session_ref": "01a1f238-07b2-7cd3-8c42-1042f2d41278"
+      },
+      {
+        "id": 8,
+        "attempt_id": 9,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 64715,
+        "output_tokens": 155,
+        "cached_input_tokens": 49024,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:13:20.281352+00:00",
+        "session_ref": "01a1f238-f94b-77b1-9c0d-f0f72d3c45e8"
+      },
+      {
+        "id": 9,
+        "attempt_id": 10,
+        "profile": "codex-verify",
+        "run_id": "R001",
+        "task_id": "T002",
+        "input_tokens": 54127,
+        "output_tokens": 145,
+        "cached_input_tokens": 38784,
+        "source": "native_cli",
+        "accuracy": "exact",
+        "created_at": "2026-11-19T05:13:37.591639+00:00",
+        "session_ref": "01a1f239-3ee4-7212-ae9e-2d5f6cb78629"
+      }
+    ],
+    "coverage": [
+      {
+        "profile": "claude-plan",
+        "attempts": 1,
+        "observed": 1,
+        "measurement_accuracy": "exact"
+      },
+      {
+        "profile": "zcode-cli-worker",
+        "attempts": 2,
+        "observed": 2,
+        "measurement_accuracy": "exact"
+      },
+      {
+        "profile": "codex-verify",
+        "attempts": 7,
+        "observed": 6,
+        "measurement_accuracy": "exact"
+      }
+    ],
+    "currency_cost": null,
+    "note": "Native observations only; no fabricated usage for the protocol shim and no monetary total. Codex ADE Controller usage is not captured."
+  },
+  "limits": [
+    "Real artifact/dependency changes were deliberate harmless comment additions after completed verification, rather than concurrent writes during an LLM response. In-flight host/CLI mutation is covered by regression tests.",
+    "The invalid verifier response was a controlled shim with no provider call. All other verifier calls used the real Codex CLI.",
+    "Validity is task-scoped; no per-entry input schema, filesystem snapshot isolation, or background watcher is introduced.",
+    "The earlier preflight Run and its raw evidence are preserved separately, not counted as a final successful Run."
+  ]
+}
