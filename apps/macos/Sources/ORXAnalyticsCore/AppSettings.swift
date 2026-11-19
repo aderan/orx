@@ -35,6 +35,7 @@ public struct AppSettings: Equatable {
     public var panelDensity: PanelDensity
     public var panelShortcuts: [PanelShortcut]
     public var notificationsEnabled: Bool
+    public var menuBarAttentionBadgeEnabled: Bool
     /// Explicit data-directory choice (设置页显式选择); nil = the shared
     /// default resolution (ORX_ANALYTICS_HOME env, else ~/.orx-analytics).
     /// Applies on the next app launch — changing it never moves data.
@@ -58,12 +59,14 @@ public struct AppSettings: Equatable {
                 panelRefreshIntervalChosen: Bool = false,
                 appearance: AppAppearance = .system,
                 panelDensity: PanelDensity = .compact,
-                panelShortcuts: [PanelShortcut] = PanelShortcut.defaults) {
+                panelShortcuts: [PanelShortcut] = PanelShortcut.defaults,
+                menuBarAttentionBadgeEnabled: Bool = true) {
         self.appearance = appearance
         self.panelDensity = panelDensity
         var shortcuts = Set<PanelShortcut>()
         self.panelShortcuts = panelShortcuts.filter { shortcuts.insert($0).inserted }
         self.notificationsEnabled = notificationsEnabled
+        self.menuBarAttentionBadgeEnabled = menuBarAttentionBadgeEnabled
         self.dataDirectoryOverride = dataDirectoryOverride
         self.panelRefreshInterval = panelRefreshInterval
         self.panelRefreshIntervalChosen = panelRefreshIntervalChosen
@@ -99,6 +102,7 @@ public protocol AppSettingsStore: AnyObject {
 /// anything.
 public final class UserDefaultsAppSettingsStore: AppSettingsStore {
     private static let notificationsKey = "notifications.enabled"
+    private static let menuBarAttentionBadgeKey = "menuBar.attentionBadge.enabled"
     private static let dataDirectoryKey = "data.directory.override"
     private static let intervalKey = "panel.refresh.interval"
     private static let intervalChosenKey = "panel.refresh.interval.chosen"
@@ -122,7 +126,7 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         var destination = defaults.persistentDomain(forName: current) ?? [:]
         guard destination[marker] == nil else { return }
         let source = defaults.persistentDomain(forName: previous) ?? [:]
-        let keys = [notificationsKey, dataDirectoryKey, intervalKey, intervalChosenKey,
+        let keys = [notificationsKey, menuBarAttentionBadgeKey, dataDirectoryKey, intervalKey, intervalChosenKey,
                     appearanceKey, densityKey, shortcutsKey, "orx.executable.path"]
         for key in keys where destination[key] == nil {
             destination[key] = source[key]
@@ -156,6 +160,7 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         let density = defaults.string(forKey: Self.densityKey).flatMap(PanelDensity.init(rawValue:))
         let shortcuts = defaults.stringArray(forKey: Self.shortcutsKey)?
             .compactMap(PanelShortcut.init(rawValue:))
+        let menuBarAttentionBadgeEnabled = defaults.object(forKey: Self.menuBarAttentionBadgeKey) as? Bool
 
         return AppSettings(notificationsEnabled: enabled,
                            dataDirectoryOverride: (override?.isEmpty ?? true) ? nil : override,
@@ -163,7 +168,9 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
                            panelRefreshIntervalChosen: effectiveChosen,
                            appearance: appearance ?? .system,
                            panelDensity: density ?? .compact,
-                           panelShortcuts: shortcuts ?? PanelShortcut.defaults)
+                           panelShortcuts: shortcuts ?? PanelShortcut.defaults,
+                           menuBarAttentionBadgeEnabled: menuBarAttentionBadgeEnabled
+                               ?? AppSettings.default.menuBarAttentionBadgeEnabled)
     }
 
     public func save(_ settings: AppSettings) {
@@ -171,6 +178,7 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         defaults.set(settings.panelDensity.rawValue, forKey: Self.densityKey)
         defaults.set(settings.panelShortcuts.map(\.rawValue), forKey: Self.shortcutsKey)
         defaults.set(settings.notificationsEnabled, forKey: Self.notificationsKey)
+        defaults.set(settings.menuBarAttentionBadgeEnabled, forKey: Self.menuBarAttentionBadgeKey)
         defaults.set(settings.dataDirectoryOverride ?? "", forKey: Self.dataDirectoryKey)
         defaults.set(settings.panelRefreshInterval, forKey: Self.intervalKey)
         defaults.set(settings.panelRefreshIntervalChosen, forKey: Self.intervalChosenKey)

@@ -439,6 +439,18 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(store.load().dataDirectoryOverride)
     }
 
+    func testMenuBarAttentionBadgeToggleUpdatesSettingsAndStore() {
+        let store = InMemoryAppSettingsStore()
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory),
+                             settingsStore: store)
+
+        model.setMenuBarAttentionBadgeEnabled(false)
+
+        XCTAssertFalse(model.settings.menuBarAttentionBadgeEnabled)
+        XCTAssertFalse(store.load().menuBarAttentionBadgeEnabled)
+    }
+
     /// An unrelated settings save (e.g. a notifications toggle) re-persists
     /// the interval WITHOUT inventing or losing explicitness.
     func testIncidentalResaveKeepsExplicitRefreshChoice() {

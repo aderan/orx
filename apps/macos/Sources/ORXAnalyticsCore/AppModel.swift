@@ -329,6 +329,10 @@ public final class AppModel: ObservableObject {
         updateSettings { $0.appearance = appearance }
     }
 
+    public func setMenuBarAttentionBadgeEnabled(_ enabled: Bool) {
+        updateSettings { $0.menuBarAttentionBadgeEnabled = enabled }
+    }
+
     public func setPanelDensity(_ density: PanelDensity) {
         updateSettings { $0.panelDensity = density }
     }

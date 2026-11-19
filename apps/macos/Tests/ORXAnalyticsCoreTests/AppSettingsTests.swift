@@ -56,6 +56,17 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(store.load().panelShortcuts, [])
     }
 
+    func testMenuBarAttentionBadgeIsShownWhenPreferenceIsMissing() {
+        XCTAssertTrue(UserDefaultsAppSettingsStore(defaults: defaults).load().menuBarAttentionBadgeEnabled)
+    }
+
+    func testMenuBarAttentionBadgeCanStayHiddenAcrossLaunches() {
+        let store = UserDefaultsAppSettingsStore(defaults: defaults)
+        store.save(AppSettings(menuBarAttentionBadgeEnabled: false))
+
+        XCTAssertFalse(UserDefaultsAppSettingsStore(defaults: defaults).load().menuBarAttentionBadgeEnabled)
+    }
+
     func testInvalidAppearanceAndObsoleteShortcutsAreHandled() {
         defaults.set("unexpected", forKey: "appearance.theme")
         defaults.set(["usage", "old-shortcut", "usage", "history"], forKey: "panel.shortcuts")

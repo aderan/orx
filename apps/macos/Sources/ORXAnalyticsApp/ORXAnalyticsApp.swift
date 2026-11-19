@@ -87,9 +87,11 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         item.button?.setAccessibilityLabel("ORX")
         popover.behavior = .transient
         popover.delegate = self
-        badgeObservation = model.$cachedOverview.sink { [weak self] value in
-            self?.updateBadge(value)
-        }
+        badgeObservation = model.$cachedOverview
+            .combineLatest(model.$settings.map(\.menuBarAttentionBadgeEnabled).removeDuplicates())
+            .sink { [weak self] overview, attentionBadgeEnabled in
+                self?.updateBadge(overview, attentionBadgeEnabled: attentionBadgeEnabled)
+            }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
@@ -117,12 +119,12 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         model.shutdown()
     }
 
-    private func updateBadge(_ overview: CachedOverview?) {
+    private func updateBadge(_ overview: CachedOverview?, attentionBadgeEnabled: Bool) {
         guard let button = statusItem?.button else { return }
         let summary = overview?.envelope.summary
         let active = summary?.activeRuns ?? 0
         let attention = summary?.attention ?? 0
-        button.image = ORXMenuIcon.image(showsAttention: attention > 0)
+        button.image = ORXMenuIcon.image(showsAttention: attentionBadgeEnabled && attention > 0)
         button.title = active > 0 ? MetricsFormat.countText(active) : ""
         let status = "进行中 \(active) · 需要关注 \(attention)"
         button.toolTip = "ORX · \(status)"

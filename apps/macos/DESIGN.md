@@ -23,7 +23,7 @@ Compose these components before adding a pattern. Put a pattern in DesignSystem 
 
 ## Data presentation
 
-- The menu-bar count is the number of active Runs. Attention is independent. The quick panel shows each Run in a single section and keeps Goal control, Run execution, data health, and failure detail readable on their own.
+- The menu-bar count is the number of active Runs. A corner badge shows when attention is needed and can be turned off in General settings. The quick panel shows each Run in a single section and keeps Goal control, Run execution, data health, and failure detail readable on their own.
 - A Run is identified by project and Run ID. A Task also requires the revision and task ID. History uses engine filtering, order, and paging. Preserve its current results and scroll position when opening a Run.
 - Task progress is for the current plan. Run usage includes all revisions. Keep the recorded zero distinct from unknown, make estimated and partial observations visible, and show the observation time when using cached data.
 - ORX-recorded usage, native-session preview, and Controller attribution use their own engine-provided fields. Keep these values independent. A shared Controller session carries its cumulative usage and attribution explanation.

@@ -5,9 +5,13 @@ enum ORXMenuIcon {
         showsAttention ? withAttention : normal
     }
 
-    private static let normal: NSImage = {
+    private static let normal = makeImage(badge: nil)
+    private static let withAttention = makeImage(
+        badge: NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil))
+
+    private static let mark: NSImage = {
         let side = ORXLayout.menuBarMarkSize
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+        return NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             context.saveGState()
             defer { context.restoreGState() }
@@ -35,29 +39,22 @@ enum ORXMenuIcon {
             outline.stroke()
             return true
         }
-        image.isTemplate = true
-        image.accessibilityDescription = "ORX"
-        return image
     }()
 
-    private static let withAttention: NSImage = {
-        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-        guard let warning = NSImage(systemSymbolName: "exclamationmark.triangle.fill",
-                                    accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration) else { return normal }
-
-        let brandFrame = NSRect(origin: .zero, size: normal.size)
-        let warningFrame = NSRect(x: brandFrame.maxX + ORXSpace.xs,
-                                  y: brandFrame.midY - warning.size.height / 2,
-                                  width: warning.size.width, height: warning.size.height)
-        let size = NSSize(width: ceil(warningFrame.maxX), height: brandFrame.height)
+    private static func makeImage(badge: NSImage?) -> NSImage {
+        let size = ORXLayout.menuBarIconSize
+        let markFrame = NSRect(x: 0, y: (size.height - mark.size.height) / 2,
+                               width: mark.size.width, height: mark.size.height)
+        let badgeSize = ORXLayout.menuBarAttentionBadgeSize
+        let badgeFrame = NSRect(x: size.width - badgeSize, y: size.height - badgeSize,
+                                width: badgeSize, height: badgeSize)
         let image = NSImage(size: size, flipped: false) { _ in
-            normal.draw(in: brandFrame)
-            warning.draw(in: warningFrame)
+            mark.draw(in: markFrame)
+            badge?.draw(in: badgeFrame)
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = normal.accessibilityDescription
+        image.accessibilityDescription = "ORX"
         return image
-    }()
+    }
 }

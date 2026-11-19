@@ -63,6 +63,8 @@ enum ORXRadius {
 
 enum ORXLayout {
     static let menuBarMarkSize: CGFloat = 14
+    static let menuBarIconSize = NSSize(width: 22, height: 19)
+    static let menuBarAttentionBadgeSize: CGFloat = 9
     static let panelWidth: CGFloat = 368
     static let panelScrollHeight: CGFloat = 480
     static let windowMinWidth: CGFloat = 820

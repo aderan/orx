@@ -85,6 +85,13 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
+            settingsRow("菜单栏关注角标", detail: "有待关注项时，在 ORX 图标右上角显示提示。") {
+                Toggle("菜单栏关注角标", isOn: Binding(
+                    get: { model.settings.menuBarAttentionBadgeEnabled },
+                    set: model.setMenuBarAttentionBadgeEnabled))
+                    .toggleStyle(.switch).labelsHidden()
+                    .accessibilityIdentifier("menu-bar-attention-badge")
+            }
             settingsGroup("登录启动") {
                 settingsRow("登录时启动", detail: login.systemState.text) {
                     Toggle("登录时启动", isOn: Binding(
