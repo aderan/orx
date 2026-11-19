@@ -290,3 +290,30 @@ ORX 主窗口，应用与 Finder 入口保持可用。
 通知偏好仍为开启，安装包签名有效。本轮未注销 macOS。
 切换 ChatGPT 开关足以改变 ORX 的屏蔽状态，尚未证实能恢复实际可见图标，
 也未直接读取受保护的系统归属记录。
+
+### ORX 独立显示的本机复验（2026-11-19）
+
+- Locove 0.2.0 使用 AppKit `NSStatusBar.system.statusItem(withLength:)`，
+  通过关联自身 Bundle ID 的 LaunchAgent 驻留。首个 ORX Analytics
+  预览标签 `v0.4.2` 使用 SwiftUI `MenuBarExtra`。新版 ORX 已使用
+  AppKit。用与 Locove 同类型的临时 LaunchAgent 启动已安装的 ORX，
+  Control Center 仍将状态项屏蔽。临时任务已卸载。
+- 仅恢复 ORX 自己的状态项显示偏好后，Control Center 收到
+  `clientRequestsVisibility: true`，但在 23 毫秒内将其移入 blocked
+  list。原始偏好副本确认 `com.aderan.orx.dev` 自身已获准显示，
+  同时被列在已关闭的 `com.openai.codex` 的 `menuItemLocations` 下。
+  Locove 自身显示已获准，使用独立归属。
+- 用 Finder 备份当前偏好，校验副本中的唯一改动为从
+  `com.openai.codex` 的 `menuItemLocations` 移除
+  `com.aderan.orx.dev`。两个开关及其他条目均保留。应用副本后，
+  当前用户的偏好代理和 Control Center 重新启动，用户未注销。
+  这次修复针对本机历史状态。测试图形启动应打开已安装的应用包，
+  构建的无界面冒烟继续使用 `--smoke-test`。
+- 系统设置复核 ChatGPT 开关关闭、ORX 开关开启。通过 Launch Services
+  对同一预览安装包冷启动两次（PID 40655、44940），Control Center 均
+  登记 ORX 并在 Window Server 产生一个屏幕内的状态项窗口
+  （23988、24002）。分别确认一个可见 ORX 主窗口（23986、24000）。
+  第二次启动后复查状态项仍可见，App 严格验签通过。
+- 原 Analytics store 仍在，实际共享引擎 PID 不变，升级前的一致性
+  备份通过只读 `PRAGMA integrity_check`。此次保留已安装的
+  0.4.5 内部预览。登录项的实际重登、菜单图标点击和正式渠道仍待验收。

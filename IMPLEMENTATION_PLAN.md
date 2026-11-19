@@ -28,8 +28,8 @@
 **Success Criteria**: 数据目录、偏好、历史及系统登录项通过各渠道门禁。
 **Tests**: 干净安装、升级、系统实际状态、备份恢复、退出 App 后 CLI watch。
 **Status**: In Progress（[验收证据](docs/diagnostics/analytics-monorepo/stage-4.md)；
-已通过数据回退和菜单栏被隐藏时的 Finder 连续启动，新版已安装；
-菜单栏可见性、通知授权、重登及正式渠道验收仍待完成）
+已通过数据回退、Finder 主窗口、通知授权，以及 ChatGPT 菜单栏关闭时
+ORX 图标连续两次冷启动；实际注销重登及正式渠道验收仍待完成）
 
 ## Stage 5: 切换发布来源并收口旧仓
 
