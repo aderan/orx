@@ -27,7 +27,8 @@
 **Goal**: 用 ORX 的同一读写接口展示配置候选和历史派发事实。
 **Success Criteria**: 当次 Controller、配置顺序和实际派发各按其来源展示，旧配置及历史可读。
 **Tests**: 无宿主与显式宿主、两种配置范围与预览保存、旧引擎响应、带路由日志的尝试。
-**Status**: In Progress
+**Status**: Complete（[本机与隔离引擎验收](docs/diagnostics/analytics-monorepo/stage-3.md)；
+沿用现有共享采集，实时历史仍按当前引擎返回的字段展示）
 
 ## Stage 4: 演练安装、升级与回退
 
