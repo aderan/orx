@@ -274,3 +274,19 @@ ORX 主窗口，应用与 Finder 入口保持可用。
 [macOS 26 另一应用的复现](https://github.com/steipete/CodexBar/issues/1440)
 已记录过归属到同一 Codex 身份导致的屏蔽。对 ORX 而言仍是待验证的
 假设。尚未更改 ChatGPT 设置，等待是否可以短暂开启后恢复的确认。
+
+### ChatGPT 菜单栏显示对照
+
+经操作者授权，在同一 macOS 会话中临时开启 ChatGPT 菜单栏显示。
+19:00:52.515，Control Center 在解除 `com.openai.codex` 屏蔽的同一时段，
+也对原 ORX PID 50888 记录了 `Unblocking host`。保持 ChatGPT 开启，
+刷新 ORX 自己的开关并从 Finder 重启，ORX PID 2452 正常显示一个主窗口，
+状态项可以登记，但日志仍为 `clientRequestsVisibility: false`，
+窗口服务未观察到新增的菜单栏图标。
+
+19:03:04.776，按约定将 ChatGPT 开关恢复为关闭后，Control Center
+同时将 ORX PID 2452 和 `com.openai.codex` 列入 blocked list。
+系统设置仍显示 ORX 的开关开启。已复核 Finder 能打开同一个 ORX 主窗口，
+通知偏好仍为开启，安装包签名有效。本轮未注销 macOS。
+切换 ChatGPT 开关足以改变 ORX 的屏蔽状态，尚未证实能恢复实际可见图标，
+也未直接读取受保护的系统归属记录。
