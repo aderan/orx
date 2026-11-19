@@ -86,6 +86,9 @@ does not exist. Codex, ZCode, Cursor and Claude Code are supported targets.
 For isolated installation checks, `skill install/update --home <directory>`
 chooses a separate installation home. PBV remains explicitly opt-in.
 
+See the [clean-install acceptance](docs/diagnostics/host-install-2026-11-19/README.md)
+for real Codex and ZCode Controller Runs using the built wheel.
+
 ## Model tiers and effort
 
 New profiles declare `tier = "T0" | "T1" | "T2" | "T3" | "S"` and

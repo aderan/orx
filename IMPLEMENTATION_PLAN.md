@@ -1,29 +1,3 @@
-# 当前任务：跨宿主初始化与安装收口
-
-## Stage 1: 主控入口与中立默认配置
-**Goal**：默认 host self 不绑定品牌；当前主控及原生角色通过命令入口声明。
-**Success Criteria**：Codex/ZCode 共用初始化结果；旧环境变量兼容；已有指派不被换宿主抢占。
-**Tests**：先写初始化、上下文优先级、宿主筛选和指派归属回归。
-**Status**：Complete
-
-## Stage 2: 安装与操作契约
-**Goal**：通过已安装 preset 配置 CLI 职责，skill 安装支持声明的宿主。
-**Success Criteria**：CLI 配置与主控身份独立，skill 可在干净目标目录安装，PBV 保持可选。
-**Tests**：preset 继承、安装目标、帮助及打包资源检查。
-**Status**：Complete
-
-## Stage 3: 干净安装真实验收
-**Goal**：构建 wheel，分别由 Codex 和 ZCode 主控完成真实依赖任务 Run。
-**Success Criteria**：使用非 editable 安装、安装包内 skill/preset；不手写主控环境变量；两项任务交接并 done。
-**Tests**：两个独立安装/配置目录，真实 CLI 规划、执行、验证；全量测试。
-**Status**：Complete
-
-## Stage 4: 证据与提交
-**Goal**：记录可复核证据和使用边界。
-**Success Criteria**：文档与安装结果一致，保留其他工作区修改，提交工作代码。
-**Tests**：自审、diff 检查及证据一致性检查。
-**Status**：In Progress
-
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。
@@ -136,6 +110,20 @@ ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](doc
 2026-11-19 当前 Codex 会话在隔离项目发起真实日志诊断工具 G001/R001。Claude Code sonnet / T1 / low 规划，ZCode GLM-5.3 / T2 / low 实现 T001，Cursor Grok 4.7 / T2 / medium 通过依赖产物交接实现 T002，Codex CLI Sol / T1 / low 独立审查。故意注入命令检查仍通过的重复实现缺陷，真实 Verifier 给出合法 fail，随后 Cursor 在同一计划修复 T002。再对第二条语义检查注入畸形裁决，ORX 保留交付及第一条 pass，仅报告 retryable protocol_error。新的真实 ZCode CLI 主控会话续接同一个 Run，只启动剩余一条 Codex 验证；既有 18 条检查记录及 Worker attempt 不变，最终两项任务 passed，R001 done。
 
 项目默认值切换为已实测 CLI 职责，并在 Codex/ZCode 环境预览原生候选筛选；没有增加终端主控代启动。7 次真实模型执行未见权限卡住或超时，另外 1 次为明确标注的协议替身。Stage 3 的数字 429 误判由 a2bb804 修复，新增 25 项回归，全量 1249 项通过。成本记录保留缺口，不把 token 或缺失主控用量折算为完整金额。见 [Stage 4 验收说明](docs/diagnostics/stage4-2026-11-19/README.md) 和 [逐项证据](docs/diagnostics/stage4-2026-11-19/acceptance.json)。
+
+## Stage 5: 跨宿主初始化与安装收口
+
+**Goal**：默认 self profile 与主控品牌解耦，命令入口声明当前主控及原生角色，CLI 职责使用可安装配置。
+
+**Success Criteria**：Codex/ZCode 通过安装产物分别完成依赖任务 Run；无需手写主控环境变量；旧声明兼容，已有指派归属保留；不增加终端主控代启动。
+
+**Tests**：初始化、上下文隔离、原生筛选、指派归属、preset/skill 安装回归；构建 wheel 后使用独立 venv、用户配置、项目和技能目录进行真实验收。
+
+**Status**：Complete
+
+2026-11-19，提交 36d8df5。新增根参数 --host / --host-agent / --host-session，next_actions 保留声明。默认 current profile 仅用于 host self，按调用解析；CLI 与原生品牌 profile 沿用项目配置。提供 cli preset；四种宿主可在空目录安装技能。干净安装发现相对 --home 链接失效，补回归修复后重建并重新验收。
+
+当前 Codex ADE 会话与真实 ZCode CLI 会话分别从非 editable wheel 安装推进 G001/R001：Claude Code sonnet 规划、ZCode GLM-5.3 完成两项依赖任务、Codex CLI 独立验证；两边均为 done，购物清单命令输出 1900。全部 Python 安装源码与受验树哈希一致，配置和技能来自安装包。新增 26 项回归，全量 1275 项通过。终端代启动、内容快照失效、原生代理实测与完整成本归因保持原边界。见 [安装验收说明](docs/diagnostics/host-install-2026-11-19/README.md) 和 [机器证据](docs/diagnostics/host-install-2026-11-19/acceptance.json)。
 
 # 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
 

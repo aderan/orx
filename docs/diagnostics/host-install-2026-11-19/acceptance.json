@@ -1,0 +1,2021 @@
+{
+  "date": "2026-11-19",
+  "implementation_commit": "36d8df5",
+  "wheel": {
+    "path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/final-dist/orx_agent-0.4.0-py3-none-any.whl",
+    "sha256": "88e3c2a4a49e9b1f3d7c1d68bad5b884df880a5fa11268aac803e2fa6dc2cd6d",
+    "version": "0.4.0",
+    "published": false
+  },
+  "tests": {
+    "new_cases": 26,
+    "full_suite": 1275,
+    "full_suite_duration_sec": 185.75,
+    "command": ".venv/bin/python -m pytest -q",
+    "skill_validation": "quick_validate.py: Skill is valid!"
+  },
+  "setup": {
+    "lab": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1",
+    "isolation": "Separate non-editable venvs, empty ORX_CONFIG_DIR/ORX_DATA_DIR, new projects and skill homes. Existing host CLI installations and authentication are reused.",
+    "controller_declaration": "--host options; no ORX_CONTROLLER_HARNESS/AGENTS exports",
+    "terminal_controller_launcher_added": false,
+    "preflight_issue": {
+      "issue": "Relative --home generated broken skill symlinks; fixed by resolving the installation home.",
+      "original_project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex/project",
+      "original_plan_only": true,
+      "fresh_final_projects": [
+        "codex-final",
+        "zcode-final"
+      ],
+      "regression": "test_relative_skill_home_creates_resolvable_links"
+    }
+  },
+  "default_init": {
+    "codex": {
+      "controller": {
+        "session_harness": "codex",
+        "native_agents": [],
+        "session_ref": null,
+        "source": "cli",
+        "origin": "project",
+        "candidate": {
+          "profile": "orx-host",
+          "profile_origin": "project",
+          "driver": "host",
+          "harness": "codex",
+          "declared_harness": "current",
+          "model": "unconfigured",
+          "tier": "T2",
+          "legacy_class": null,
+          "effort": "medium",
+          "native_effort": null,
+          "host_mode": "self",
+          "agent_ref": null,
+          "host_blocked_reason": null
+        }
+      },
+      "planner": {
+        "depth": "standard",
+        "depth_origin": "project",
+        "depths": {
+          "light": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "codex",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "standard": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "codex",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "deep": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "codex",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          }
+        }
+      },
+      "worker": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "orx-host",
+            "profile_origin": "project",
+            "driver": "host",
+            "harness": "codex",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      },
+      "verifier": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "orx-host",
+            "profile_origin": "project",
+            "driver": "host",
+            "harness": "codex",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      }
+    },
+    "zcode": {
+      "controller": {
+        "session_harness": "zcode",
+        "native_agents": [],
+        "session_ref": null,
+        "source": "cli",
+        "origin": "project",
+        "candidate": {
+          "profile": "orx-host",
+          "profile_origin": "project",
+          "driver": "host",
+          "harness": "zcode",
+          "declared_harness": "current",
+          "model": "unconfigured",
+          "tier": "T2",
+          "legacy_class": null,
+          "effort": "medium",
+          "native_effort": null,
+          "host_mode": "self",
+          "agent_ref": null,
+          "host_blocked_reason": null
+        }
+      },
+      "planner": {
+        "depth": "standard",
+        "depth_origin": "project",
+        "depths": {
+          "light": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "zcode",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "standard": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "zcode",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          },
+          "deep": {
+            "origin": "project",
+            "candidates": [
+              {
+                "profile": "orx-host",
+                "profile_origin": "project",
+                "driver": "host",
+                "harness": "zcode",
+                "declared_harness": "current",
+                "model": "unconfigured",
+                "tier": "T2",
+                "legacy_class": null,
+                "effort": "medium",
+                "native_effort": null,
+                "host_mode": "self",
+                "agent_ref": null,
+                "host_blocked_reason": null
+              }
+            ]
+          }
+        }
+      },
+      "worker": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "orx-host",
+            "profile_origin": "project",
+            "driver": "host",
+            "harness": "zcode",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      },
+      "verifier": {
+        "origin": "project",
+        "candidates": [
+          {
+            "profile": "orx-host",
+            "profile_origin": "project",
+            "driver": "host",
+            "harness": "zcode",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        ]
+      }
+    }
+  },
+  "skill_targets": {
+    "codex": {
+      "ok": true,
+      "canonical_root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/codex/.agents/skills",
+      "installed": [
+        "orx-controller",
+        "orx-agent"
+      ],
+      "refreshed": [],
+      "symlinked_into": [
+        "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/codex/.codex"
+      ]
+    },
+    "zcode": {
+      "ok": true,
+      "canonical_root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/zcode/.agents/skills",
+      "installed": [
+        "orx-controller",
+        "orx-agent"
+      ],
+      "refreshed": [],
+      "symlinked_into": [
+        "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/zcode/.zcode"
+      ]
+    },
+    "cursor": {
+      "ok": true,
+      "canonical_root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/cursor/.agents/skills",
+      "installed": [
+        "orx-controller",
+        "orx-agent"
+      ],
+      "refreshed": [],
+      "symlinked_into": [
+        "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/cursor/.cursor"
+      ]
+    },
+    "claude": {
+      "ok": true,
+      "canonical_root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/claude/.agents/skills",
+      "installed": [
+        "orx-controller",
+        "orx-agent"
+      ],
+      "refreshed": [],
+      "symlinked_into": [
+        "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/skill-targets/claude/.claude"
+      ]
+    }
+  },
+  "runs": {
+    "codex": {
+      "project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/project",
+      "import_path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/venv/lib/python3.12/site-packages/orx",
+      "direct_url": {
+        "url": "file:///var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/final-dist/orx_agent-0.4.0-py3-none-any.whl",
+        "archive_info": {}
+      },
+      "installed_python_source_hashes": {
+        "update.py": "50ab45a7525ce63cd96c6ced63c5abf01cf8607398685b87fd11003a0025c329",
+        "plan.py": "361ffc11ad8e122344ca5e154321047140a49e08f793b8ee57ae84053b9040e2",
+        "config.py": "32b49fcde61d924f5a164a731630717796ad993677ee2a13811fb6056df83207",
+        "models.py": "02d35319e0ebd7d2519751ecb2f788259516d8ab1b10d4cfa6fb91a3a3705d44",
+        "skills.py": "caf1dc3b4df4e75cf74aca3661edcabb85549d513c6aef2c7815c2e95d4a46da",
+        "presets.py": "3b8b9b4b95cebfbf16e622a62284f74886327c65f12ffaec0c51810a9cf195f1",
+        "health.py": "8d118705cd91a002c9066816b289bf004cdd99dea64bbed16b940cb0838ac839",
+        "dispatch.py": "12ce5ae19251563a661f537c3208f96f695703c5566c80055109b490f9dd2a60",
+        "records.py": "4e9d759c970a6571ef6c8f6e19ecb267c2e130815f760c110b3aeeaa7f8d77f5",
+        "quota.py": "5e322baeeb1ecfd686682510d5f276983c02b1e7c5d93b0ca47140c3671b100c",
+        "__init__.py": "8c9ba4fe40729eb49b4e0df3a0d440fb1ab56280b5c19cf3d16137e2b681e01d",
+        "runtime.py": "11cfedec137e204a06bb9b3abba420ae0509292cc5106f4560557d0407b42a70",
+        "zcode_sessions.py": "e8d13985268a0b235ac22584605fecec51139fbc83d7a39cdb46ca509cbd5dea",
+        "machine.py": "7c49379a5d4734efb12539037bed468b3833d441972161dcb8728eaac5bf38ef",
+        "sources.py": "ac3c0e8c432f22669c4e2bec48c0f6338c799b740943ef21a3b716f6eec13d16",
+        "model_catalog.py": "3ec14dea52a8ef54e80a2e92cbddca9c83c1ead565afc36ada3685b17c5537a7",
+        "cli.py": "aaa2095649e6b8eba83f14accf1809dd76e64c53a456ee24ccf21498646819d5",
+        "routing.py": "55b6ecd3a0d863d22566f76a4efae57469ce408950a033569f52670117f09630",
+        "probes.py": "b7d089168e61c8ad7bfe63e7a08bd1bea54e3eeb221a5beb378c0dec79016704",
+        "verify.py": "c867119aacc8a86b14d57b428a74cfdc8a5f7a6586f1492815d9ae7a1da041bc",
+        "doctor.py": "0778c4871d59127ead33dba8c32d7862b8225058559dfcbae39541cf62cd9c1f",
+        "__main__.py": "82d915721ad2d5a5fa49a79ed637640136fa7189fe8bdb888edd5a9bf15ec2d4",
+        "project_index.py": "52e1244ac1c7ee54c55487dbf2c8b95ad3b86112a6c3c24bb0205ddde0c16d97",
+        "state.py": "3fb129fa5fed7c7c5fb61e291dc68a517d5a5da081936187c486fbc77a1b5b06",
+        "adapters/headless.py": "f9e19639d3e964b9e8ce6eff44a07abfcafc2eff15e7673e7dfdad3bd15b2a8a",
+        "adapters/zcode.py": "886b7ea34865e9d005cc4ab0ef9f67d615b5cb9bc3b96b77136e1ced0f4d100e",
+        "adapters/codex.py": "9d3370b3dd60ed190473f7077e29488bf4f5be960cd49c424a3ea5ed7f71ba8c",
+        "adapters/claude.py": "081468083a72a932ddd08118c6fba23d419207f8e1eaa67dd8ae7d9504d44c15",
+        "adapters/shell.py": "caeff2438677befae71323b184c36bd8cc7361b22f7cc04b6da7d670db154f5f",
+        "adapters/__init__.py": "13420a68ea0ba2379f33d173b692eb502f9994a724f75a1094523f6ac524bb69",
+        "adapters/base.py": "77a4e23475ced37a5acb96af382e965fd7feb5ea652b9a532d07615c51423b69",
+        "adapters/cursor.py": "23da16efe6e96a0a38283100befe0ff952ecb02c49e4342f6e46ea4e4c457a10"
+      },
+      "controller": {
+        "kind": "current Codex ADE conversation",
+        "session_ref": null,
+        "own_usage": null
+      },
+      "installed_skills": {
+        "orx-controller": {
+          "link": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/skill-home/.codex/skills/orx-controller",
+          "target": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/skill-home/.agents/skills/orx-controller",
+          "sha256": "3c51122b5de57764729576f309839af367719f129deb5903bf09c81cd6e3db1a"
+        },
+        "orx-agent": {
+          "link": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/skill-home/.codex/skills/orx-agent",
+          "target": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/skill-home/.agents/skills/orx-agent",
+          "sha256": "13f32c44007d54b19e6999d4c495a8b8cc3cf30384c85e66f9c63ab4b46db28c"
+        }
+      },
+      "init": {
+        "ok": true,
+        "root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/codex-final/project",
+        "created": [
+          ".orx/state.db"
+        ],
+        "inherited": [
+          ".orx/config.toml",
+          ".orx/profiles.toml"
+        ]
+      },
+      "model_selection": {
+        "controller": {
+          "session_harness": "codex",
+          "native_agents": [],
+          "session_ref": null,
+          "source": "cli",
+          "origin": "user",
+          "candidate": {
+            "profile": "orx-host",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "codex",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        },
+        "planner": {
+          "depth": "standard",
+          "depth_origin": "user",
+          "depths": {
+            "light": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "codex",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            },
+            "standard": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "codex",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            },
+            "deep": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan-deep",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "high",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "codex",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            }
+          }
+        },
+        "worker": {
+          "origin": "user",
+          "candidates": [
+            {
+              "profile": "zcode-cli-worker",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "zcode",
+              "declared_harness": "zcode",
+              "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "low",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "cursor-cli-worker",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "cursor",
+              "declared_harness": "cursor",
+              "model": "grok@4.7",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "orx-host",
+              "profile_origin": "user",
+              "driver": "host",
+              "harness": "codex",
+              "declared_harness": "current",
+              "model": "unconfigured",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": "self",
+              "agent_ref": null,
+              "host_blocked_reason": null
+            }
+          ]
+        },
+        "verifier": {
+          "origin": "user",
+          "candidates": [
+            {
+              "profile": "codex-verify",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "codex",
+              "declared_harness": "codex",
+              "model": "gpt-6.1-sol",
+              "tier": "T1",
+              "legacy_class": null,
+              "effort": "low",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "orx-host",
+              "profile_origin": "user",
+              "driver": "host",
+              "harness": "codex",
+              "declared_harness": "current",
+              "model": "unconfigured",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": "self",
+              "agent_ref": null,
+              "host_blocked_reason": null
+            }
+          ]
+        }
+      },
+      "plan_ir": {
+        "approach": {
+          "decisions": [
+            "Two tasks only: T001 delivers cart_core.py (pure total logic), T002 delivers cart_cli.py and consumes cart_core via dependency_artifacts with empty preread",
+            "Python stdlib only (json, sys); no new files beyond the two modules; no commits or network",
+            "Each worker declares its module as a structured delivery artifact",
+            "Verification is deterministic-first: short shell checks on fixtures and error paths, plus exactly one semantic agent check on T002 for import/no-duplicate-logic/UTF-8/error handling",
+            "Existing project CLI candidates are respected; no other files touched"
+          ],
+          "summary": "T001 builds the pure calculation module cart_core.py with total_cents and validation; T002 builds cart_cli.py on top, importing total_cents, reading one UTF-8 JSON file argument, printing the integer total, and exiting nonzero with diagnostics for unreadable/invalid input. Both are verified with deterministic shell checks against existing fixtures, plus one semantic agent check on T002."
+        },
+        "exploration": {
+          "assumptions": [
+            "fixtures/cart.json and fixtures/invalid.json remain unchanged and are the canonical test inputs",
+            "CLI takes exactly one file path argument; no other CLI surface is required",
+            "stdlib-only Python (json, sys) suffices"
+          ],
+          "relevant_components": [
+            "fixtures/cart.json — valid cart fixture summing to 1900 cents (2x350 + 1x1200)",
+            "fixtures/invalid.json — malformed JSON fixture for CLI error handling",
+            "README.md — states the goal: offline shopping cart total",
+            ".orx/ — ORX harness state; not to be modified"
+          ],
+          "risks": [
+            "Workers might duplicate total logic in cart_cli.py instead of importing cart_core — mitigated by the semantic agent verification on T002",
+            "Non-UTF-8 input could decode-error ungracefully — CLI must open files with explicit UTF-8 and report errors with nonzero exit"
+          ],
+          "summary": "Repo is a fresh ORX acceptance project: README.md states the goal, fixtures/cart.json holds a valid cart (2x350 + 1x1200 = 1900 cents) and fixtures/invalid.json holds malformed JSON. No Python code exists yet; only cart_core.py and cart_cli.py are to be created at the project root. No test framework or config present — stdlib-only Python with shell-based verification.",
+          "unknowns": [
+            "Exact error message wording is unspecified; any diagnostic to stderr with nonzero exit is acceptable"
+          ]
+        },
+        "goal": "G001",
+        "replan": null,
+        "tasks": [
+          {
+            "acceptance": [
+              "cart_core.py exports total_cents(items): sum quantity * unit_cents as integer cents, return 1900 for fixtures/cart.json and 0 for an empty list, reject negative or non-integer quantity/unit_cents with ValueError."
+            ],
+            "dependencies": [],
+            "id": "T001",
+            "objective": "Write cart_core.py exposing total_cents(items) that sums quantity * unit_cents as integer cents, returns 0 for an empty list, and raises ValueError for negative or non-integer quantity/unit_cents. Python stdlib only; declare cart_core.py as the structured delivery artifact.",
+            "preread": [
+              "fixtures/cart.json",
+              "README.md"
+            ],
+            "routing": {
+              "complexity": "low",
+              "required_capabilities": [
+                "coding"
+              ]
+            },
+            "scope": {
+              "allowed": [
+                "cart_core.py"
+              ]
+            },
+            "verification": [
+              "python3 -c \"import json,cart_core; assert cart_core.total_cents(json.load(open('fixtures/cart.json',encoding='utf-8'))) == 1900\"",
+              "python3 -c \"import cart_core; assert cart_core.total_cents([]) == 0\"",
+              "python3 -c \"import cart_core\nfor bad in ([{'quantity':-1,'unit_cents':100}], [{'quantity':1.5,'unit_cents':100}], [{'quantity':1,'unit_cents':'x'}]):\n    try:\n        cart_core.total_cents(bad)\n        raise SystemExit('no ValueError')\n    except ValueError:\n        pass\""
+            ]
+          },
+          {
+            "acceptance": [
+              "cart_cli.py imports and calls cart_core.total_cents, reads one UTF-8 JSON file, prints only the integer total, and exits nonzero with a diagnostic for unreadable files, invalid JSON, or invalid cart values."
+            ],
+            "dependencies": [
+              "T001"
+            ],
+            "id": "T002",
+            "objective": "Write cart_cli.py that imports and calls cart_core.total_cents, reads exactly one UTF-8 JSON file path argument, prints only the integer total to stdout, and exits nonzero with a diagnostic for unreadable files, invalid JSON, or invalid cart values. No duplicate total logic. Declare cart_cli.py as the structured delivery artifact; cart_core.py arrives via dependency_artifacts (preread is empty).",
+            "preread": [],
+            "routing": {
+              "complexity": "low",
+              "required_capabilities": [
+                "coding"
+              ]
+            },
+            "scope": {
+              "allowed": [
+                "cart_cli.py"
+              ]
+            },
+            "verification": [
+              "python3 cart_cli.py fixtures/cart.json | grep -qx 1900",
+              "! python3 cart_cli.py fixtures/missing.json >/dev/null 2>&1",
+              "! python3 cart_cli.py fixtures/invalid.json >/dev/null 2>&1",
+              "agent: Inspect cart_cli.py and confirm it (1) actually imports cart_core and calls cart_core.total_cents with no duplicated total-computation logic, (2) opens the input file with explicit UTF-8 encoding, and (3) handles unreadable files, invalid JSON, and invalid cart values by printing a diagnostic and exiting nonzero."
+            ]
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "id": 1,
+          "role": "planner",
+          "task_id": null,
+          "profile": "claude-plan",
+          "harness": "claude",
+          "model": "sonnet",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "zcode/GLM-5.3[1m]",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:17:14.211767+00:00",
+          "ended_at": "2026-11-19T04:17:39.310919+00:00",
+          "session_ref": "1f55291c-b25d-4b69-aa1e-5cd68b80dd4f",
+          "verify_entry": null,
+          "duration_sec": 25.099
+        },
+        {
+          "id": 2,
+          "role": "worker",
+          "task_id": "T001",
+          "profile": "zcode-cli-worker",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:17:57.880377+00:00",
+          "ended_at": "2026-11-19T04:18:24.479514+00:00",
+          "session_ref": "sess_fb1fefd5-9a2c-4cdc-abc2-4a88d1d93290",
+          "verify_entry": null,
+          "duration_sec": 26.599
+        },
+        {
+          "id": 3,
+          "role": "worker",
+          "task_id": "T002",
+          "profile": "zcode-cli-worker",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:19:06.826347+00:00",
+          "ended_at": "2026-11-19T04:19:25.653043+00:00",
+          "session_ref": "sess_f9320a5e-2f0c-43b8-a6db-a203d2d3b1d2",
+          "verify_entry": null,
+          "duration_sec": 18.827
+        },
+        {
+          "id": 4,
+          "role": "verifier",
+          "task_id": "T002",
+          "profile": "codex-verify",
+          "harness": "codex",
+          "model": "gpt-6.1-sol",
+          "requested_effort": "low",
+          "actual_effort": "low",
+          "effort_source": "requested_validated",
+          "actual_model": null,
+          "result": "pass",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:19:57.052795+00:00",
+          "ended_at": "2026-11-19T04:20:16.063407+00:00",
+          "session_ref": "01a1f208-60ae-7793-9c20-0b64a8633818",
+          "verify_entry": "agent: Inspect cart_cli.py and confirm it (1) actually imports cart_core and calls cart_core.total_cents with no duplicated total-computation logic, (2) opens the input file with explicit UTF-8 encoding, and (3) handles unreadable files, invalid JSON, and invalid cart values by printing a diagnostic and exiting nonzero.",
+          "duration_sec": 19.011
+        }
+      ],
+      "route_controller_declarations": [
+        {
+          "harness": "codex",
+          "agents": []
+        },
+        {
+          "harness": "codex",
+          "agents": []
+        },
+        {
+          "harness": "codex",
+          "agents": []
+        },
+        {
+          "harness": "codex",
+          "agents": []
+        },
+        {
+          "harness": "codex",
+          "agents": []
+        }
+      ],
+      "handoff": [
+        {
+          "task": "T001",
+          "revision": 1,
+          "attempt": 2,
+          "artifacts": [
+            {
+              "path": "cart_core.py",
+              "exists": true
+            }
+          ]
+        }
+      ],
+      "worker_command_checks": [
+        {
+          "total": 3,
+          "passed": 3,
+          "denied": 0,
+          "failed": 0
+        },
+        {
+          "total": 3,
+          "passed": 3,
+          "denied": 0,
+          "failed": 0
+        }
+      ],
+      "next_actions_after_workers": [
+        [
+          {
+            "action": "run",
+            "tasks": [
+              "T002"
+            ],
+            "command": "orx --host codex run --json"
+          }
+        ],
+        [
+          {
+            "action": "verify",
+            "tasks": [
+              "T002"
+            ],
+            "command": "orx --host codex verify --json"
+          }
+        ]
+      ],
+      "verifier_evidence": {
+        "worker_attempt": 3,
+        "artifacts": [
+          {
+            "path": "cart_cli.py",
+            "exists": true
+          }
+        ],
+        "paths": [
+          {
+            "kind": "execution",
+            "path": ".orx/runs/R001/exec/T002-3.log"
+          },
+          {
+            "kind": "completion",
+            "path": ".orx/runs/R001/exec/T002-3.delivery.json"
+          }
+        ],
+        "command_checks": [
+          {
+            "command": "python3 cart_cli.py fixtures/cart.json | grep -qx 1900",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/01-0000-command.log",
+            "attempt": 3
+          },
+          {
+            "command": "! python3 cart_cli.py fixtures/missing.json >/dev/null 2>&1",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/02-0001-command.log",
+            "attempt": 3
+          },
+          {
+            "command": "! python3 cart_cli.py fixtures/invalid.json >/dev/null 2>&1",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/03-0002-command.log",
+            "attempt": 3
+          }
+        ],
+        "dependency_artifacts": [
+          {
+            "task": "T001",
+            "revision": 1,
+            "attempt": 2,
+            "artifacts": [
+              {
+                "path": "cart_core.py",
+                "exists": true
+              }
+            ]
+          }
+        ]
+      },
+      "final": {
+        "run": {
+          "id": "R001",
+          "status": "done",
+          "started_at": "2026-11-19T04:17:39.312631+00:00",
+          "completed_at": "2026-11-19T04:20:16.063848+00:00"
+        },
+        "tasks": {
+          "T001": "passed",
+          "T002": "passed"
+        },
+        "verification": {
+          "passed": 7,
+          "failed": 0,
+          "awaiting_agent": 0
+        },
+        "next_actions": [
+          {
+            "action": "done"
+          }
+        ],
+        "output": "1900"
+      },
+      "artifacts": {
+        "cart_core.py": {
+          "sha256": "d3faa61c24619ad58acf0a1d5c7e5fa8578958db62f21b80e8e1bdc7eda114ad",
+          "content": "\"\"\"Core cart total logic for the offline shopping cart CLI.\"\"\"\n\n\ndef total_cents(items):\n    \"\"\"Return the cart total in integer cents.\n\n    Sums quantity * unit_cents over items. Returns 0 for an empty\n    list. Raises ValueError for negative or non-integer quantity or\n    unit_cents values.\n    \"\"\"\n    total = 0\n    for item in items:\n        quantity = item[\"quantity\"]\n        unit_cents = item[\"unit_cents\"]\n        if not isinstance(quantity, int) or isinstance(quantity, bool):\n            raise ValueError(f\"invalid quantity: {quantity!r}\")\n        if not isinstance(unit_cents, int) or isinstance(unit_cents, bool):\n            raise ValueError(f\"invalid unit_cents: {unit_cents!r}\")\n        if quantity < 0:\n            raise ValueError(f\"negative quantity: {quantity!r}\")\n        if unit_cents < 0:\n            raise ValueError(f\"negative unit_cents: {unit_cents!r}\")\n        total += quantity * unit_cents\n    return total\n"
+        },
+        "cart_cli.py": {
+          "sha256": "1747e9925281e64b63959296665a8590600ef53c1e94b76970283710169dbb6f",
+          "content": "\"\"\"CLI entry point: prints the cart total in cents for a JSON cart file.\"\"\"\n\nimport json\nimport sys\n\nimport cart_core\n\n\ndef main(argv):\n    if len(argv) != 2:\n        print(f\"usage: {argv[0]} <cart.json>\", file=sys.stderr)\n        return 2\n    path = argv[1]\n    try:\n        with open(path, encoding=\"utf-8\") as f:\n            cart = json.load(f)\n    except OSError as exc:\n        print(f\"error: cannot read {path}: {exc}\", file=sys.stderr)\n        return 1\n    except json.JSONDecodeError as exc:\n        print(f\"error: invalid JSON in {path}: {exc}\", file=sys.stderr)\n        return 1\n    if not isinstance(cart, list):\n        print(f\"error: invalid cart: expected a JSON array\", file=sys.stderr)\n        return 1\n    try:\n        total = cart_core.total_cents(cart)\n    except (ValueError, KeyError, TypeError) as exc:\n        print(f\"error: invalid cart values in {path}: {exc}\", file=sys.stderr)\n        return 1\n    print(total)\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main(sys.argv))\n"
+        }
+      },
+      "usage": {
+        "observations": [
+          {
+            "id": 1,
+            "attempt_id": 1,
+            "profile": "claude-plan",
+            "run_id": "R001",
+            "task_id": null,
+            "input_tokens": 16885,
+            "output_tokens": 2544,
+            "cached_input_tokens": 49280,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:17:39.310482+00:00",
+            "session_ref": "1f55291c-b25d-4b69-aa1e-5cd68b80dd4f"
+          },
+          {
+            "id": 2,
+            "attempt_id": 2,
+            "profile": "zcode-cli-worker",
+            "run_id": "R001",
+            "task_id": "T001",
+            "input_tokens": 121767,
+            "output_tokens": 889,
+            "cached_input_tokens": 99200,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:18:24.476992+00:00",
+            "session_ref": "sess_fb1fefd5-9a2c-4cdc-abc2-4a88d1d93290"
+          },
+          {
+            "id": 3,
+            "attempt_id": 3,
+            "profile": "zcode-cli-worker",
+            "run_id": "R001",
+            "task_id": "T002",
+            "input_tokens": 98240,
+            "output_tokens": 685,
+            "cached_input_tokens": 73280,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:19:25.651023+00:00",
+            "session_ref": "sess_f9320a5e-2f0c-43b8-a6db-a203d2d3b1d2"
+          },
+          {
+            "id": 4,
+            "attempt_id": 4,
+            "profile": "codex-verify",
+            "run_id": "R001",
+            "task_id": "T002",
+            "input_tokens": 42291,
+            "output_tokens": 177,
+            "cached_input_tokens": 27392,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:20:16.063148+00:00",
+            "session_ref": "01a1f208-60ae-7793-9c20-0b64a8633818"
+          }
+        ],
+        "coverage": [
+          {
+            "profile": "claude-plan",
+            "attempts": 1,
+            "observed": 1,
+            "measurement_accuracy": "exact"
+          },
+          {
+            "profile": "zcode-cli-worker",
+            "attempts": 2,
+            "observed": 2,
+            "measurement_accuracy": "exact"
+          },
+          {
+            "profile": "codex-verify",
+            "attempts": 1,
+            "observed": 1,
+            "measurement_accuracy": "exact"
+          }
+        ],
+        "attribution": {
+          "roles": [
+            {
+              "role": "planner",
+              "attempts": 1,
+              "observed": 1,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 16885,
+              "output_tokens": 2544,
+              "cached_input_tokens": 49280,
+              "normalized_processing_tokens": 0,
+              "uncached_input_tokens": 0,
+              "normalized_incomplete_observations": 1
+            },
+            {
+              "role": "worker",
+              "attempts": 2,
+              "observed": 2,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 220007,
+              "output_tokens": 1574,
+              "cached_input_tokens": 172480,
+              "normalized_processing_tokens": 221581,
+              "uncached_input_tokens": 47527,
+              "normalized_incomplete_observations": 0
+            },
+            {
+              "role": "verifier",
+              "attempts": 1,
+              "observed": 1,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 42291,
+              "output_tokens": 177,
+              "cached_input_tokens": 27392,
+              "normalized_processing_tokens": 42468,
+              "uncached_input_tokens": 14899,
+              "normalized_incomplete_observations": 0
+            }
+          ],
+          "controller": {
+            "bucket": "controller",
+            "session_ref": null,
+            "status": "unbound",
+            "own": {
+              "requests": 0,
+              "status_counts": {},
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_read_input_tokens": null,
+              "uncached_input_tokens": null,
+              "normalized_processing_tokens": null,
+              "error_rows_zero_tokens": 0,
+              "duplicate_request_rows_dropped": 0
+            },
+            "unattributed_sessions": [],
+            "unattributed": {
+              "requests": 0,
+              "status_counts": {},
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_read_input_tokens": null,
+              "uncached_input_tokens": null,
+              "normalized_processing_tokens": null,
+              "error_rows_zero_tokens": 0,
+              "duplicate_request_rows_dropped": 0
+            }
+          },
+          "probe": {
+            "bucket": "probe",
+            "attempts": 0,
+            "observed": 0,
+            "note": "a probe never runs a completion, so this book is empty by design — listed separately so nothing merges into it and no omission is hidden"
+          },
+          "note": "normalized processing is a per-provider volume measure (raw fields kept verbatim); it is not billing"
+        }
+      },
+      "observed_permission_blockers": 0,
+      "observed_timeouts": 0
+    },
+    "zcode": {
+      "project": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/project",
+      "import_path": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/venv/lib/python3.12/site-packages/orx",
+      "direct_url": {
+        "url": "file:///var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/final-dist/orx_agent-0.4.0-py3-none-any.whl",
+        "archive_info": {}
+      },
+      "installed_python_source_hashes": {
+        "update.py": "50ab45a7525ce63cd96c6ced63c5abf01cf8607398685b87fd11003a0025c329",
+        "plan.py": "361ffc11ad8e122344ca5e154321047140a49e08f793b8ee57ae84053b9040e2",
+        "config.py": "32b49fcde61d924f5a164a731630717796ad993677ee2a13811fb6056df83207",
+        "models.py": "02d35319e0ebd7d2519751ecb2f788259516d8ab1b10d4cfa6fb91a3a3705d44",
+        "skills.py": "caf1dc3b4df4e75cf74aca3661edcabb85549d513c6aef2c7815c2e95d4a46da",
+        "presets.py": "3b8b9b4b95cebfbf16e622a62284f74886327c65f12ffaec0c51810a9cf195f1",
+        "health.py": "8d118705cd91a002c9066816b289bf004cdd99dea64bbed16b940cb0838ac839",
+        "dispatch.py": "12ce5ae19251563a661f537c3208f96f695703c5566c80055109b490f9dd2a60",
+        "records.py": "4e9d759c970a6571ef6c8f6e19ecb267c2e130815f760c110b3aeeaa7f8d77f5",
+        "quota.py": "5e322baeeb1ecfd686682510d5f276983c02b1e7c5d93b0ca47140c3671b100c",
+        "__init__.py": "8c9ba4fe40729eb49b4e0df3a0d440fb1ab56280b5c19cf3d16137e2b681e01d",
+        "runtime.py": "11cfedec137e204a06bb9b3abba420ae0509292cc5106f4560557d0407b42a70",
+        "zcode_sessions.py": "e8d13985268a0b235ac22584605fecec51139fbc83d7a39cdb46ca509cbd5dea",
+        "machine.py": "7c49379a5d4734efb12539037bed468b3833d441972161dcb8728eaac5bf38ef",
+        "sources.py": "ac3c0e8c432f22669c4e2bec48c0f6338c799b740943ef21a3b716f6eec13d16",
+        "model_catalog.py": "3ec14dea52a8ef54e80a2e92cbddca9c83c1ead565afc36ada3685b17c5537a7",
+        "cli.py": "aaa2095649e6b8eba83f14accf1809dd76e64c53a456ee24ccf21498646819d5",
+        "routing.py": "55b6ecd3a0d863d22566f76a4efae57469ce408950a033569f52670117f09630",
+        "probes.py": "b7d089168e61c8ad7bfe63e7a08bd1bea54e3eeb221a5beb378c0dec79016704",
+        "verify.py": "c867119aacc8a86b14d57b428a74cfdc8a5f7a6586f1492815d9ae7a1da041bc",
+        "doctor.py": "0778c4871d59127ead33dba8c32d7862b8225058559dfcbae39541cf62cd9c1f",
+        "__main__.py": "82d915721ad2d5a5fa49a79ed637640136fa7189fe8bdb888edd5a9bf15ec2d4",
+        "project_index.py": "52e1244ac1c7ee54c55487dbf2c8b95ad3b86112a6c3c24bb0205ddde0c16d97",
+        "state.py": "3fb129fa5fed7c7c5fb61e291dc68a517d5a5da081936187c486fbc77a1b5b06",
+        "adapters/headless.py": "f9e19639d3e964b9e8ce6eff44a07abfcafc2eff15e7673e7dfdad3bd15b2a8a",
+        "adapters/zcode.py": "886b7ea34865e9d005cc4ab0ef9f67d615b5cb9bc3b96b77136e1ced0f4d100e",
+        "adapters/codex.py": "9d3370b3dd60ed190473f7077e29488bf4f5be960cd49c424a3ea5ed7f71ba8c",
+        "adapters/claude.py": "081468083a72a932ddd08118c6fba23d419207f8e1eaa67dd8ae7d9504d44c15",
+        "adapters/shell.py": "caeff2438677befae71323b184c36bd8cc7361b22f7cc04b6da7d670db154f5f",
+        "adapters/__init__.py": "13420a68ea0ba2379f33d173b692eb502f9994a724f75a1094523f6ac524bb69",
+        "adapters/base.py": "77a4e23475ced37a5acb96af382e965fd7feb5ea652b9a532d07615c51423b69",
+        "adapters/cursor.py": "23da16efe6e96a0a38283100befe0ff952ecb02c49e4342f6e46ea4e4c457a10"
+      },
+      "controller": {
+        "kind": "real ZCode CLI session",
+        "session_ref": "sess_aeb7aa6b-0b76-445a-8387-73faee956d1e",
+        "model": "account:bigmodel-individual-coding-plan/GLM-5.3-Flash",
+        "requested_effort": "low",
+        "own_usage": {
+          "source": "provider",
+          "modelRequestCount": 12,
+          "inputTokens": 403342,
+          "outputTokens": 2454,
+          "totalTokens": 405796,
+          "cacheReadTokens": 342464,
+          "cacheWriteTokens": 0,
+          "reasoningTokens": 0,
+          "webFetchRequests": 0,
+          "webSearchRequests": 0
+        },
+        "installed_skill_read": true,
+        "trace_sha256": "53b275e973390083e3fd92974e728f38f9380e04d4b2c0a17afec747450cbc93"
+      },
+      "installed_skills": {
+        "orx-controller": {
+          "link": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/skill-home/.zcode/skills/orx-controller",
+          "target": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/skill-home/.agents/skills/orx-controller",
+          "sha256": "3c51122b5de57764729576f309839af367719f129deb5903bf09c81cd6e3db1a"
+        },
+        "orx-agent": {
+          "link": "/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/skill-home/.zcode/skills/orx-agent",
+          "target": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/skill-home/.agents/skills/orx-agent",
+          "sha256": "13f32c44007d54b19e6999d4c495a8b8cc3cf30384c85e66f9c63ab4b46db28c"
+        }
+      },
+      "init": {
+        "ok": true,
+        "root": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx-host-install.uxr57en1/zcode-final/project",
+        "created": [
+          ".orx/state.db"
+        ],
+        "inherited": [
+          ".orx/config.toml",
+          ".orx/profiles.toml"
+        ]
+      },
+      "model_selection": {
+        "controller": {
+          "session_harness": "zcode",
+          "native_agents": [],
+          "session_ref": null,
+          "source": "cli",
+          "origin": "user",
+          "candidate": {
+            "profile": "orx-host",
+            "profile_origin": "user",
+            "driver": "host",
+            "harness": "zcode",
+            "declared_harness": "current",
+            "model": "unconfigured",
+            "tier": "T2",
+            "legacy_class": null,
+            "effort": "medium",
+            "native_effort": null,
+            "host_mode": "self",
+            "agent_ref": null,
+            "host_blocked_reason": null
+          }
+        },
+        "planner": {
+          "depth": "standard",
+          "depth_origin": "user",
+          "depths": {
+            "light": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "zcode",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            },
+            "standard": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "zcode",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            },
+            "deep": {
+              "origin": "user",
+              "candidates": [
+                {
+                  "profile": "claude-plan-deep",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "claude",
+                  "declared_harness": "claude",
+                  "model": "sonnet",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "high",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "codex-verify",
+                  "profile_origin": "user",
+                  "driver": "cli",
+                  "harness": "codex",
+                  "declared_harness": "codex",
+                  "model": "gpt-6.1-sol",
+                  "tier": "T1",
+                  "legacy_class": null,
+                  "effort": "low",
+                  "native_effort": null,
+                  "host_mode": null,
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                },
+                {
+                  "profile": "orx-host",
+                  "profile_origin": "user",
+                  "driver": "host",
+                  "harness": "zcode",
+                  "declared_harness": "current",
+                  "model": "unconfigured",
+                  "tier": "T2",
+                  "legacy_class": null,
+                  "effort": "medium",
+                  "native_effort": null,
+                  "host_mode": "self",
+                  "agent_ref": null,
+                  "host_blocked_reason": null
+                }
+              ]
+            }
+          }
+        },
+        "worker": {
+          "origin": "user",
+          "candidates": [
+            {
+              "profile": "zcode-cli-worker",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "zcode",
+              "declared_harness": "zcode",
+              "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "low",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "cursor-cli-worker",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "cursor",
+              "declared_harness": "cursor",
+              "model": "grok@4.7",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "orx-host",
+              "profile_origin": "user",
+              "driver": "host",
+              "harness": "zcode",
+              "declared_harness": "current",
+              "model": "unconfigured",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": "self",
+              "agent_ref": null,
+              "host_blocked_reason": null
+            }
+          ]
+        },
+        "verifier": {
+          "origin": "user",
+          "candidates": [
+            {
+              "profile": "codex-verify",
+              "profile_origin": "user",
+              "driver": "cli",
+              "harness": "codex",
+              "declared_harness": "codex",
+              "model": "gpt-6.1-sol",
+              "tier": "T1",
+              "legacy_class": null,
+              "effort": "low",
+              "native_effort": null,
+              "host_mode": null,
+              "agent_ref": null,
+              "host_blocked_reason": null
+            },
+            {
+              "profile": "orx-host",
+              "profile_origin": "user",
+              "driver": "host",
+              "harness": "zcode",
+              "declared_harness": "current",
+              "model": "unconfigured",
+              "tier": "T2",
+              "legacy_class": null,
+              "effort": "medium",
+              "native_effort": null,
+              "host_mode": "self",
+              "agent_ref": null,
+              "host_blocked_reason": null
+            }
+          ]
+        }
+      },
+      "plan_ir": {
+        "approach": {
+          "decisions": [
+            "T001 builds cart_core.py with strict total_cents(items): integer cents, ValueError for negative or non-integer quantity/unit_cents (bools rejected)",
+            "T002 builds cart_cli.py as a thin wrapper: argv handling, UTF-8 JSON read, delegation to cart_core.total_cents, nonzero exit with stderr diagnostic on any failure; no duplicated arithmetic",
+            "Single dependency edge T001 -> T002; T002 preread empty so cart_core.py arrives via dependency_artifacts",
+            "Python stdlib only (sys/json); no files beyond the two modules; no commits or network"
+          ],
+          "summary": "Two sequential tasks: a pure computation module (cart_core.py) and a CLI wrapper (cart_cli.py) that delegates all arithmetic to it, prints 1900 for fixtures/cart.json, and fails nonzero with diagnostics for missing files, invalid JSON, or invalid cart values."
+        },
+        "exploration": {
+          "assumptions": [
+            "fixtures/cart.json and fixtures/invalid.json remain unchanged for verification",
+            "CLI invoked as `python3 cart_cli.py <file>`, prints only the integer total to stdout",
+            "Diagnostics go to stderr with a nonzero exit code"
+          ],
+          "relevant_components": [
+            "fixtures/cart.json",
+            "fixtures/invalid.json",
+            "README.md"
+          ],
+          "risks": [
+            "cart_core must reject bool quantity/unit_cents since bool subclasses int in Python",
+            "CLI must not duplicate total logic; all arithmetic stays in cart_core",
+            "JSON must be read with explicit encoding='utf-8', not locale default"
+          ],
+          "summary": "Fresh, near-empty repository containing only README.md, fixtures/cart.json (valid cart summing to 1900 cents) and fixtures/invalid.json (malformed JSON). No existing code, tests, or CLI candidates; cart_core.py and cart_cli.py are created from scratch with the Python stdlib only.",
+          "unknowns": [
+            "No existing code conventions or test framework to follow — use plain stdlib patterns."
+          ]
+        },
+        "goal": "G001",
+        "replan": null,
+        "tasks": [
+          {
+            "acceptance": [
+              "cart_core.py exports total_cents(items): sum quantity * unit_cents as integer cents, return 1900 for fixtures/cart.json and 0 for an empty list, reject negative or non-integer quantity/unit_cents with ValueError."
+            ],
+            "dependencies": [],
+            "id": "T001",
+            "objective": "Implement cart_core.py exposing total_cents(items) that sums quantity * unit_cents in integer cents, returns 0 for an empty list, and raises ValueError for negative or non-integer quantity/unit_cents (including bools).",
+            "preread": [
+              "fixtures/cart.json"
+            ],
+            "routing": {
+              "complexity": "low",
+              "required_capabilities": [
+                "coding"
+              ]
+            },
+            "scope": {
+              "allowed": [
+                "cart_core.py"
+              ]
+            },
+            "verification": [
+              "python3 -c \"import json, cart_core; assert cart_core.total_cents(json.load(open('fixtures/cart.json', encoding='utf-8'))) == 1900; assert cart_core.total_cents([]) == 0; print('ok')\"",
+              "python3 - <<'EOF'\nimport cart_core\nbad_carts = [\n    [{'quantity': -1, 'unit_cents': 100}],\n    [{'quantity': 1.5, 'unit_cents': 100}],\n    [{'quantity': 1, 'unit_cents': -5}],\n    [{'quantity': 1, 'unit_cents': True}],\n    [{'quantity': '2', 'unit_cents': 100}],\n]\nfor bad in bad_carts:\n    try:\n        cart_core.total_cents(bad)\n    except ValueError:\n        pass\n    else:\n        raise SystemExit('expected ValueError for %r' % (bad,))\nprint('ok')\nEOF",
+              "python3 -m py_compile cart_core.py"
+            ]
+          },
+          {
+            "acceptance": [
+              "cart_cli.py imports and calls cart_core.total_cents, reads one UTF-8 JSON file, prints only the integer total, and exits nonzero with a diagnostic for unreadable files, invalid JSON, or invalid cart values."
+            ],
+            "dependencies": [
+              "T001"
+            ],
+            "id": "T002",
+            "objective": "Implement cart_cli.py that takes exactly one JSON file path argument, opens it with explicit UTF-8, calls cart_core.total_cents, prints only the integer total, and exits nonzero with a stderr diagnostic for unreadable files, invalid JSON, or invalid cart values.",
+            "preread": [],
+            "routing": {
+              "complexity": "low",
+              "required_capabilities": [
+                "coding"
+              ]
+            },
+            "scope": {
+              "allowed": [
+                "cart_cli.py"
+              ]
+            },
+            "verification": [
+              "python3 cart_cli.py fixtures/cart.json | grep -qx 1900",
+              "if python3 cart_cli.py fixtures/missing.json >/dev/null 2>&1; then echo 'FAIL: expected nonzero'; exit 1; fi",
+              "if python3 cart_cli.py fixtures/invalid.json >/dev/null 2>&1; then echo 'FAIL: expected nonzero'; exit 1; fi",
+              "python3 -m py_compile cart_cli.py",
+              "agent: Read cart_cli.py and verify: (1) it imports cart_core and computes the total exclusively by calling cart_core.total_cents with no duplicated summation logic, (2) it reads exactly one file path argument and opens it with explicit UTF-8 encoding, (3) it prints only the integer total on success, and (4) it handles unreadable files, invalid JSON, and invalid cart values by printing a diagnostic and exiting nonzero. Report pass/fail per point."
+            ]
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "id": 1,
+          "role": "planner",
+          "task_id": null,
+          "profile": "claude-plan",
+          "harness": "claude",
+          "model": "sonnet",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "zcode/GLM-5.3[1m]",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:17:46.824279+00:00",
+          "ended_at": "2026-11-19T04:18:29.106261+00:00",
+          "session_ref": "3afc0d7c-745e-4c38-879e-9b1e309fea15",
+          "verify_entry": null,
+          "duration_sec": 42.282
+        },
+        {
+          "id": 2,
+          "role": "worker",
+          "task_id": "T001",
+          "profile": "zcode-cli-worker",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:18:41.910264+00:00",
+          "ended_at": "2026-11-19T04:19:09.276345+00:00",
+          "session_ref": "sess_394adaeb-ec60-4a0d-a3fc-dbbadcf402d8",
+          "verify_entry": null,
+          "duration_sec": 27.366
+        },
+        {
+          "id": 3,
+          "role": "worker",
+          "task_id": "T002",
+          "profile": "zcode-cli-worker",
+          "harness": "zcode",
+          "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "requested_effort": "low",
+          "actual_effort": null,
+          "effort_source": null,
+          "actual_model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+          "result": "completed",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:19:25.829091+00:00",
+          "ended_at": "2026-11-19T04:20:06.112707+00:00",
+          "session_ref": "sess_d19207ae-ae05-4074-9034-9f7e330fd5da",
+          "verify_entry": null,
+          "duration_sec": 40.284
+        },
+        {
+          "id": 4,
+          "role": "verifier",
+          "task_id": "T002",
+          "profile": "codex-verify",
+          "harness": "codex",
+          "model": "gpt-6.1-sol",
+          "requested_effort": "low",
+          "actual_effort": "low",
+          "effort_source": "requested_validated",
+          "actual_model": null,
+          "result": "pass",
+          "failure_reason": null,
+          "started_at": "2026-11-19T04:20:12.601266+00:00",
+          "ended_at": "2026-11-19T04:20:28.379869+00:00",
+          "session_ref": "01a1f208-9b19-7002-aaf0-f02abed32324",
+          "verify_entry": "agent: Read cart_cli.py and verify: (1) it imports cart_core and computes the total exclusively by calling cart_core.total_cents with no duplicated summation logic, (2) it reads exactly one file path argument and opens it with explicit UTF-8 encoding, (3) it prints only the integer total on success, and (4) it handles unreadable files, invalid JSON, and invalid cart values by printing a diagnostic and exiting nonzero. Report pass/fail per point.",
+          "duration_sec": 15.779
+        }
+      ],
+      "route_controller_declarations": [
+        {
+          "harness": "zcode",
+          "agents": []
+        },
+        {
+          "harness": "zcode",
+          "agents": []
+        },
+        {
+          "harness": "zcode",
+          "agents": []
+        },
+        {
+          "harness": "zcode",
+          "agents": []
+        },
+        {
+          "harness": "zcode",
+          "agents": []
+        }
+      ],
+      "handoff": [
+        {
+          "task": "T001",
+          "revision": 1,
+          "attempt": 2,
+          "artifacts": [
+            {
+              "path": "cart_core.py",
+              "exists": true
+            }
+          ]
+        }
+      ],
+      "worker_command_checks": [
+        {
+          "total": 3,
+          "passed": 3,
+          "denied": 0,
+          "failed": 0
+        },
+        {
+          "total": 4,
+          "passed": 4,
+          "denied": 0,
+          "failed": 0
+        }
+      ],
+      "next_actions_after_workers": [
+        [
+          {
+            "action": "run",
+            "tasks": [
+              "T002"
+            ],
+            "command": "orx --host zcode run --json"
+          }
+        ],
+        [
+          {
+            "action": "verify",
+            "tasks": [
+              "T002"
+            ],
+            "command": "orx --host zcode verify --json"
+          }
+        ]
+      ],
+      "verifier_evidence": {
+        "worker_attempt": 3,
+        "artifacts": [
+          {
+            "path": "cart_cli.py",
+            "exists": true
+          }
+        ],
+        "paths": [
+          {
+            "kind": "execution",
+            "path": ".orx/runs/R001/exec/T002-3.log"
+          },
+          {
+            "kind": "completion",
+            "path": ".orx/runs/R001/exec/T002-3.delivery.json"
+          }
+        ],
+        "command_checks": [
+          {
+            "command": "python3 cart_cli.py fixtures/cart.json | grep -qx 1900",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/01-0000-command.log",
+            "attempt": 3
+          },
+          {
+            "command": "if python3 cart_cli.py fixtures/missing.json >/dev/null 2>&1; then echo 'FAIL: expected nonzero'; exit 1; fi",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/02-0001-command.log",
+            "attempt": 3
+          },
+          {
+            "command": "if python3 cart_cli.py fixtures/invalid.json >/dev/null 2>&1; then echo 'FAIL: expected nonzero'; exit 1; fi",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/03-0002-command.log",
+            "attempt": 3
+          },
+          {
+            "command": "python3 -m py_compile cart_cli.py",
+            "passed": true,
+            "exit_code": 0,
+            "log": ".orx/runs/R001/check/T002/04-0003-command.log",
+            "attempt": 3
+          }
+        ],
+        "dependency_artifacts": [
+          {
+            "task": "T001",
+            "revision": 1,
+            "attempt": 2,
+            "artifacts": [
+              {
+                "path": "cart_core.py",
+                "exists": true
+              }
+            ]
+          }
+        ]
+      },
+      "final": {
+        "run": {
+          "id": "R001",
+          "status": "done",
+          "started_at": "2026-11-19T04:18:29.107529+00:00",
+          "completed_at": "2026-11-19T04:20:28.380574+00:00"
+        },
+        "tasks": {
+          "T001": "passed",
+          "T002": "passed"
+        },
+        "verification": {
+          "passed": 8,
+          "failed": 0,
+          "awaiting_agent": 0
+        },
+        "next_actions": [
+          {
+            "action": "done"
+          }
+        ],
+        "output": "1900"
+      },
+      "artifacts": {
+        "cart_core.py": {
+          "sha256": "18bf2d9d16eb1f69587e895a5f3434cb7e88690715fdaabdfedf2eab4e34c9a8",
+          "content": "\"\"\"Core cart total logic for the offline shopping cart CLI.\"\"\"\n\n\ndef total_cents(items):\n    \"\"\"Return the total price of `items` in integer cents.\n\n    Each item must be a mapping with integer `quantity` and `unit_cents`\n    (bools are rejected). Returns 0 for an empty list. Raises ValueError\n    for negative or non-integer values.\n    \"\"\"\n    total = 0\n    for item in items:\n        quantity = item[\"quantity\"]\n        unit_cents = item[\"unit_cents\"]\n        for name, value in ((\"quantity\", quantity), (\"unit_cents\", unit_cents)):\n            if isinstance(value, bool) or not isinstance(value, int):\n                raise ValueError(\n                    \"%s must be an integer, got %r\" % (name, value)\n                )\n            if value < 0:\n                raise ValueError(\n                    \"%s must be non-negative, got %r\" % (name, value)\n                )\n        total += quantity * unit_cents\n    return total\n"
+        },
+        "cart_cli.py": {
+          "sha256": "566090eaab018735e9c1c1c3165e4ae79b2aa72147ee4f40936e73d9fbb6ce35",
+          "content": "\"\"\"CLI for the offline shopping cart: print the cart total in cents.\n\nUsage: python3 cart_cli.py <cart.json>\n\"\"\"\n\nimport json\nimport sys\n\nimport cart_core\n\n\ndef main(argv):\n    if len(argv) != 2:\n        print(\"usage: cart_cli.py <cart.json>\", file=sys.stderr)\n        return 2\n    path = argv[1]\n    try:\n        with open(path, encoding=\"utf-8\") as f:\n            cart = json.load(f)\n        total = cart_core.total_cents(cart)\n    except OSError as exc:\n        print(\"cart_cli: cannot read %s: %s\" % (path, exc), file=sys.stderr)\n        return 1\n    except json.JSONDecodeError as exc:\n        print(\"cart_cli: invalid JSON in %s: %s\" % (path, exc), file=sys.stderr)\n        return 1\n    except (ValueError, TypeError, KeyError) as exc:\n        print(\"cart_cli: invalid cart values in %s: %s\" % (path, exc), file=sys.stderr)\n        return 1\n    print(total)\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main(sys.argv))\n"
+        }
+      },
+      "usage": {
+        "observations": [
+          {
+            "id": 1,
+            "attempt_id": 1,
+            "profile": "claude-plan",
+            "run_id": "R001",
+            "task_id": null,
+            "input_tokens": 17445,
+            "output_tokens": 2489,
+            "cached_input_tokens": 32128,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:18:29.105837+00:00",
+            "session_ref": "3afc0d7c-745e-4c38-879e-9b1e309fea15"
+          },
+          {
+            "id": 2,
+            "attempt_id": 2,
+            "profile": "zcode-cli-worker",
+            "run_id": "R001",
+            "task_id": "T001",
+            "input_tokens": 122096,
+            "output_tokens": 842,
+            "cached_input_tokens": 97280,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:19:09.273827+00:00",
+            "session_ref": "sess_394adaeb-ec60-4a0d-a3fc-dbbadcf402d8"
+          },
+          {
+            "id": 3,
+            "attempt_id": 3,
+            "profile": "zcode-cli-worker",
+            "run_id": "R001",
+            "task_id": "T002",
+            "input_tokens": 148583,
+            "output_tokens": 971,
+            "cached_input_tokens": 123456,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:20:06.110229+00:00",
+            "session_ref": "sess_d19207ae-ae05-4074-9034-9f7e330fd5da"
+          },
+          {
+            "id": 4,
+            "attempt_id": 4,
+            "profile": "codex-verify",
+            "run_id": "R001",
+            "task_id": "T002",
+            "input_tokens": 42362,
+            "output_tokens": 172,
+            "cached_input_tokens": 26880,
+            "source": "native_cli",
+            "accuracy": "exact",
+            "created_at": "2026-11-19T04:20:28.379351+00:00",
+            "session_ref": "01a1f208-9b19-7002-aaf0-f02abed32324"
+          }
+        ],
+        "coverage": [
+          {
+            "profile": "claude-plan",
+            "attempts": 1,
+            "observed": 1,
+            "measurement_accuracy": "exact"
+          },
+          {
+            "profile": "zcode-cli-worker",
+            "attempts": 2,
+            "observed": 2,
+            "measurement_accuracy": "exact"
+          },
+          {
+            "profile": "codex-verify",
+            "attempts": 1,
+            "observed": 1,
+            "measurement_accuracy": "exact"
+          }
+        ],
+        "attribution": {
+          "roles": [
+            {
+              "role": "planner",
+              "attempts": 1,
+              "observed": 1,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 17445,
+              "output_tokens": 2489,
+              "cached_input_tokens": 32128,
+              "normalized_processing_tokens": 0,
+              "uncached_input_tokens": 0,
+              "normalized_incomplete_observations": 1
+            },
+            {
+              "role": "worker",
+              "attempts": 2,
+              "observed": 2,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 270679,
+              "output_tokens": 1813,
+              "cached_input_tokens": 220736,
+              "normalized_processing_tokens": 272492,
+              "uncached_input_tokens": 49943,
+              "normalized_incomplete_observations": 0
+            },
+            {
+              "role": "verifier",
+              "attempts": 1,
+              "observed": 1,
+              "unassessed": 0,
+              "missing_reasons": {},
+              "input_tokens": 42362,
+              "output_tokens": 172,
+              "cached_input_tokens": 26880,
+              "normalized_processing_tokens": 42534,
+              "uncached_input_tokens": 15482,
+              "normalized_incomplete_observations": 0
+            }
+          ],
+          "controller": {
+            "bucket": "controller",
+            "session_ref": null,
+            "status": "unbound",
+            "own": {
+              "requests": 0,
+              "status_counts": {},
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_read_input_tokens": null,
+              "uncached_input_tokens": null,
+              "normalized_processing_tokens": null,
+              "error_rows_zero_tokens": 0,
+              "duplicate_request_rows_dropped": 0
+            },
+            "unattributed_sessions": [],
+            "unattributed": {
+              "requests": 0,
+              "status_counts": {},
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_read_input_tokens": null,
+              "uncached_input_tokens": null,
+              "normalized_processing_tokens": null,
+              "error_rows_zero_tokens": 0,
+              "duplicate_request_rows_dropped": 0
+            }
+          },
+          "probe": {
+            "bucket": "probe",
+            "attempts": 0,
+            "observed": 0,
+            "note": "a probe never runs a completion, so this book is empty by design — listed separately so nothing merges into it and no omission is hidden"
+          },
+          "note": "normalized processing is a per-provider volume measure (raw fields kept verbatim); it is not billing"
+        }
+      },
+      "observed_permission_blockers": 0,
+      "observed_timeouts": 0
+    }
+  },
+  "limitations": [
+    "Real acceptance covers Codex ADE and ZCode CLI Controllers. Cursor/Claude skill targets and native-agent filtering have automated/install checks, not new real Controller Runs.",
+    "Native agent availability is declared per invocation. These Runs deliberately declare none and execute configured CLI roles.",
+    "Actual upstream effort remains unknown where the harness reports only the request. No monetary cost total is inferred.",
+    "Dependency artifacts refer to workspace paths with producing attempts. This change does not add content snapshot invalidation or filesystem isolation.",
+    "The default model named unconfigured is a placeholder. Current-host profiles do not reconfigure the ADE conversation model or effort."
+  ]
+}

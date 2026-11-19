@@ -141,7 +141,7 @@ ORX 提供 retry 和 replan 的合法入口与状态约束：retry 重新执行�
 - host 指派由宿主认领并完成；external 指派等待外部提交；ORX 不原生启动 host 子 agent。
 - 状态持久化允许后续读取事实，但不等于进程断线后自动重连、续跑或完整崩溃恢复。
 - `scope.allowed` 当前用于路径校验和指派约束，尚不构成文件级强制隔离；命令检查的固定目录、超时和拒绝规则也不是完整沙箱。
-- 内置 agent 适配包括 Codex、Cursor 和 shell；任务能力按配置声明匹配，声明本身不证明执行工具拥有该能力。agent 验证的括号能力语法目前只支持 `agent[vision]:`。
+- 内置 CLI 适配包括 Codex、Cursor、Claude Code、ZCode 和 shell；任务能力按配置声明匹配，声明本身不证明执行工具拥有该能力。agent 验证的括号能力语法目前只支持 `agent[vision]:`。
 - GitHub 来源通过已有 `gh` 获取 Issue；没有自动评论、关 Issue、建 PR 或双向状态同步。
 - 对复杂结果的语义验收来自显式指定的 agent / host 检查，ORX 不自行解释自然语言验收。
 
