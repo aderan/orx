@@ -1,6 +1,6 @@
-# ORX Analytics.app 安装、升级与回退（设计 §9）
+# ORX 安装、升级与回退（设计 §9）
 
-App 交付物是自带 Python 运行时的 `ORX Analytics.app`：干净、无开发环境的
+App 交付物是自带 Python 运行时的 `ORX.app`：干净、无开发环境的
 Mac（最低 macOS 13，Apple Silicon）无需预装 Python、uv 或 Homebrew，复制到
 「应用程序」后双击即出现菜单栏图标。本文是安装、升级、回退、卸载与缓存的
 唯一操作说明；CLI 安装见 [installation.md](installation.md)。
@@ -14,7 +14,7 @@ App 有两个互不混淆的分发渠道。**ad-hoc 签名的包只能是明确�
 | | 内部预览（internal-preview） | 正式分发（official） |
 |---|---|---|
 | 构建命令 | `apps/macos/scripts/build_app.sh dev` | `apps/macos/scripts/build_app.sh dist` |
-| 应用名 / Bundle ID | `ORX Analytics (Internal Preview)` / `org.orxanalytics.macos.dev`（独立 defaults 域） | `ORX Analytics` / `org.orxanalytics.macos` |
+| 应用名 / Bundle ID | `ORX (Internal Preview)` / `org.orxanalytics.macos.dev`（独立 defaults 域） | `ORX` / `org.orxanalytics.macos` |
 | 归档 | zip（`…-internal-preview-dev-macos13-arm64.zip`） | DMG（`…-official-dist-macos13-arm64.dmg`） |
 | 签名 | ad-hoc（无身份、未公证） | Developer ID Application ＋ hardened runtime（含内置 Python 与全部嵌套 Mach-O、安全时间戳、固定 entitlements） |
 | Gatekeeper | 首次打开被拦，需下述手动确认 | 公证＋装订后直接放行 |
@@ -32,7 +32,7 @@ sha256/门禁证据）。App 内「诊断 → 构建渠道」直接展示这些�
 安装评估）失败时立即以机器可读 JSON 拒绝并退出非零，不产出任何归档，
 也绝不会把失败悄悄转成 ad-hoc 内部预览产物。两个渠道的通过/阻塞结果
 在分发决定文件的 `results` 中**分槽记录**。门禁逻辑在
-`scripts/app_distribution.py`（测试 `tests/test_app_distribution.py`）。
+`apps/macos/scripts/app_distribution.py`（测试 `apps/macos/tests_python/test_app_distribution.py`）。
 
 当前状态（实测，见决定文件 `credential_facts_probed_live`）：本机无
 Developer ID Application 证书、无 notarytool 存储凭据——**内部预览可
@@ -60,7 +60,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 ### 内部预览（ad-hoc，仅内部测试）
 
 1. 下载内部预览 zip（文件名含 `internal-preview`），解压后把
-   `ORX Analytics (Internal Preview).app` 拖入「应用程序」。解压请用
+   `ORX (Internal Preview).app` 拖入「应用程序」。解压请用
    Finder（双击归档）或 `ditto -x -k <归档>.zip <目标目录>`：归档由
    ditto 生成、以 AppleDouble 条目携带扩展属性，命令行 `unzip` 会把
    这些条目落成 `._*` 杂散文件并破坏 ad-hoc 签名封条
@@ -76,7 +76,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 
 ### 正式分发（Developer ID ＋ 公证）
 
-1. 下载正式 DMG（文件名含 `official-dist`；包名为 `ORX Analytics.app`，
+1. 下载正式 DMG（文件名含 `official-dist`；包名为 `ORX.app`，
    无任何预览字样）。打开 DMG，把 App 拖入「应用程序」。
 2. 双击即可运行：包已 Developer ID 签名、公证并装订票证，Gatekeeper
    直接放行——**无需右键打开，也绝不需要清除 quarantine**。
@@ -138,8 +138,12 @@ bundle 内容快照（每个文件的 SHA-256、symlink 目标、目录）、前
 
 ## 升级（保留数据）
 
-1. 退出旧版 App（菜单栏图标 → 退出）。
-2. 用新版 `.app` 覆盖替换「应用程序」里的旧版，双击启动。
+1. 保留旧 App 和对应 CLI 安装包。确认旧版的登录项、通知授权、数据目录
+   和项目登记，关闭旧版登录启动并退出。协调 CLI watch 与需要更换的引擎停止写入，
+   用 SQLite backup API 创建独立快照，并检查 `PRAGMA integrity_check` 返回 `ok`。
+2. 在「应用程序」中替换对应渠道的旧 `ORX Analytics` 副本。预览仍标注
+   `Internal Preview`。启动后检查项目登记、历史用量、自定义目录、通知授权
+   和实际登录项。按原设置恢复登录启动，确认只有一条生效记录。
 3. **备份先于迁移**：App 每次启动引擎前检查
    `<data-dir>/app/last-launched-engine-version`。当已存在
    `analytics.db` 且即将运行的分析代码版本与上次不同，先用 SQLite backup API 将一致性快照写入
@@ -161,8 +165,10 @@ App、释放 CLI watch 需求，并确认待替换引擎已停止。
   it`），不会改写或损坏数据库。App 表现为引擎启动失败、面板提示原因，
   缓存数据继续展示。
 - 处置顺序：① 重新装回能读取该版本的新版即可恢复使用；② 如需真正回退
-  数据，先停止 App 与引擎，再从 `<data-dir>/backups/` 复制目标备份为
-  `analytics.db`（覆盖前再手动留一份当前文件）。
+  数据，先取消新版登录项并退出新版，协调 CLI 与引擎停止。保存升级后的
+  库和恢复前快照。从完整性检查通过的快照恢复 `analytics.db`，再启动对应
+  旧 App 和 CLI，核对历史与登录项。恢复期间仅允许一个版本打开数据目录，
+  `store_version` 由程序管理。
 - 回退永远只动 analytics 自己的数据库与备份目录，不触碰任何 ORX 项目
   数据（各项目 `.orx/state.db` 全程只读，见 ORX 仓
   `docs/observability-contract.md`）。

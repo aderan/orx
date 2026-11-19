@@ -26,7 +26,7 @@
 **Goal**: 以真实旧安装包演示替换、备份、共享引擎和回退。
 **Success Criteria**: 数据目录、偏好、历史及系统登录项通过各渠道门禁。
 **Tests**: 干净安装、升级、系统实际状态、备份恢复、退出 App 后 CLI watch。
-**Status**: In Progress
+**Status**: In Progress（[已验数据回退和登录项](docs/diagnostics/analytics-monorepo/stage-4.md)，图形进程与退出门禁待核验）
 
 ## Stage 5: 切换发布来源并收口旧仓
 

@@ -1,0 +1,32 @@
+{
+  "app_only_upgraded": {
+    "analytics_cli": "0.4.3",
+    "app_engine": "0.4.5",
+    "archive_sha256": "e06a000d3c919ff5bffc3530e165b46160a6ebb46da2bda52c3ae486f018bd4a",
+    "wheel_sha256": "7f7c6692a1559e5c736d732a3db780f5588500f505245b2b0dd2bf01aba73ef9",
+    "protocol": 1,
+    "shared_engine_confirmed": true,
+    "protocol_mismatch": {
+      "code": "unsupported_protocol",
+      "message": "protocol version 999 is not supported by this engine (supported: 1); the request is refused, not taken over",
+      "requested": 999,
+      "supported": 1
+    },
+    "engine_survived_cli_stop": true
+  },
+  "cli_only_upgraded": {
+    "analytics_cli": "0.4.5",
+    "app_engine": "0.4.3",
+    "archive_sha256": "461a2f037f9e94125d559ad57def4166383ba6f06a50d55c7014813909d63824",
+    "wheel_sha256": "ed9b8ba3d69b8b9af29cd089c019b7dd5f3bf19f6b90ee40034c1a60d6aa62d0",
+    "protocol": 1,
+    "shared_engine_confirmed": true,
+    "protocol_mismatch": {
+      "code": "unsupported_protocol",
+      "message": "protocol version 999 is not supported by this engine (supported: 1); the request is refused, not taken over",
+      "requested": 999,
+      "supported": 1
+    },
+    "engine_survived_cli_stop": true
+  }
+}
