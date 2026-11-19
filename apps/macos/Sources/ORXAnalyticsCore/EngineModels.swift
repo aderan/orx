@@ -320,8 +320,7 @@ public struct ProjectsCountBlock: Codable, Equatable {
 }
 
 public struct OverviewSummary: Codable, Equatable {
-    /// The number the menu-bar badge shows — in-progress Run count only
-    /// (design §3: 数字固定代表进行中的 Run 数量).
+    /// The number of in-progress Runs in the overview.
     public let activeRuns: Int
     public let attention: Int
     public let recentCompleted: Int

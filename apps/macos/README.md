@@ -1,7 +1,7 @@
 # ORX — macOS 菜单栏应用（apps/macos）
 
 Swift Package（Xcode-free 构建链）承载设计稿 §7/§9 的原生外壳：
-AppKit `NSStatusItem` 承载 SwiftUI 快速面板及进行中 Run 数徽标，
+AppKit `NSStatusItem` 显示 ORX 图标及可选的关注角标，点击打开 SwiftUI 快速面板。
 `LSUIElement` 保持菜单栏应用形态。状态项由系统控制可见性，Finder
 可随时打开唯一主窗口。引擎 Unix socket 客户端供应快速面板和执行详情
 （设计 §3/§4/§5）。

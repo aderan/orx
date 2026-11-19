@@ -83,7 +83,7 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
         statusItem = item
         item.button?.target = self
         item.button?.action = #selector(toggleQuickPanel)
-        item.button?.imagePosition = .imageLeading
+        item.button?.imagePosition = .imageOnly
         item.button?.setAccessibilityLabel("ORX")
         popover.behavior = .transient
         popover.delegate = self
@@ -121,14 +121,10 @@ private final class ORXApplicationDelegate: NSObject, NSApplicationDelegate, NSP
 
     private func updateBadge(_ overview: CachedOverview?, attentionBadgeEnabled: Bool) {
         guard let button = statusItem?.button else { return }
-        let summary = overview?.envelope.summary
-        let active = summary?.activeRuns ?? 0
-        let attention = summary?.attention ?? 0
-        button.image = ORXMenuIcon.image(showsAttention: attentionBadgeEnabled && attention > 0)
-        button.title = active > 0 ? MetricsFormat.countText(active) : ""
-        let status = "进行中 \(active) · 需要关注 \(attention)"
-        button.toolTip = "ORX · \(status)"
-        button.setAccessibilityHelp(status)
+        let showsAttention = attentionBadgeEnabled && (overview?.envelope.summary.attention ?? 0) > 0
+        button.image = ORXMenuIcon.image(showsAttention: showsAttention)
+        button.toolTip = showsAttention ? "ORX · 有待关注项" : "ORX"
+        button.setAccessibilityHelp(showsAttention ? "有待关注项" : "打开 ORX 快捷面板")
     }
 
     @objc private func toggleQuickPanel() {
