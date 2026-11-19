@@ -294,8 +294,12 @@ struct QuickPanelView: View {
                 model.openAllRuns()
                 openRunWindow()
             }
+            Button("模型与路由…") {
+                model.openRouting(project: nil)
+                openRunWindow()
+            }
             Spacer()
-            Button("设置…") {
+            Button("应用设置…") {
                 openSettings()
             }
             Button("退出") {
