@@ -1542,6 +1542,10 @@ def _render_status(data: dict) -> None:
     banner = {"running": "RUNNING", "done": "DONE", "blocked": "BLOCKED", "planning": "PLANNING"}
     typer.echo(f"Goal {goal['id']} [{goal['status']}]: {goal['objective']}")
     typer.echo(f"Run {run['id']}: {banner.get(run['status'], run['status'].upper())}")
+    stale = data.get("evidence_freshness", {}).get("stale", [])
+    if stale:
+        typer.echo("Verification inputs changed: " + ", ".join(row["task"] for row in stale)
+                   + "; recorded task statuses await revalidation (orx verify).")
     typer.echo(
         f"  lifecycle: started_at {run.get('started_at') or '-'}"
         f"  completed_at {run.get('completed_at') or '-'}"
@@ -2327,6 +2331,9 @@ def verify(
     result = dispatch.verify_dispatch(project)
     _ok(json_out, **result)
     if not json_out:
+        for item in result.get("invalidated", []):
+            typer.echo(f"task {item['task']}: {len(item['verification_ids'])} check records invalidated"
+                       f" (context {item['context']}; {', '.join(item['changed_paths'])})")
         for item in result["checked"]:
             typer.echo(f"task {item['task']}: {item['verdict']}")
         for item in result["agent_required"]:

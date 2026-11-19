@@ -158,6 +158,7 @@ def test_events_persist_transition_history(seeded):
         (None, "runnable", "insert_ready"),
         ("runnable", "waiting_host", "route_host"),
         ("waiting_host", "running", "claim"),
+        ("running", "running", "verification_context"),
         ("running", "verifying", "complete"),
         ("verifying", "passed", "verify_pass"),
     ]

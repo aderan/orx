@@ -1,3 +1,29 @@
+# 当前任务：验收证据失效规则
+
+## Stage 1: 内容指纹与失效窗口
+**Goal**：记录产物、preread、依赖输入及验证契约的指纹，保留旧证据历史。
+**Success Criteria**：同内容不重验已完成项；内容变化仅使相关任务及依赖链验收失效。
+**Tests**：先写内容不变、同大小修改、依赖变化、删除、无关文件与历史兼容回归。
+**Status**：Complete
+
+## Stage 2: 调度与迟到裁决
+**Goal**：在执行、验收和裁决入口检查证据版本，阻止旧裁决落到新输入上。
+**Success Criteria**：已通过任务可重新验收；未过依赖不派工；在途验证器保留身份，旧裁决只作为失效执行记录。
+**Tests**：CLI/host 在途变化、已完成 Run 重验、状态只读、日志不覆盖。
+**Status**：Complete
+
+## Stage 3: 真实 Run 验收
+**Goal**：真实依赖任务验证未变复用、产物变化及依赖变化后的重验。
+**Success Criteria**：真实 Planner/Worker/Verifier 记录完整，Worker 不因验证器故障重跑，最终 done。
+**Tests**：受控验证器协议故障与文件变化，保留前后行 ID 和指纹证据；全量测试。
+**Status**：In Progress
+
+## Stage 4: 文档与提交
+**Goal**：说明失效边界及兼容行为，保存可复核验收记录。
+**Success Criteria**：测试、机器返回、操作文档一致，保留其他工作区改动。
+**Tests**：自审与 diff 检查。
+**Status**：Not Started
+
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。

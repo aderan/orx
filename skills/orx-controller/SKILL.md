@@ -225,6 +225,13 @@ and producing attempts. An unavailable dependency artifact calls for
 inspection before proceeding. Use the run state and error details to decide
 whether to recover, retry, or replan.
 
+Verification results belong to a content version. `status.evidence_freshness`
+reports changed inputs without writing state; follow its `verify` action
+before announcing completion. `run` and `verify` invalidate affected old
+checks while preserving their history. An `evidence_changed` verifier result
+has no verdict: let the original attempt finish, then retry verification
+against the new context. Worker retry is for an actual failed delivery.
+
 ORX CLI owns the state transitions, the Controller selects the next step,
 and `orx-agent` describes one Planner, Worker, or Verifier assignment.
 Repository release scripts exercise packaging and release checks.

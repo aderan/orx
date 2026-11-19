@@ -25,6 +25,7 @@ from orx.adapters.base import (
     quota_reset_from,
 )
 from orx import health
+from orx import verification_context as contexts
 from orx import config as config_mod
 from orx.config import Config, Profile, load_project_config
 from orx.records import (
@@ -1957,6 +1958,11 @@ def _execution_spec(project: Project, profile: Profile | None, attempt) -> dict:
         spec["native_effort"] = native_model_spec(profile).effort
     if controller is not None and (blocked := controller.rejection(profile)):
         spec["blocked_reason"] = blocked
+    if attempt.revision_id is not None and attempt.task_id is not None:
+        waiting = _unpassed_dependencies(project.store, attempt.revision_id, attempt.task_id)
+        if waiting:
+            spec["blocked_reason"] = "dependency verification pending: " + ", ".join(waiting)
+            spec["blocked_by"] = waiting
     return spec
 
 
@@ -2601,6 +2607,8 @@ def run_slice(project: Project) -> dict:
         out["next_actions"] = _next_actions(store, goal, run)
         return out
 
+    out["invalidated"] = _synchronize_verification_contexts(project, goal, run, revision)
+
     # Best-effort live preflight (G005): providers reporting a reached limit
     # gate their profiles before the first route, an expired exhaustion is
     # released, and operator overrides always win. No signal -> no change.
@@ -2617,6 +2625,11 @@ def run_slice(project: Project) -> dict:
     for task in store.tasks_all(revision.id):
         current = store.task_get(revision.id, task.task_id)
         if TaskStatus(current.status) is not TaskStatus.RUNNABLE:
+            continue
+        waiting = _unpassed_dependencies(store, revision.id, current.task_id)
+        if waiting:
+            out["deferred"].append({"task": current.task_id,
+                                    "reason": "dependency verification is pending", "blocked_by": waiting})
             continue
         if run_budget["hard_stop"]:
             out["deferred"].append({
@@ -3442,6 +3455,9 @@ def _execute_cli_assignment(project: Project, goal: Goal, run: Run, revision: Re
             project, run, revision, store.task_get(revision.id, task.task_id),
             attempt, delivered_evidence=log,
         )
+    contexts.synchronize(store, project.root, revision.id,
+                         store.task_get(revision.id, task.task_id), accepted_delivery=True,
+                         accepted_rows=[row["verification_id"] for row in gate["results"]])
     machine.transition(store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
                        reason="cli execution finished; verification starting")
     # The gate rows above are the latest row per command entry, so the
@@ -4517,6 +4533,7 @@ def _verification_evidence(project: Project, revision: Revision, task: TaskRow) 
         **_worker_delivery(project, revision.id, task.task_id),
         "command_checks": list(latest.values()),
         "dependency_artifacts": _dependency_artifacts(project, revision, task),
+        "context": _context_descriptor(project.store, revision.id, task.task_id),
     }
 
 
@@ -4538,6 +4555,9 @@ def _evidence_lines(evidence: dict) -> str:
     dependency_lines = _dependency_artifact_lines(evidence["dependency_artifacts"])
     if dependency_lines:
         lines.append(dependency_lines.rstrip())
+    if evidence.get("context"):
+        context = evidence["context"]
+        lines.append(f"  - Verification context {context['id']}: {context['digest']}")
     return "\n".join(lines)
 
 
@@ -4626,6 +4646,11 @@ def task_claim(project: Project, task_id: str, session: str | None = None,
         raise ConflictError(f"task {task_id} is {task.status}, not waiting_host")
     # Validate the caller's session before the claim transition.
     session_ref = resolve_session_ref(session)
+    _assert_goal_dispatchable(store, goal)
+    _synchronize_verification_contexts(project, goal, run, revision)
+    waiting = _unpassed_dependencies(store, revision.id, task.task_id)
+    if waiting:
+        raise ConflictError("dependency verification pending: " + ", ".join(waiting))
     machine.claim(store, revision.id, task.task_id)
     attempt = store.attempt_latest_for_task(revision.id, task.task_id)
     if attempt is not None and attempt.started_at is None:
@@ -5014,6 +5039,8 @@ def _record_accepted_delivery(
             project, run, revision, task, attempt, delivered_evidence=str(evidence_path),
         )
         store.attempt_update(attempt.id, ended_at=db_now(), result="completed")
+        contexts.synchronize(store, project.root, revision.id, task, accepted_delivery=True,
+                             accepted_rows=[row["verification_id"] for row in gate["results"]] if gate else [])
         usage_backfill = _usage_autobill(project, attempt.id)
         machine.transition(
             store, revision.id, task.task_id, "complete", TaskStatus.VERIFYING,
@@ -6388,6 +6415,46 @@ def task_note(project: Project, task_id: str, kind: str, detail: str,
 # Verification dispatch + submission
 
 
+def _context_descriptor(store: Store, revision_id: int, task_id: str) -> dict | None:
+    context = store.verification_context(revision_id, task_id)
+    return ({key: context[key] for key in ("id", "digest", "worker_attempt", "reusable")}
+            if context else None)
+
+
+def _unpassed_dependencies(store: Store, revision_id: int, task_id: str) -> list[str]:
+    return [dep for dep in store.deps_for(revision_id, task_id)
+            if store.task_get(revision_id, dep).status != TaskStatus.PASSED.value]
+
+
+def _synchronize_verification_contexts(project: Project, goal: Goal, run: Run,
+                                      revision: Revision) -> list[dict]:
+    store = project.store
+    invalidated = []
+    with store.tx():
+        for task in contexts.ordered_tasks(store, revision.id):
+            worker = store.attempt_current_worker_for_task(revision.id, task.task_id)
+            if ((worker is not None and worker.result != "completed") or task.status not in
+                    (TaskStatus.VERIFYING.value, TaskStatus.PASSED.value, TaskStatus.FAILED.value)):
+                continue
+            result = contexts.synchronize(store, project.root, revision.id, task)
+            if not result["changed"]:
+                continue
+            invalidated.append({"task": task.task_id, "context": result["context"]["id"],
+                                "reason": result["state"], "changed_paths": result["changed_paths"],
+                                "verification_ids": result["invalidated_ids"]})
+            if task.status in (TaskStatus.PASSED.value, TaskStatus.FAILED.value):
+                machine.transition(store, revision.id, task.task_id, "evidence_changed",
+                                   TaskStatus.VERIFYING, reason="verification inputs changed; prior checks invalidated")
+                if store.goal_status(goal.id) == GoalStatus.DONE.value:
+                    unfinished = store.goal_unfinished()
+                    if unfinished and unfinished.id != goal.id:
+                        raise ConflictError("cannot reopen verification while another Goal is unfinished")
+                    store.goal_set_status(goal.id, GoalStatus.ACTIVE)
+        if invalidated:
+            refresh(store, goal, run)
+    return invalidated
+
+
 def verify_dispatch(project: Project) -> dict:
     store = project.store
     goal, run = _active_context(project)
@@ -6405,19 +6472,33 @@ def verify_dispatch(project: Project) -> dict:
     _assert_goal_dispatchable(store, goal)
 
     quota.refresh(project)  # best-effort preflight before verifier routing
+    out["invalidated"] = _synchronize_verification_contexts(project, goal, run, revision)
+    blocked_dependencies = set()
 
-    for task in store.tasks_all(revision.id):
+    for task in contexts.ordered_tasks(store, revision.id):
         if TaskStatus(task.status) is not TaskStatus.VERIFYING:
             continue
-        # Rows the dispatch fills in bind to the task's latest attempt (the
-        # completing worker attempt on a first dispatch) so verification
-        # history stays queryable per attempt.
-        bound = store.attempt_latest_for_task(revision.id, task.task_id)
+        waiting = _unpassed_dependencies(store, revision.id, task.task_id)
+        context = store.verification_context(revision.id, task.task_id)
+        if waiting or (context and not context["reusable"]):
+            blocked_dependencies.add(task.task_id)
+            out["checked"].append({"task": task.task_id, "verdict": "pending", "blocked_by": waiting,
+                                   "reason": "dependency verification pending" if waiting else "verification input unavailable"})
+            continue
+        # Command checks describe this Worker delivery, even while an older
+        # verifier is still returning. Do not attribute fresh command checks
+        # to that stale verifier's execution.
+        bound = store.attempt_current_worker_for_task(revision.id, task.task_id)
         verify.run_command_verifications(
             store, project.root, run.id, revision.id, task,
             timeout=project.config.check_timeout_sec,
             attempt_id=bound.id if bound else None,
         )
+        changed = _synchronize_verification_contexts(project, goal, run, revision)
+        out["invalidated"].extend(changed)
+        if changed:
+            out["checked"].append({"task": task.task_id, "verdict": "pending", "reason": "inputs changed during command checks"})
+            continue
         verdict = verify.apply_verdict(store, revision.id, task)
         out["checked"].append({"task": task.task_id, "verdict": verdict})
         if TaskStatus(task.status) is not TaskStatus.VERIFYING:
@@ -6425,11 +6506,23 @@ def verify_dispatch(project: Project) -> dict:
         for index, item in enumerate(verify.pending_agent_entries(store, revision.id, task), start=1):
             if store.task_get(revision.id, task.task_id).status != TaskStatus.VERIFYING.value:
                 break
+            changed = _synchronize_verification_contexts(project, goal, run, revision)
+            out["invalidated"].extend(changed)
+            if changed:
+                break
             request = routing.RouteRequest(
                 role=Role.VERIFIER, required_capabilities=item.capabilities
             )
             existing = store.attempt_open_verifier_for_entry(revision.id, task.task_id, item.raw)
             if existing is not None:
+                if not contexts.attempt_is_current(store, revision.id, task.task_id, existing.id):
+                    out["agent_required"].append({
+                        "task": task.task_id, "entry": item.raw, "attempt": existing.id,
+                        "profile": existing.profile, "required_capabilities": list(item.capabilities),
+                        "error": "evidence changed; wait for the original verifier result before retrying",
+                        "error_kind": "evidence_changed",
+                    })
+                    continue
                 if existing.driver == "cli":
                     out["agent_required"].append({
                         "task": task.task_id, "entry": item.raw,
@@ -6517,6 +6610,8 @@ def verify_dispatch(project: Project) -> dict:
                             run_id=run.id,
                             verify_entry=item.raw,
                         )
+                        contexts.bind_attempt(store, revision.id, task, attempt.id,
+                                              evidence["context"]["id"] if evidence.get("context") else None)
                 prompt = verifier_prompt(
                     goal, task, item,
                     gate_summary=_gate_summary(evidence["command_checks"]),
@@ -6548,17 +6643,19 @@ def verify_dispatch(project: Project) -> dict:
                 )
                 out["agent_required"].append(entry_out)
             else:
-                out["launched"].append(
-                    _run_cli_verifier(project, goal, run, revision, task, item,
-                                      profile, request, result, evidence)
-                )
+                launched = _run_cli_verifier(project, goal, run, revision, task, item,
+                                              profile, request, result, evidence)
+                out["launched"].append(launched)
+                out["invalidated"].extend(launched.get("invalidated", []))
+                if launched.get("error_kind") == "evidence_changed":
+                    break
 
     refresh(store, goal, run)
     assigned = {entry["task"] for entry in out["agent_required"] if not entry.get("error")}
     unavailable = {entry["task"] for entry in out["agent_required"] if entry.get("error")}
     retryable = {entry["task"] for entry in out["launched"] if entry.get("retryable")}
     out["next_actions"] = _next_actions(
-        store, goal, run, blocked_verifiers=unavailable,
+        store, goal, run, blocked_verifiers=unavailable | blocked_dependencies,
         host_verifiers=assigned, retryable_verifiers=retryable,
     )
     return out
@@ -6647,6 +6744,8 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     routing.persist_decision(store, request, result, attempt_id=attempt.id)
     _record_model_resolution(
         project, run.id, f"verify-{task.task_id}-{attempt.id}", launch, attempt)
+    contexts.bind_attempt(store, revision.id, task, attempt.id,
+                          evidence["context"]["id"] if evidence.get("context") else None)
 
     if not probe.ok:
         store.attempt_mark_usage_missing(attempt.id, "execution_failure")
@@ -6705,6 +6804,12 @@ def _run_cli_verifier(project: Project, goal: Goal, run: Run, revision: Revision
     if verdict is None:
         return execution_error(attempt, "protocol_error", "missing or invalid verifier verdict",
                                log=log, effort=effort, retryable=True)
+    invalidated = _synchronize_verification_contexts(project, goal, run, revision)
+    if not contexts.attempt_is_current(store, revision.id, task.task_id, attempt.id):
+        stale = execution_error(attempt, "evidence_changed", "verification inputs changed after dispatch",
+                                log=log, effort=effort, retryable=True)
+        stale["invalidated"] = invalidated
+        return stale
     _record_attempt_health(store, profile.name, run_result)
     verdict_text, reason_text = verdict
     passed = verdict_text == "pass"
@@ -6869,6 +6974,22 @@ def _record_verifier_submission(
         if not evidence_path.exists():
             raise NotFoundError(f"evidence file not found: {evidence}")
         evidence_rel = str(evidence_path)
+
+    invalidated = _synchronize_verification_contexts(project, goal, run, revision)
+    stale = (bound is not None and not contexts.attempt_is_current(store, revision.id, task.task_id, bound.id))
+    if stale or (bound is None and invalidated):
+        if bound is not None:
+            store.attempt_update(bound.id, ended_at=db_now(), result="failed",
+                                 failure_reason="evidence_changed: verdict refers to stale inputs")
+        if store.goal_status(goal.id) == GoalStatus.CANCELLING.value:
+            _cancel_task(project, revision.id, task.task_id, "stale verifier finished during cancellation")
+        refresh(store, goal, run)
+        _converge_cancelled(project, goal, run)
+        return {"task": task.task_id, "entry": chosen.raw, "result": "stale",
+                "verdict": None, "status": store.task_get(revision.id, task.task_id).status,
+                "attempt": bound.id if bound else None, "error_kind": "evidence_changed",
+                "reason": "verification inputs changed; run orx verify again", "retryable": True,
+                "invalidated": invalidated, "next_actions": _next_actions(store, goal, run)}
 
     discovery: dict | None = None
     usage_backfill: dict | None = None
@@ -7255,7 +7376,8 @@ def _next_actions(store: Store, goal: Goal, run: Run, *, blocked_workers=(),
         (TaskStatus.FAILED, "inspect_failure", None, ()),
         (TaskStatus.BLOCKED, "inspect_blocker", None, ()),
     ):
-        ids = [task.task_id for task in tasks if task.status == state.value and task.task_id not in excluded]
+        ids = [task.task_id for task in tasks if task.status == state.value and task.task_id not in excluded
+               and (state is not TaskStatus.RUNNABLE or not _unpassed_dependencies(store, revision.id, task.task_id))]
         if ids:
             step = {"action": action, "tasks": ids}
             if command is not None:
@@ -7271,6 +7393,7 @@ def _next_actions(store: Store, goal: Goal, run: Run, *, blocked_workers=(),
 
 
 def status_data(project: Project) -> dict:
+    store = project.store
     goal, run = _active_context(project)
     revision = _active_revision(project, run)
     plan_info = None
@@ -7305,6 +7428,38 @@ def status_data(project: Project) -> dict:
         "result": run.status,
         "next_actions": _next_actions(project.store, goal, run),
     }
+    stale = []
+    stale_ids = set()
+    if revision is not None:
+        for task in contexts.ordered_tasks(project.store, revision.id):
+            if task.status not in (TaskStatus.PASSED.value, TaskStatus.VERIFYING.value, TaskStatus.FAILED.value):
+                continue
+            worker = project.store.attempt_current_worker_for_task(revision.id, task.task_id)
+            if worker is not None and worker.result != "completed":
+                continue
+            observed = contexts.inspect(project.store, project.root, revision.id, task)
+            dependencies = [dep for dep in project.store.deps_for(revision.id, task.task_id) if dep in stale_ids]
+            if observed["state"] != "current" or dependencies:
+                stale_ids.add(task.task_id)
+                stale.append({"task": task.task_id, "state": observed["state"] if not dependencies else "stale",
+                              "changed_paths": observed["changed_paths"] + [f"dependency:{dep}" for dep in dependencies]})
+    out["evidence_freshness"] = {"stale": stale}
+    if stale:
+        # A read reports effective validity without rewriting persisted history.
+        current_rows = [v for task in store.tasks_all(revision.id) if task.task_id not in stale_ids
+                        for v in store.verifications_current(revision.id, task.task_id)]
+        out["verification"] = {
+            "passed": sum(v.passed for v in current_rows),
+            "failed": sum(not v.passed for v in current_rows),
+            "awaiting_agent": sum(len([item for item in verify.entries_for(task) if item.kind == "agent"])
+                                  if task.task_id in stale_ids else len(verify.pending_agent_entries(store, revision.id, task))
+                                  for task in store.tasks_all(revision.id)
+                                  if task.task_id in stale_ids or task.status == TaskStatus.VERIFYING.value),
+        }
+        out["result"] = "verification_stale"
+    if stale and goal.status not in (GoalStatus.PAUSED.value, GoalStatus.CANCELLING.value, GoalStatus.CANCELLED.value):
+        out["next_actions"] = [{"action": "verify", "tasks": sorted(stale_ids),
+                                "command": routing.controller_command("orx verify --json")}]
     # G010 T003: while a cancel is pending, the status surface lists the
     # unconfirmed executions and their executable follow-ups — the wrap-up
     # state is visible exactly where the operator already looks.

@@ -38,14 +38,14 @@ def entries_for(task: TaskRow) -> list[plan.VerificationItem]:
 
 
 def _log_path(project_root: Path, run_id: str, task_id: str, index: int, kind: str,
-              attempt_id: int | None = None) -> Path:
+              attempt_id: int | None = None, sequence: int = 0) -> Path:
     """Log path for a recorded (verify-time) command row. The attempt number
     is part of the filename, so the same entry's log from an earlier attempt
     is never overwritten by a later round — retries keep every round's output
     side by side. ``a000`` marks a row no attempt was bound to."""
     directory = project_root / ".orx" / "runs" / run_id / "verify" / task_id
     directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"{index:02d}-a{attempt_id if attempt_id is not None else 0:03d}-{kind}.log"
+    return directory / f"{index:02d}-a{attempt_id if attempt_id is not None else 0:03d}-{kind}-{sequence:04d}.log"
 
 
 def _check_log_path(project_root: Path, run_id: str, task_id: str, index: int,
@@ -83,13 +83,14 @@ def run_command_verifications(
         v.command for v in store.verifications_current(revision_row_id, task.task_id)
         if v.kind == "command"
     }
+    sequence = len(store.verifications_for_task_in_run(run_id, task.task_id))
     for index, item in enumerate(entries_for(task), start=1):
         if item.kind != "command" or item.raw in existing:
             continue
         denial = runtime.forbidden_command(item.spec)
         if denial is not None:
             log = _log_path(project_root, run_id, task.task_id, index, "command",
-                            attempt_id)
+                            attempt_id, sequence)
             log.write_text(
                 f"denied by verification denylist: {denial}\ncommand: {item.spec}\n"
             )
@@ -101,10 +102,11 @@ def run_command_verifications(
                     required_capabilities=[],
                 )
             )
+            sequence += 1
             continue
         result = runtime.run_shell(item.spec, cwd=project_root, timeout=timeout)
         log = _log_path(project_root, run_id, task.task_id, index, "command",
-                        attempt_id)
+                        attempt_id, sequence)
         header = (
             f"$ {item.spec}\n[exit {'timeout' if result.timed_out else result.exit_code}"
             f" in {result.duration_sec:.2f}s]\n"
@@ -118,6 +120,7 @@ def run_command_verifications(
                 required_capabilities=[],
             )
         )
+        sequence += 1
     return recorded
 
 
@@ -585,6 +588,9 @@ def evaluate(store: Store, revision_row_id: int, task: TaskRow) -> str:
     freshest row is the current state of the workspace. With at most one
     row per entry in the window this is exactly the previous
     any-row-failed semantics."""
+    context = store.verification_context(revision_row_id, task.task_id)
+    if context is not None and not context["reusable"]:
+        return "pending"
     items = entries_for(task)
     if not items:
         return "passed"

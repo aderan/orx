@@ -178,7 +178,11 @@ require an explicit HTTP/status 429 or a rate-limit message.
 When a CLI verifier disconnects, times out, or returns an invalid result,
 `orx verify --json` reports a verifier attempt error with a null verdict.
 Run `orx verify` again to retry pending entries. Previously accepted checks
-on the same worker delivery remain recorded. A valid `fail` verdict puts
+on the same unchanged delivery and inputs remain usable. Artifact, preread,
+or dependency changes invalidate affected checks while retaining their history.
+`status` reports stale inputs read-only; `verify` or `run` applies the invalidation.
+See [verification validity](docs/verification-validity.md) for input versions,
+dependency propagation, and stale in-flight verdicts. A valid `fail` verdict puts
 the task into the worker repair flow.
 
 `orx run --json` returns each worker's `inputs`, including its scope, checks,
