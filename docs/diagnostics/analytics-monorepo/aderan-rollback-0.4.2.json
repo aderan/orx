@@ -1,0 +1,36 @@
+{
+  "mode": "bundled-engine-only",
+  "old_app": "0.4.2",
+  "new_app": "0.4.5",
+  "old_bundle_id": "org.orxanalytics.macos.dev",
+  "bundle_id": "com.aderan.orx.dev",
+  "old_app_archive_sha256": "5187029c8ab41a41a8d6100c502061035a322c7d24ad015cfbe2fa76303d7396",
+  "new_app_archive_sha256": "de7c524f39d2d652606956e467628b3d132d7e5e5572b7d29b9489925ea6bbb6",
+  "old_cli_wheel_sha256": "284d07741306347630f70f52b9be4a5322efbe2c84e41f05ccffff4cc956584d",
+  "new_cli_wheel_sha256": "3261c0cb49ffc577f167ad1de409ff43881cdc68a49ed03e0852a165882a0991",
+  "analytics_store_versions": [
+    "3",
+    "4",
+    "3"
+  ],
+  "sqlite_backup_sha256": "4608c048d0f11319b9d2a515fe0ba5c4a071f5d017fbdc1f266463e895a57f70",
+  "app_backup_sha256": null,
+  "upgraded_db_preserved_sha256": "03cb350e3fb672e6494aaf7dc2bca122df893bb9b52475a1a30418c70b6113ce",
+  "history": {
+    "tokens": {
+      "input_tokens": 1111,
+      "output_tokens": 222,
+      "cached_input": 33
+    },
+    "coverage": {
+      "observed": 1,
+      "attempts": 3,
+      "missing_recorded": 0,
+      "unassessed": 2
+    }
+  },
+  "registry_preserved": true,
+  "orx_source_unchanged": true,
+  "app_exit_preserved_cli_watch": null,
+  "old_cli_and_bundled_engine_restored": true
+}

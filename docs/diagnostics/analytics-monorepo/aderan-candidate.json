@@ -1,0 +1,121 @@
+{
+  "format": "orx-monorepo-candidate-v1",
+  "source_commit": "c5bb1e4181224d18d4e9d6a41f065021eb64aeb3",
+  "channel": "internal-preview",
+  "versions": {
+    "orx": "0.4.1",
+    "analytics": "0.4.5",
+    "app": "0.4.5"
+  },
+  "contracts": {
+    "orx_schema": 15,
+    "analytics_store": "4",
+    "engine_protocol": 1
+  },
+  "artifacts": {
+    "orx_wheel": {
+      "path": "dist/orx_agent-0.4.1-py3-none-any.whl",
+      "sha256": "fd05491b6358c41314b8e0d50d58deca6be3a369b8685842c350767bf9a587fe"
+    },
+    "orx_sdist": {
+      "path": "dist/orx_agent-0.4.1.tar.gz",
+      "sha256": "523223f9a50bfebde1c6dbf97199026da7c773b2567ad1030500b18c1f0808a1"
+    },
+    "analytics_wheel": {
+      "path": "dist/orx_analytics-0.4.5-py3-none-any.whl",
+      "sha256": "3261c0cb49ffc577f167ad1de409ff43881cdc68a49ed03e0852a165882a0991"
+    },
+    "analytics_sdist": {
+      "path": "dist/orx_analytics-0.4.5.tar.gz",
+      "sha256": "e33ce73028b124d587f3b387a841f82d8d25c938921682224a3ed5509074699b"
+    },
+    "app_archive": {
+      "path": "dist/ORX-0.4.5-internal-preview-dev-macos13-arm64.zip",
+      "sha256": "de7c524f39d2d652606956e467628b3d132d7e5e5572b7d29b9489925ea6bbb6"
+    },
+    "app_build_record": {
+      "path": "dist/ORX-0.4.5-internal-preview-dev-macos13-arm64.zip.json",
+      "sha256": "7e968cc2d2496d5201909c56dbdb6e69876380dc5c7355cd8fb9a63ee3c03307"
+    }
+  },
+  "app": {
+    "app_name": "ORX (Internal Preview).app",
+    "bundle_id": "com.aderan.orx.dev",
+    "previous_bundle_id": "org.orxanalytics.macos.dev",
+    "cf_bundle_version_string": "0.4.5",
+    "cf_bundle_version": "0.4.5",
+    "build_flavor": "dev",
+    "channel": "internal-preview",
+    "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+    "source_commit": "c5bb1e4181224d18d4e9d6a41f065021eb64aeb3",
+    "bundled_python_name": "cpython-3.12.8+20250115-aarch64-apple-darwin-install_only",
+    "in_app_manifest": {
+      "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+      "channel": "internal-preview",
+      "gatekeeper_limit": "Ad-hoc signed, NOT notarized: Gatekeeper blocks first launch and needs the documented manual confirmation. Internal preview \u2014 not a formal installer, do not distribute outside the internal audience.",
+      "mode": "dev",
+      "signing": "ad-hoc",
+      "source_commit": "c5bb1e4181224d18d4e9d6a41f065021eb64aeb3",
+      "version": "0.4.5"
+    },
+    "orxanalytics_version_txt": "0.4.5",
+    "bundled_python_version": "3.12.8",
+    "bundled_python_exit": 0
+  },
+  "signature": {
+    "codesign_verify_exit": 0,
+    "signature_style": "adhoc",
+    "authorities": [],
+    "adhoc": true
+  },
+  "checks": {
+    "orx_build": 0,
+    "analytics_build": 0,
+    "orx_install": 0,
+    "analytics_install": 0,
+    "analytics_pytest": 0,
+    "app_packaging_pytest": 0,
+    "swift_wire_fixtures": 0,
+    "swift_test": 0,
+    "app_build": 0,
+    "analytics_candidate_venv": 0,
+    "analytics_candidate_install": 0,
+    "analytics_candidate_version": 0,
+    "app_smoke": 0,
+    "exercise": 0
+  },
+  "joint_exercise": {
+    "stand_in_app_delivery": false,
+    "project": "isolated",
+    "goal_1": {
+      "paused_then_resumed": true,
+      "completion_during_pause": true,
+      "engine_view_while_paused": {
+        "run_active": true,
+        "goal_control_raw": "paused"
+      },
+      "receipt_retransmit_zero_change": true,
+      "receipts": 1,
+      "final": {
+        "goal": "done",
+        "run": "done"
+      }
+    },
+    "goal_2": {
+      "cancelling_then_cancelled": true,
+      "unconfirmed_executor_listed": true,
+      "recovered_via_termination_fact": true,
+      "history_queryable": true
+    },
+    "installed_orx_version": "0.4.1",
+    "engine": {
+      "connected_via": "app engine serve entry (socket protocol v1)",
+      "bundled_analytics_version": "0.4.5",
+      "collects": 2,
+      "snapshots": 1,
+      "read_only_source": true,
+      "no_real_session_mirrors": true,
+      "cancelled_goal_not_aggregated": true
+    }
+  }
+}
