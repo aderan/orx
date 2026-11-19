@@ -12,14 +12,14 @@
 **Goal**: 同一冻结提交构建两套包和 App，保留历史联合验收入口。
 **Success Criteria**: 发布清单绑定版本、源码和哈希，兼容性通过实测。
 **Tests**: 两套安装检查、Swift 测试、包内引擎、WAL、历史及未知 schema、混合客户端与引擎。
-**Status**: In Progress
+**Status**: Complete（`be1048b`、`1108fe2`、`ec8198e`；[验收证据](docs/diagnostics/analytics-monorepo/stage-2.md)）
 
 ## Stage 3: 统一 ORX 桌面入口
 
 **Goal**: 在现有菜单栏应用中提供执行、模型与路由、用量分析。
 **Success Criteria**: 执行和用量走 Analytics，项目和用户配置通过 ORX 可预览并保存。
 **Tests**: 双项目、用量跳转、Finder、错误引用、并发修改、ORX 缺失或不兼容。
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 4: 演练安装、升级与回退
 

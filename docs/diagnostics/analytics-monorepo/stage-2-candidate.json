@@ -1,0 +1,120 @@
+{
+  "format": "orx-monorepo-candidate-v1",
+  "source_commit": "ec8198ee398e677ae0f0b492497cbb6474d143ba",
+  "channel": "internal-preview",
+  "versions": {
+    "orx": "0.4.0",
+    "analytics": "0.4.4",
+    "app": "0.4.4"
+  },
+  "contracts": {
+    "orx_schema": 15,
+    "analytics_store": "4",
+    "engine_protocol": 1
+  },
+  "artifacts": {
+    "orx_wheel": {
+      "path": "dist/orx_agent-0.4.0-py3-none-any.whl",
+      "sha256": "8b1a650b4b0e0cda57332d974411d3052bbe01ee6d16ffb60db1b9cd04cf99b2"
+    },
+    "orx_sdist": {
+      "path": "dist/orx_agent-0.4.0.tar.gz",
+      "sha256": "33a477f7242f376184f259ea2f16bc9620d31108949cd716582b4b53df015181"
+    },
+    "analytics_wheel": {
+      "path": "dist/orx_analytics-0.4.4-py3-none-any.whl",
+      "sha256": "f69eeb9614632b04cc3043e34df4827ae894f2fa42249ea49817924960f41ce1"
+    },
+    "analytics_sdist": {
+      "path": "dist/orx_analytics-0.4.4.tar.gz",
+      "sha256": "9e63fc686cf46d7c89b2a3d07317b89d6f54ab5a581a39bd4d1321adea62054c"
+    },
+    "app_archive": {
+      "path": "dist/ORXAnalytics-0.4.4-internal-preview-dev-macos13-arm64.zip",
+      "sha256": "d48a0d6f57e53e1ef935d38643d579bdcbfc71eca6b19e3480010bbe57ddeba9"
+    },
+    "app_build_record": {
+      "path": "dist/ORXAnalytics-0.4.4-internal-preview-dev-macos13-arm64.zip.json",
+      "sha256": "a08f2627eaee8f32078bbce6d6e0be9ce2014e91dad03b8a3bec0b1fd2bf6684"
+    }
+  },
+  "app": {
+    "app_name": "ORX Analytics (Internal Preview).app",
+    "bundle_id": "org.orxanalytics.macos.dev",
+    "cf_bundle_version_string": "0.4.4",
+    "cf_bundle_version": "0.4.4+dev+ec8198e",
+    "build_flavor": "dev",
+    "channel": "internal-preview",
+    "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+    "source_commit": "ec8198ee398e677ae0f0b492497cbb6474d143ba",
+    "bundled_python_name": "cpython-3.12.8+20250115-aarch64-apple-darwin-install_only",
+    "in_app_manifest": {
+      "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+      "channel": "internal-preview",
+      "gatekeeper_limit": "Ad-hoc signed, NOT notarized: Gatekeeper blocks first launch and needs the documented manual confirmation. Internal preview \u2014 not a formal installer, do not distribute outside the internal audience.",
+      "mode": "dev",
+      "signing": "ad-hoc",
+      "source_commit": "ec8198ee398e677ae0f0b492497cbb6474d143ba",
+      "version": "0.4.4"
+    },
+    "orxanalytics_version_txt": "0.4.4",
+    "bundled_python_version": "3.12.8",
+    "bundled_python_exit": 0
+  },
+  "signature": {
+    "codesign_verify_exit": 0,
+    "signature_style": "adhoc",
+    "authorities": [],
+    "adhoc": true
+  },
+  "checks": {
+    "orx_build": 0,
+    "analytics_build": 0,
+    "orx_install": 0,
+    "analytics_install": 0,
+    "analytics_pytest": 0,
+    "app_packaging_pytest": 0,
+    "swift_wire_fixtures": 0,
+    "swift_test": 0,
+    "app_build": 0,
+    "analytics_candidate_venv": 0,
+    "analytics_candidate_install": 0,
+    "analytics_candidate_version": 0,
+    "app_smoke": 0,
+    "exercise": 0
+  },
+  "joint_exercise": {
+    "stand_in_app_delivery": false,
+    "project": "isolated",
+    "goal_1": {
+      "paused_then_resumed": true,
+      "completion_during_pause": true,
+      "engine_view_while_paused": {
+        "run_active": true,
+        "goal_control_raw": "paused"
+      },
+      "receipt_retransmit_zero_change": true,
+      "receipts": 1,
+      "final": {
+        "goal": "done",
+        "run": "done"
+      }
+    },
+    "goal_2": {
+      "cancelling_then_cancelled": true,
+      "unconfirmed_executor_listed": true,
+      "recovered_via_termination_fact": true,
+      "history_queryable": true
+    },
+    "installed_orx_version": "0.4.0",
+    "engine": {
+      "connected_via": "app engine serve entry (socket protocol v1)",
+      "bundled_analytics_version": "0.4.4",
+      "collects": 2,
+      "snapshots": 1,
+      "read_only_source": true,
+      "no_real_session_mirrors": true,
+      "cancelled_goal_not_aggregated": true
+    }
+  }
+}
