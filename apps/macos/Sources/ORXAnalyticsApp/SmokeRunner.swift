@@ -20,10 +20,11 @@ enum SmokeRunner {
         results.append(("detail-fetch-two-calibers", checkDetailFetch(), nil2s(dtErr)))
         let normal = ORXMenuIcon.image(showsAttention: false)
         let attention = ORXMenuIcon.image(showsAttention: true)
-        let isCompactMenuIcon = normal.isTemplate && attention.isTemplate
+        let isCompactMenuIcon = normal.size == NSSize(width: 31, height: 19)
+            && normal.isTemplate && attention.isTemplate
             && normal.size == attention.size
         results.append(("menu-bar-icon", isCompactMenuIcon,
-                        isCompactMenuIcon ? "" : "the corner badge should fit inside the same status image"))
+                        isCompactMenuIcon ? "" : "expected a 31 × 19 pt wordmark in both menu-bar states"))
         if Bundle.main.bundleURL.pathExtension == "app" {
             let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String
             let iconURL = iconName.flatMap {
