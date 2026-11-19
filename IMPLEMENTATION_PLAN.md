@@ -19,14 +19,14 @@
 **Goal**: 在现有菜单栏应用中提供执行、模型与路由、用量分析。
 **Success Criteria**: 执行和用量走 Analytics，项目和用户配置通过 ORX 可预览并保存。
 **Tests**: 双项目、用量跳转、Finder、错误引用、并发修改、ORX 缺失或不兼容。
-**Status**: In Progress
+**Status**: Complete（功能与自动化验收通过；菜单逐屏实测边界见[证据](docs/diagnostics/analytics-monorepo/stage-3.md)）
 
 ## Stage 4: 演练安装、升级与回退
 
 **Goal**: 以真实旧安装包演示替换、备份、共享引擎和回退。
 **Success Criteria**: 数据目录、偏好、历史及系统登录项通过各渠道门禁。
 **Tests**: 干净安装、升级、系统实际状态、备份恢复、退出 App 后 CLI watch。
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage 5: 切换发布来源并收口旧仓
 
