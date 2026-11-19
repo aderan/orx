@@ -1,29 +1,3 @@
-# 当前任务：验收证据失效规则
-
-## Stage 1: 内容指纹与失效窗口
-**Goal**：记录产物、preread、依赖输入及验证契约的指纹，保留旧证据历史。
-**Success Criteria**：同内容不重验已完成项；内容变化仅使相关任务及依赖链验收失效。
-**Tests**：先写内容不变、同大小修改、依赖变化、删除、无关文件与历史兼容回归。
-**Status**：Complete
-
-## Stage 2: 调度与迟到裁决
-**Goal**：在执行、验收和裁决入口检查证据版本，阻止旧裁决落到新输入上。
-**Success Criteria**：已通过任务可重新验收；未过依赖不派工；在途验证器保留身份，旧裁决只作为失效执行记录。
-**Tests**：CLI/host 在途变化、已完成 Run 重验、状态只读、日志不覆盖。
-**Status**：Complete
-
-## Stage 3: 真实 Run 验收
-**Goal**：真实依赖任务验证未变复用、产物变化及依赖变化后的重验。
-**Success Criteria**：真实 Planner/Worker/Verifier 记录完整，Worker 不因验证器故障重跑，最终 done。
-**Tests**：受控验证器协议故障与文件变化，保留前后行 ID 和指纹证据；全量测试。
-**Status**：In Progress
-
-## Stage 4: 文档与提交
-**Goal**：说明失效边界及兼容行为，保存可复核验收记录。
-**Success Criteria**：测试、机器返回、操作文档一致，保留其他工作区改动。
-**Tests**：自审与 diff 检查。
-**Status**：Not Started
-
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。
@@ -150,6 +124,20 @@ ZCode `edit` 的 Bash 拒绝与 ORX 超时因果见 [ZCode CLI 接口研究](doc
 2026-11-19，提交 36d8df5。新增根参数 --host / --host-agent / --host-session，next_actions 保留声明。默认 current profile 仅用于 host self，按调用解析；CLI 与原生品牌 profile 沿用项目配置。提供 cli preset；四种宿主可在空目录安装技能。干净安装发现相对 --home 链接失效，补回归修复后重建并重新验收。
 
 当前 Codex ADE 会话与真实 ZCode CLI 会话分别从非 editable wheel 安装推进 G001/R001：Claude Code sonnet 规划、ZCode GLM-5.3 完成两项依赖任务、Codex CLI 独立验证；两边均为 done，购物清单命令输出 1900。全部 Python 安装源码与受验树哈希一致，配置和技能来自安装包。新增 26 项回归，全量 1275 项通过。终端代启动、内容快照失效、原生代理实测与完整成本归因保持原边界。见 [安装验收说明](docs/diagnostics/host-install-2026-11-19/README.md) 和 [机器证据](docs/diagnostics/host-install-2026-11-19/acceptance.json)。
+
+## Stage 6: 验收证据失效与重验
+
+**Goal**：依据交付及输入内容版本复用验收，输入变化时使相关旧检查失效。
+
+**Success Criteria**：未变只重验未完成条目；产物/preread/依赖变化按任务传播失效；拒收在途旧裁决；历史与日志保留。
+
+**Tests**：内容、mtime、删除恢复、依赖链、无关任务、在途 host/CLI、回执重放、历史兼容、交付门禁水位；真实依赖 Run 的受控协议错误和两类产物变化；全量测试。
+
+**Status**：Complete
+
+2026-11-19，提交 7565e11。新增 verification context 指纹和追加式水位；status 只读提示，run/verify 持久化失效并按依赖重验。旧验证器保留身份，返回陈旧裁决时只关闭执行，不写有效验收。交付门禁之前的自测行保留历史，避免旧失败混入当前版本。新增 23 项回归，全量 1298 项通过。
+
+当前 Codex 会话主控真实 G001/R001：Claude Code sonnet 规划、ZCode 完成两项依赖实现、Codex CLI 验证。未变时只补验第二条；修改 T002 后仅重验 T002；修改 T001 后两项均重新验收。同一计划最终 done，原两次 Worker attempt 不变，26 条历史检查及日志保留，当前有效 10 条通过，CLI 输出 2。原生在途及并发变化由回归覆盖，未加入后台监控或文件系统快照。见 [规则](docs/verification-validity.md) 和 [真实验收](docs/diagnostics/verification-validity-2026-11-19/README.md)。
 
 # 待执行 Goal：ORX 交付、恢复与成本治理（2026-10-07）
 
