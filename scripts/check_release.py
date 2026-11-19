@@ -534,7 +534,7 @@ def run_cli_flow(venv_python: Path, workdir: Path | str) -> dict:
         raise ReleaseCheckError(
             f"console script missing in the wheel install: {orx_bin}"
         )
-    home = workdir / "home"
+    home = (workdir / "home").resolve()
     env = isolated_env(home)
     # A pre-existing ~/.zcode/skills so the install's symlink leg is real.
     (home / ".zcode" / "skills").mkdir(parents=True, exist_ok=True)
@@ -626,12 +626,12 @@ def run_cli_flow(venv_python: Path, workdir: Path | str) -> dict:
             f"cli skill install installed {installed.get('installed')},"
             f" expected all packaged skills {skill_names}"
         )
-    if not str(canonical).startswith(str(home)):
+    if not canonical.resolve().is_relative_to(home):
         report["problems"].append(
             f"skills canonical root {canonical} is not under the isolated HOME"
         )
     links = installed.get("symlinked_into", [])
-    if not links or not all(str(Path(p)).startswith(str(home)) for p in links):
+    if not links or not all(Path(path).resolve().is_relative_to(home) for path in links):
         report["problems"].append(
             f"skill symlinks point outside the isolated HOME: {links}"
         )

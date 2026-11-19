@@ -105,7 +105,11 @@ def chain(installed):
     restore, regeneration provenance)."""
     workdir = installed["workdir"]
     orx_bin = installed["python"].parent / "orx"
-    cli = check_release.run_cli_flow(installed["python"], workdir / "cli-flow")
+    cli_path = workdir / "cli-flow"
+    cli_path.mkdir()
+    cli_alias = workdir / "cli-flow-alias"
+    cli_alias.symlink_to(cli_path, target_is_directory=True)
+    cli = check_release.run_cli_flow(installed["python"], cli_alias)
     structure, struct_problems = check_release.check_fixture_structure(
         FIXTURE_DIR, REPO_ROOT)
     upgrade = check_release.check_upgrade_chain(
