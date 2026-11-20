@@ -23,6 +23,13 @@ from orxanalytics.importers.orxstate import import_orx_project  # noqa: E402
 from orxanalytics.store import Store  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolated_orx_registration(tmp_path, monkeypatch):
+    monkeypatch.setenv('ORX_CONFIG_DIR', str(tmp_path/'orx-user-config'))
+    monkeypatch.setenv('ORX_DATA_DIR', str(tmp_path/'orx-user-data'))
+    monkeypatch.delenv('ORX_PROJECT', raising=False)
+
+
 def snapshot_rows(project, directory, task):
     db = project.root / '.orx/state.db'
     before = hashlib.sha256(db.read_bytes()).hexdigest()
