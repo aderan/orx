@@ -117,7 +117,7 @@ effort = "medium"
     selection = payload(result)["model_selection"]
     assert selection["controller"]["session_harness"] == "codex"
     assert selection["controller"]["candidate"]["model"] == "m-planner"
-    assert selection["planner"]["depth"] == "auto"
+    assert selection["planner"]["depth"] == "standard"
     assert set(selection["planner"]["depths"]) == {"light", "standard", "deep"}
     assert selection["worker"]["origin"] == "project"
     first, second = selection["worker"]["candidates"]

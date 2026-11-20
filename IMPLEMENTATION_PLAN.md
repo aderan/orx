@@ -53,7 +53,7 @@ ORX 图标连续两次冷启动。本机共享引擎升级、原 CLI watch 重�
 2. 从冻结提交构建，验证两个 Python 包、Swift、包内引擎和联合用例。
 3. 停止本机旧路径相关写入，备份、搬迁并复验当前 App、watch、登记和历史。
 
-**Status**: In Progress
+**Status**: Complete（本机内部预览已安装，[目录收口验收](docs/diagnostics/analytics-monorepo/stage-4.md)）
 
 # ORX 0.5：跨宿主主控与 CLI 执行
 

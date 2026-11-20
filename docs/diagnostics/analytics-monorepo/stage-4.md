@@ -353,3 +353,30 @@ ORX 主窗口，应用与 Finder 入口保持可用。
 - 退出前、关闭期间和重开后共采样 36 次。引擎 PID 86028、启动时间、
   socket inode、watch PID 和 watch 后台租约标识保持一致。已移除临时
   验收项目登记，执行列表查询不再返回该项目，原 10 个登记保留。
+
+### 0.5.0 目录收口（2026-11-20）
+
+ORX 0.5.0 的两个独立 CLI 和 App 从同一提交构建。Analytics 默认使用
+ORX 的用户数据根下的 `analytics/`，App 的可重建显示缓存用
+`Application Support/ORX`。路由页只使用一个规划深度并保留请求推理
+档位，历史页面继续展示来自 Analytics 的原始执行记录。
+
+- 冻结候选 `03c1ed05f89b0f9b2e2f7c59b27f8c5c09ce68c6` 的 14 项
+  联合检查通过。Analytics 258 项、Swift 175 项和打包 39 项通过。
+  安装预览前分别验证两个 0.5.0 wheel。App 的实际路由客户端在用户
+  默认和当前项目均读到 `standard` 与候选的请求 effort。两层原
+  TOML 校验值一致。
+- 退出旧 App，停止旧 watch 和引擎后，使用 SQLite backup API 保存
+  静止库。备份完整性检查通过，SHA-256 为
+  `aed0d9850832ba7cfab2f8cc2e671b3a9f7c05bcea70280ce49193e8cb391771`。
+  旧目录的持久文件和既有备份一并迁入新目录。旧绝对路径无运行目录
+  或软链。项目登记 10 个、Run 40 条、尝试 1,071 条、用量观测 432 条
+  及原生会话标识核对保留。
+- 新 App 启动新目录的引擎 PID 48950，独立 `orx-analytics` 0.5.0
+  不带目录参数连接同一 socket，watch PID 48973。关闭 App 时 watch
+  于 12:20:26 续约，重开后仍是同一个引擎、socket 和 watch。
+  首次及重开均有 Finder 主窗口且 Control Center 注册 ORX 图标。
+  预览严格验签通过，旧签名包及独立 SQLite 备份保留。
+- ORX 全量首次运行通过 1,304 项，单条断言仍期待旧 `auto`。修订
+  该断言后重跑 CLI 与桌面路由共 92 项，通过。冻结产物的运行时代码
+  与验收期间一致。
