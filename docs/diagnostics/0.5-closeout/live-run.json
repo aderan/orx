@@ -1,0 +1,258 @@
+{
+  "controller": "current Codex conversation; no terminal Controller launcher",
+  "project": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx050-closeout-live-q3v08nxs",
+  "archived_raw_evidence": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/live-run",
+  "orx_wheel_sha256": "485e24e4312e0e60fcd951263d5679b7f708c7c51760786e3c37e5f9d50ffd69",
+  "initial_and_final_orx_wheels_identical": true,
+  "analytics_install": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/candidate-final/analytics-venv",
+  "attempts": [
+    {
+      "id": 1,
+      "task_id": null,
+      "role": "planner",
+      "profile": "claude-plan",
+      "harness": "claude",
+      "model": "sonnet",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "started_at": "2026-11-20T07:18:14.906506+00:00",
+      "ended_at": "2026-11-20T07:19:09.455489+00:00",
+      "result": "completed",
+      "failure_reason": null,
+      "duration_sec": 54.549
+    },
+    {
+      "id": 2,
+      "task_id": "T001",
+      "role": "worker",
+      "profile": "zcode-cli-worker",
+      "harness": "zcode",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "requested_effort": "low",
+      "actual_effort": null,
+      "effort_source": null,
+      "started_at": "2026-11-20T07:19:56.742181+00:00",
+      "ended_at": "2026-11-20T07:20:26.868834+00:00",
+      "result": "completed",
+      "failure_reason": null,
+      "duration_sec": 30.127
+    },
+    {
+      "id": 3,
+      "task_id": "T002",
+      "role": "worker",
+      "profile": "cursor-cli-worker",
+      "harness": "cursor",
+      "model": "grok@4.7",
+      "requested_effort": "medium",
+      "actual_effort": "medium",
+      "effort_source": "requested_validated",
+      "started_at": "2026-11-20T07:23:33.614455+00:00",
+      "ended_at": "2026-11-20T07:25:21.792021+00:00",
+      "result": "completed",
+      "failure_reason": null,
+      "duration_sec": 108.178
+    },
+    {
+      "id": 4,
+      "task_id": "T002",
+      "role": "verifier",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "started_at": "2026-11-20T07:26:23.930522+00:00",
+      "ended_at": "2026-11-20T07:26:46.464826+00:00",
+      "result": "pass",
+      "failure_reason": null,
+      "duration_sec": 22.534
+    },
+    {
+      "id": 5,
+      "task_id": "T002",
+      "role": "verifier",
+      "profile": "codex-verify",
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "requested_effort": "low",
+      "actual_effort": "low",
+      "effort_source": "requested_validated",
+      "started_at": "2026-11-20T07:40:31.400616+00:00",
+      "ended_at": "2026-11-20T07:40:51.987270+00:00",
+      "result": "pass",
+      "failure_reason": null,
+      "duration_sec": 20.587
+    }
+  ],
+  "upstream_effort_observed": false,
+  "permission_or_timeout_failure_observed": false,
+  "worker_self_checks": "Cursor first failed a product test, fixed it in the same attempt, then passed; the failed row is retained as history",
+  "fixture_sha256": {
+    "test_money_core.py": "6881d2e9500baafe1d7d5491933e75e9a319e12f280d8593b8332d018ff13df1",
+    "test_invoice_cli.py": "078088fdcd55791b675583fe17df804e3f8e321070c0b5465b64eb611f94e242",
+    "sample.json": "e70f1713d88af47d2a3055e3b0b028312ecb5cad96a4960ad5a41b8f68e0e9ec"
+  },
+  "fixture_unchanged": true,
+  "dependency_handoff": [
+    {
+      "task": "T001",
+      "revision": 1,
+      "attempt": 2,
+      "artifacts": [
+        {
+          "path": "money_core.py",
+          "exists": true
+        }
+      ]
+    }
+  ],
+  "unchanged_verify_launched": [],
+  "changed_verification": [
+    {
+      "task": "T001",
+      "context": 13,
+      "reason": "stale",
+      "changed_paths": [
+        "output:money_core.py"
+      ],
+      "verification_ids": [
+        1
+      ]
+    },
+    {
+      "task": "T002",
+      "context": 15,
+      "reason": "stale",
+      "changed_paths": [
+        "dependency:T001:money_core.py",
+        "dependency:T001"
+      ],
+      "verification_ids": [
+        4,
+        5
+      ]
+    }
+  ],
+  "analytics_windows": {
+    "analytics-before": {
+      "T001": {
+        "current": [
+          1
+        ],
+        "historical": [],
+        "counts": {
+          "current": 1,
+          "current_passed": 1,
+          "historical": 0,
+          "unknown": 0
+        }
+      },
+      "T002": {
+        "current": [
+          4,
+          5
+        ],
+        "historical": [
+          2,
+          3
+        ],
+        "counts": {
+          "current": 2,
+          "current_passed": 2,
+          "historical": 2,
+          "unknown": 0
+        }
+      }
+    },
+    "analytics-unchanged": {
+      "T001": {
+        "current": [
+          1
+        ],
+        "historical": [],
+        "counts": {
+          "current": 1,
+          "current_passed": 1,
+          "historical": 0,
+          "unknown": 0
+        }
+      },
+      "T002": {
+        "current": [
+          4,
+          5
+        ],
+        "historical": [
+          2,
+          3
+        ],
+        "counts": {
+          "current": 2,
+          "current_passed": 2,
+          "historical": 2,
+          "unknown": 0
+        }
+      }
+    },
+    "analytics-after-change": {
+      "T001": {
+        "current": [
+          6
+        ],
+        "historical": [
+          1
+        ],
+        "counts": {
+          "current": 1,
+          "current_passed": 1,
+          "historical": 1,
+          "unknown": 0
+        }
+      },
+      "T002": {
+        "current": [
+          7,
+          8
+        ],
+        "historical": [
+          2,
+          3,
+          4,
+          5
+        ],
+        "counts": {
+          "current": 2,
+          "current_passed": 2,
+          "historical": 4,
+          "unknown": 0
+        }
+      }
+    }
+  },
+  "readonly_source_hashes_match": true,
+  "final": {
+    "goal": "done",
+    "run": "done",
+    "stale": [],
+    "product_stdout": "1900",
+    "product_exit": 0
+  },
+  "raw_response_sha256": {
+    "status-initial.json": "5daeb8b20a24908a363170d42821141456857cab3ec59b6ca1741e09ddd3719d",
+    "analytics-after-change.json": "61cd7b4ae5622d5f64075fb92594eb3ec36b6cd1690d93991a0e7a6fd684bbb1",
+    "analytics-before.json": "4162c90d2dc65816ed3167760adc2779ee38f53bec1d47b3c324d420ce4cdc54",
+    "plan.json": "b76f4a8f398589c50756ee207c176cad0437924619bd6176209a2be948f5a9f1",
+    "verify.json": "5e9b091d6d1bb9608852c645047a2a90b5ab048d17ebd63912cb01b81100ae58",
+    "status-stale.json": "4956196aed3e83a4a9b022fd5f897b0b9691cd78ebcab7af06de04abbad5277b",
+    "worker2.json": "c3a6d775f53a894e8d26ca91ca55117f3480398d0308d4592003e57222a95501",
+    "verify-changed.json": "dcf55b1bfee813dec54f92a5f004265cab8e95bba4acbd592bc6f8cca541ffa4",
+    "verify-unchanged.json": "ff07d3a3dc0df8f44a7e1369097a24c10ca3f52328af5b03b3d1572168f0b10c",
+    "sample.json": "e70f1713d88af47d2a3055e3b0b028312ecb5cad96a4960ad5a41b8f68e0e9ec",
+    "worker1.json": "087b12f6216e5b8fe7bffb80174c9c3fef323926ba1bd3d58a42caf4b09b41db",
+    "analytics-unchanged.json": "d33a1b95db0d9d0810695647fd92c30aee217aa91bdc1fb8daeeb11944ed99f2",
+    "status-final.json": "e0c308036f207737944bacc9e53f355bbdcc87b21112cc9b8b9a95537004a100"
+  }
+}

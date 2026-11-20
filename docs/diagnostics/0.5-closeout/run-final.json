@@ -1,0 +1,307 @@
+{
+  "ok": true,
+  "goal": {
+    "id": "G013",
+    "objective": "\u6267\u884c ORX 0.5.0 \u6536\u5c3e\u5de5\u4f5c",
+    "acceptance": [
+      "\u6267\u884c\u6536\u5c3e\u5de5\u4f5c\u3002"
+    ],
+    "constraints": [],
+    "status": "done"
+  },
+  "run": {
+    "id": "R013",
+    "status": "done",
+    "started_at": "2026-11-20T06:31:48.890740+00:00",
+    "completed_at": "2026-11-20T08:02:47.462338+00:00"
+  },
+  "plan": {
+    "revision": 2,
+    "depth": "standard",
+    "planner_profile": "orx-host",
+    "status": "active"
+  },
+  "tasks": [
+    {
+      "id": "T001",
+      "objective": "\u5b9e\u73b0 Analytics \u53ea\u8bfb\u9a8c\u6536\u7a97\u53e3\u4e0e\u9010\u884c\u6709\u6548\u6027\u3002\u6309\u7ea6\u5b9a\u6539\u771f\u5b9e Python \u4ee3\u7801\u5e76\u5148\u8865\u5931\u8d25\u56de\u5f52\uff0c\u4fdd\u7559\u5386\u53f2\u3001\u65e7\u5feb\u7167 unknown\u3001\u65e0\u7ed1\u5b9a\u884c\u3001Worker \u8fb9\u754c\u3001\u6c34\u4f4d\u3001\u574f context \u4e0d\u56de\u9000\uff0c\u8de8\u9879\u76ee/Run/\u4fee\u8ba2\u9694\u79bb\u3002\u660e\u786e snapshot \u53e3\u5f84\u800c\u975e\u5b9e\u65f6\u6587\u4ef6\u4fdd\u8bc1\u3002\u65b0\u589e tools/orx-analytics/docs/verification-validity.md \u8bf4\u660e\u8fd4\u56de\u5b57\u6bb5\u4f9b\u540e\u7eed Swift \u6d88\u8d39\u3002\u7981\u6b62\u63d0\u4ea4\u7528\u6237\u5df2\u6709\u6539\u52a8\uff0c\u4e0d\u505a git commit\uff0c\u7531\u4e3b\u63a7\u68c0\u67e5\u540e\u7edf\u4e00\u63d0\u4ea4\u3002",
+      "status": "passed",
+      "profile": "codex-verify",
+      "dependencies": [],
+      "blocked_by": [],
+      "failure_reason": null,
+      "session_ref": "01a1f7b5-dd9a-7620-9747-be00180d53f3",
+      "check_rounds": {
+        "used": 0,
+        "budget": 3
+      },
+      "progress": {
+        "attempt": 261,
+        "state": "unknown",
+        "phase": null,
+        "message": null,
+        "received_at": null,
+        "age_sec": null,
+        "timeout_sec": 3600,
+        "hint": null,
+        "note": null
+      },
+      "budget": {
+        "attempts": 1,
+        "attempts_with_usage": 1,
+        "attempts_unassessed": 0,
+        "attempts_unnormalized": 0,
+        "processing_tokens_recorded": 4878233,
+        "scope": "task",
+        "limits": {
+          "soft_warn_task_processing_tokens": 8000000,
+          "hard_stop_task_processing_tokens": 50000000,
+          "hard_stop_task_attempts": 8
+        },
+        "soft_warn": false,
+        "hard_stop": false,
+        "hard_stop_reason": null,
+        "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+      }
+    },
+    {
+      "id": "T002",
+      "objective": "\u6d88\u8d39 T001 \u7684\u771f\u5b9e\u5b57\u6bb5\uff0c\u66f4\u65b0 Swift VerificationRow \u53ca\u4efb\u52a1\u8be6\u60c5\u4ee5\u533a\u5206\u5386\u53f2\u7ed3\u679c\u3001\u91c7\u96c6\u65f6\u5f53\u524d\u7a97\u53e3\u548c\u672a\u77e5\u3002\u5b57\u6bb5\u7f3a\u5931\u7684\u65e7\u5f15\u64ce\u53ef\u89e3\u7801\u3002\u590d\u7528\u65e2\u6709\u6837\u5f0f\uff0c\u4e0d\u91cd\u8bbe\u8ba1\u5217\u8868\uff0c\u8865 Swift \u89e3\u7801\u53ca\u5c55\u793a\u6587\u6848\u6d4b\u8bd5\u3002\u9605\u8bfb apps/macos/AGENTS.md \u548c DESIGN.md\u3002\u7981\u6b62 commit\u3002",
+      "status": "passed",
+      "profile": "codex-verify",
+      "dependencies": [
+        "T001"
+      ],
+      "blocked_by": [],
+      "failure_reason": null,
+      "session_ref": "01a1f7bf-8552-7240-adfb-a474be3bca5d",
+      "check_rounds": {
+        "used": 0,
+        "budget": 3
+      },
+      "progress": {
+        "attempt": 263,
+        "state": "unknown",
+        "phase": null,
+        "message": null,
+        "received_at": null,
+        "age_sec": null,
+        "timeout_sec": 3600,
+        "hint": null,
+        "note": null
+      },
+      "budget": {
+        "attempts": 1,
+        "attempts_with_usage": 1,
+        "attempts_unassessed": 0,
+        "attempts_unnormalized": 0,
+        "processing_tokens_recorded": 1589996,
+        "scope": "task",
+        "limits": {
+          "soft_warn_task_processing_tokens": 8000000,
+          "hard_stop_task_processing_tokens": 50000000,
+          "hard_stop_task_attempts": 8
+        },
+        "soft_warn": false,
+        "hard_stop": false,
+        "hard_stop_reason": null,
+        "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+      }
+    },
+    {
+      "id": "T003",
+      "objective": "\u6574\u7406 0.5.0 \u5f53\u524d\u7248\u672c\u3001\u5b89\u88c5\u5347\u7ea7\u56de\u9000\u4e0e\u53d1\u5e03\u8bf4\u660e\uff0c\u4fdd\u7559\u65e7\u7248\u672c\u5386\u53f2\u3002\u5305\u542b README.md\u3001docs/package-acceptance.md \u4e0e Analytics compatibility \u7684\u5df2\u6709\u4e3b\u63a7\u4fee\u8ba2\uff1b\u4e0d\u89e6\u78b0\u5176\u4ed6\u810f\u6587\u6863\u3002\u65b0\u5efa docs/release-0.5.0.md \u548c docs/upgrade-0.5.0.md\uff0c\u660e\u786e\u5185\u90e8\u9884\u89c8\u4e0e\u6b63\u5f0f\u6e20\u9053\u3001\u65e7\u672a\u77e5\u8bc1\u636e\u3001\u914d\u7f6e\u6839\u548c Analytics \u6570\u636e\u6839\u8fc1\u79fb\u3002\u7531\u4e3b\u63a7\u7ed3\u5408\u4e0a\u4e0b\u6587\u5904\u7406\u3002",
+      "status": "passed",
+      "profile": "codex-verify",
+      "dependencies": [
+        "T001",
+        "T002"
+      ],
+      "blocked_by": [],
+      "failure_reason": null,
+      "session_ref": "01a1f7c6-2516-7f81-ac7f-50e96992eddf",
+      "check_rounds": {
+        "used": 0,
+        "budget": 3
+      },
+      "progress": {
+        "attempt": 267,
+        "state": "unknown",
+        "phase": null,
+        "message": null,
+        "received_at": null,
+        "age_sec": null,
+        "timeout_sec": 3600,
+        "hint": null,
+        "note": null
+      },
+      "budget": {
+        "attempts": 2,
+        "attempts_with_usage": 0,
+        "attempts_unassessed": 2,
+        "attempts_unnormalized": 0,
+        "processing_tokens_recorded": 0,
+        "scope": "task",
+        "limits": {
+          "soft_warn_task_processing_tokens": 8000000,
+          "hard_stop_task_processing_tokens": 50000000,
+          "hard_stop_task_attempts": 8
+        },
+        "soft_warn": false,
+        "hard_stop": false,
+        "hard_stop_reason": null,
+        "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+      }
+    },
+    {
+      "id": "T004",
+      "objective": "\u4e3b\u63a7\u5b8c\u6210\u5168\u91cf\u6d4b\u8bd5\u3001\u81ea\u5ba1\u548c\u589e\u91cf\u63d0\u4ea4\uff0c\u518d\u4ece\u5355\u4e00\u63d0\u4ea4\u51bb\u7ed3\u6784\u5efa\u4e24\u4e2a CLI \u548c\u5185\u90e8\u9884\u89c8 App\uff1b\u4ece\u5b89\u88c5\u5019\u9009\u8dd1\u771f\u5b9e\u8de8 CLI \u4f9d\u8d56 Run \u5e76\u7528 Analytics \u5bf9\u8d26\u5f53\u524d/\u5386\u53f2\u7a97\u53e3\u3002\u68c0\u67e5\u5b9e\u9645 App \u65b0 UI \u660e\u6697\u4e3b\u9898\u53ca\u6700\u5c0f\u5bbd\u5ea6\u3001\u7248\u672c\u8def\u5f84\u4e0e\u5171\u4eab\u5f15\u64ce\u3002\u6838\u5bf9\u6e90\u7801\u5207\u6362\u53ca\u65e7\u4ed3\u5f52\u6863\uff0c\u5f62\u6210\u9010\u9879\u5b8c\u6210\u62a5\u544a\u4e0e\u53ef\u5ba1\u9605\u53d1\u5e03\u5019\u9009\u3002\u771f\u5b9e\u6ce8\u9500\u91cd\u767b\u548c\u6b63\u5f0f\u6e20\u9053\u7f3a\u53e3\u5fc5\u987b\u5982\u5b9e\u8bb0\u5f55\uff0c\u4e0d\u81ea\u884c\u6ce8\u9500\u6216\u6539\u7cfb\u7edf\u6743\u9650\u3002",
+      "status": "passed",
+      "profile": "codex-verify",
+      "dependencies": [
+        "T003"
+      ],
+      "blocked_by": [],
+      "failure_reason": null,
+      "session_ref": "01a1f7f9-b561-7b22-8ea6-5ac18f39878f",
+      "check_rounds": {
+        "used": 0,
+        "budget": 3
+      },
+      "progress": {
+        "attempt": 269,
+        "state": "unknown",
+        "phase": null,
+        "message": null,
+        "received_at": null,
+        "age_sec": null,
+        "timeout_sec": 3600,
+        "hint": null,
+        "note": null
+      },
+      "budget": {
+        "attempts": 1,
+        "attempts_with_usage": 0,
+        "attempts_unassessed": 1,
+        "attempts_unnormalized": 0,
+        "processing_tokens_recorded": 0,
+        "scope": "task",
+        "limits": {
+          "soft_warn_task_processing_tokens": 8000000,
+          "hard_stop_task_processing_tokens": 50000000,
+          "hard_stop_task_attempts": 8
+        },
+        "soft_warn": false,
+        "hard_stop": false,
+        "hard_stop_reason": null,
+        "restore": "restore point: raise the budget.* limit in config.toml (or the ORX_BUDGET_* env override) to resume dispatch \u2014 recorded evidence, verification rows, and attempt history stay queryable; nothing is deleted"
+      }
+    }
+  ],
+  "verification": {
+    "passed": 8,
+    "failed": 0,
+    "awaiting_agent": 0
+  },
+  "resources": [
+    {
+      "profile": "orx-host",
+      "status": "unknown",
+      "note": "",
+      "updated_at": "2026-10-03T08:35:59+00:00"
+    },
+    {
+      "profile": "codex-frontier",
+      "status": "available",
+      "note": "",
+      "updated_at": "2026-10-18T01:39:36.023172+00:00"
+    },
+    {
+      "profile": "cursor-frontier",
+      "status": "exhausted",
+      "note": "preflight: pro; cycle 0% used (44/44, included 44)",
+      "updated_at": "2026-11-20T08:01:39.002645+00:00"
+    },
+    {
+      "profile": "cursor-strong",
+      "status": "available",
+      "note": "stale m1.2 'temporary override' (2026-10-04) removed; worker ladder rung 2 restored for GLM-window reroute",
+      "updated_at": "2026-10-07T00:31:10.378662+00:00"
+    },
+    {
+      "profile": "cursor-strong-high",
+      "status": "exhausted",
+      "note": "preflight: pro; cycle 0% used (44/44, included 44)",
+      "updated_at": "2026-11-20T08:01:39.003145+00:00"
+    },
+    {
+      "profile": "cursor-economy",
+      "status": "exhausted",
+      "note": "preflight: pro; cycle 0% used (44/44, included 44)",
+      "updated_at": "2026-11-20T08:01:39.003406+00:00"
+    },
+    {
+      "profile": "zcode-controller",
+      "status": "unknown",
+      "note": "",
+      "updated_at": null
+    },
+    {
+      "profile": "zcode-worker",
+      "status": "available",
+      "note": "probe confirms GLM subagent spawns OK (5s probe 2026-10-07 08:47 local); earlier 1308 was burst-limit at spawn, window not globally full",
+      "updated_at": "2026-10-07T01:08:01.046313+00:00"
+    },
+    {
+      "profile": "zcode-verifier-flash",
+      "status": "unknown",
+      "note": "",
+      "updated_at": null
+    },
+    {
+      "profile": "zcode-verifier-strong",
+      "status": "unknown",
+      "note": "",
+      "updated_at": null
+    },
+    {
+      "profile": "claude-plan",
+      "status": "available",
+      "note": "",
+      "updated_at": "2026-11-20T06:31:48.882417+00:00"
+    },
+    {
+      "profile": "claude-plan-deep",
+      "status": "unknown",
+      "note": "",
+      "updated_at": null
+    },
+    {
+      "profile": "zcode-cli-worker",
+      "status": "available",
+      "note": "",
+      "updated_at": "2026-11-20T06:54:53.264506+00:00"
+    },
+    {
+      "profile": "cursor-cli-worker",
+      "status": "exhausted",
+      "note": "preflight: pro; cycle 0% used (44/44, included 44)",
+      "updated_at": "2026-11-20T08:01:39.003637+00:00"
+    },
+    {
+      "profile": "codex-verify",
+      "status": "available",
+      "note": "",
+      "updated_at": "2026-11-20T08:02:47.461602+00:00"
+    }
+  ],
+  "result": "done",
+  "next_actions": [
+    {
+      "action": "done"
+    }
+  ],
+  "evidence_freshness": {
+    "stale": []
+  }
+}

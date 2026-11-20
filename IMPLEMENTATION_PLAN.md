@@ -63,7 +63,9 @@ App 分发待完成。[切换记录](docs/diagnostics/analytics-monorepo/source-
 **Success Criteria**: CLI 与 Finder 启动的 App 读写用户默认和两个项目覆盖，原文件可回退。
 **Tests**: 路径优先级、迁移冲突和成组发布，CLI 与 App 双项目读写，核对原项目库与共享引擎。
 **Status**: In Progress（本机配置已迁移，CLI 与生产 Swift 路由客户端三范围验收通过。
-Finder 启动与用户默认保存已核对，两个项目的界面保存待核对。
+Finder 启动与用户默认保存已核对。2026-11-20 同源候选 App 的两项目界面保存
+通过，默认安装路径的桌面工具旧 Bundle ID 误识别边界仍单独留痕，见
+docs/diagnostics/0.5-closeout/README.md。
 [验收记录](docs/diagnostics/analytics-monorepo/config-home.md)）
 
 # ORX 0.5：跨宿主主控与 CLI 执行
@@ -1514,10 +1516,10 @@ v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Rele
 **Goal**: 从同一提交构建两个 CLI 和内部预览 App，归档校验值和发布说明。
 **Success Criteria**: 干净安装、独立运行、全量检查与真实依赖 Run 通过，候选来源可复现。
 **Tests**: ORX/Analytics/Swift/打包测试；联合发布驱动；真实跨 CLI 与失效重验验收。
-**Status**: In Progress
+**Status**: Complete（冻结 4ff2040；14 项联合检查、1,310 项 ORX 全量及真实四 CLI 依赖 Run 通过，见 docs/diagnostics/0.5-closeout/）
 
 ## Stage C4: 安装迁移与发布收口
 **Goal**: 复核实际安装和旧仓切换，明确剩余系统及外部分发门禁。
 **Success Criteria**: 已实测事实与待验项目明确；不把未注销重登或正式签名视为通过；可审阅发布候选完整。
 **Tests**: 版本/路径/验签、共享引擎与 watch、旧仓归档与历史下载、最终逐项完成审计。
-**Status**: Not Started
+**Status**: Complete（共同候选已安装、watch 续租及历史业务身份保留；用户原有改动未变。实际注销重登、正式签名/公证和外部发布仍为明确独立门禁，见 docs/diagnostics/0.5-closeout/README.md）
