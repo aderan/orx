@@ -10,11 +10,11 @@
 
 ## 安装与用户配置
 
-使用发布资产或同一个完整提交安装两个独立 CLI。以下 SHA 是占位符，替换为候选清单中的真实提交：
+使用发布资产或同一个版本标签安装两个独立 CLI；精确来源和资产 SHA-256 以 Release 附带的清单为准：
 
 ```sh
-uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx.git@<full-commit-sha>'
-uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx.git@<full-commit-sha>#subdirectory=tools/orx-analytics'
+uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx.git@v0.5.0'
+uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx.git@v0.5.0#subdirectory=tools/orx-analytics'
 orx version --json
 orx-analytics --version
 orx config path --json

@@ -30,4 +30,6 @@
 
 本版本的实际候选提交、测试结果、逐产物 SHA-256 和安装记录以 [收尾证据](diagnostics/0.5-closeout/README.md) 及其 candidate-acceptance.json 为准。Release 发布状态以远端实际标签和资产为准。
 
-内部预览使用 ad-hoc 签名。正式 App 的 Developer ID、公证及真实注销重登属于独立门禁；没有实测通过的项目不视为通过。终端代启动 Controller 和细粒度任务授权不在本版交付范围。
+本次正式 Release 分发 ORX CLI 与 Analytics CLI 的 wheel、sdist 和来源/校验清单。
+macOS App 继续使用 ad-hoc 签名的内部预览渠道，不随公开 Release 上传。
+正式 App 的 Developer ID、公证及真实注销重登属于独立门禁；没有实测通过的项目不视为通过。终端代启动 Controller 和细粒度任务授权不在本版交付范围。

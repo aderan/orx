@@ -102,11 +102,9 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
   `__pycache__` pyc，使 `codesign --verify --strict` 由 0 变 1（证据见
   ORX 仓 `dist/g011/gui-acceptance/seal-break-*`）；构建脚本的封条门禁
   只能保护构建期，运行期的封条只能由 App 自己守住。
-- 引擎入口说明：`python -m orxanalytics.engine`（engine.main）目前只
-  加锁并跑调度器、不绑定 socket，无法服务 App 客户端；包内
-  `orx_engine_serve.py` 用同样的公开引擎 API（acquire + start_server +
-  EngineSupervisor）正确组合出服务行为。该 src/ 入口修复后两者可无
-  行为差异地切换。
+- 引擎入口 `python -m orxanalytics.engine [--data-dir DIR]` 提供完整服务：
+  单实例锁、socket server 和受监督的调度循环。App 与 CLI watch 使用
+  同一服务协议；包内 `orx_engine_serve.py` 也组合相同的公开引擎 API。
 - 退出 App 只释放自己的采集需求；引擎若仍被 CLI watcher 需要，会继续
   运行（设计 §7 App/CLI 共存）。注销或重启后引擎不自动恢复，下次启动
   App 时自动重新拉起。

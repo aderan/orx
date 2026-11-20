@@ -1523,3 +1523,23 @@ v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Rele
 **Success Criteria**: 已实测事实与待验项目明确；不把未注销重登或正式签名视为通过；可审阅发布候选完整。
 **Tests**: 版本/路径/验签、共享引擎与 watch、旧仓归档与历史下载、最终逐项完成审计。
 **Status**: Complete（共同候选已安装、watch 续租及历史业务身份保留；用户原有改动未变。实际注销重登、正式签名/公证和外部发布仍为明确独立门禁，见 docs/diagnostics/0.5-closeout/README.md）
+
+# ORX CLI + Analytics 0.5.0 正式发布（2026-11-20）
+
+## Stage R1: 发布文档与 skill
+**Goal**: 修正同仓和引擎文档，固定 v0.5.0 安装入口与 CLI 正式/App 内部范围。
+**Success Criteria**: skill 校验和现有文档/安装回归通过，用户原有改动保留。
+**Tests**: tests/test_model_docs.py、tests/test_skills_update.py、quick_validate.py。
+**Status**: Complete（37 项现有回归及 skill 校验通过）
+
+## Stage R2: 远端 CI 与冻结
+**Goal**: PR 和 main CI 通过，从受验产品提交生成同源候选与哈希。
+**Success Criteria**: 两 CLI 和 App 版本 0.5.0，候选来源、CI、产物可对账。
+**Tests**: packages workflow、joint_release.py monorepo、逐文件 SHA-256。
+**Status**: In Progress
+
+## Stage R3: 发布与消费者复验
+**Goal**: 发布两个 CLI 的 v0.5.0，远端下载并安装验收。
+**Success Criteria**: Release 和 tag 来源一致，四份 CLI 产物哈希一致，真实依赖 Run done。App 内部包不外发。
+**Tests**: 下载复算、隔离安装、真实跨 CLI 依赖 Run、Analytics 只读对账。
+**Status**: Not Started

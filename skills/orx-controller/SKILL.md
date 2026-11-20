@@ -264,9 +264,9 @@ structured delivery statuses and the reason prefixes in steps 6–8.
    - **Source — explicit configuration only.** Resolve the `orx-analytics`
      executable from the `ORX_ANALYTICS_BIN` environment variable (an
      absolute path, or a name resolved on PATH). There is no default
-     location: no checkout directory is assumed or probed. The analysis
-     implementation remains a separate repository; ORX ships no analysis
-     layer of its own.
+     location: no checkout directory is assumed or probed. Analytics lives
+     in this repository at `tools/orx-analytics` and is installed as the
+     independent `orx-analytics` CLI; installing ORX alone does not install it.
    - **start / status** — once per session, only when `ORX_ANALYTICS_BIN`
      is set and the executable is installed and runnable:
      `<bin> watch start`, then `<bin> watch status` to confirm.
