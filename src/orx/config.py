@@ -4,7 +4,7 @@ Profiles are *definitions* and live only in TOML. Runtime resource/quota
 state lives in SQLite and is never written back into these files.
 
 M1 layers (high -> low): CLI argument > environment > project `.orx/` >
-user `~/.config/orx/` > built-in defaults. Scalars take the highest layer
+user `~/.orx/` > built-in defaults. Scalars take the highest layer
 that sets them; profiles merge by name with complete same-name replacement
 (project wins); role routing lists (plan.*/worker/verify) use the project
 section when the project config sets it, else the user's.
@@ -54,7 +54,7 @@ LAYER_DEFAULT = "default"
 
 # The environment layer is a small, documented allowlist — never a generic
 # config-in-env free-for-all. Path/discovery env vars (ORX_PROJECT,
-# ORX_CONFIG_DIR, ORX_DATA_DIR) live in their own functions below.
+# ORX_CONFIG_DIR, ORX_HOME, ORX_DATA_DIR) live in their own functions below.
 ENV_OVERRIDES: dict[str, str] = {
     "runtime.max_parallel": "ORX_RUNTIME_MAX_PARALLEL",
     "runtime.command_timeout_sec": "ORX_RUNTIME_COMMAND_TIMEOUT_SEC",
@@ -174,13 +174,38 @@ _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def user_config_dir() -> Path:
-    """ORX_CONFIG_DIR > XDG_CONFIG_HOME/orx > ~/.config/orx."""
-    env = os.environ.get("ORX_CONFIG_DIR")
-    if env:
-        return Path(env).expanduser()
+    """ORX_CONFIG_DIR > ORX_HOME > XDG_CONFIG_HOME/orx > ~/.orx."""
+    override = os.environ.get("ORX_CONFIG_DIR") or os.environ.get("ORX_HOME")
+    if override:
+        return Path(override).expanduser()
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
-    return base / "orx"
+    return Path(xdg).expanduser() / "orx" if xdg else Path.home() / ".orx"
+
+
+def is_user_config_dir(directory: Path) -> bool:
+    resolved = directory.resolve()
+    return resolved in {(Path.home() / ".orx").resolve(), user_config_dir().resolve()}
+
+
+def migrate_user_config_home() -> tuple[Path, Path]:
+    """Install the legacy default pair together, keeping the source for rollback."""
+    source = Path.home() / ".config" / "orx"
+    target = user_config_dir().absolute()
+    if target.exists() or target.is_symlink():
+        raise ConfigError([f"configuration destination already exists: {target}"])
+    try:
+        files = {name: (source / name).read_bytes()
+                 for name in ("config.toml", "profiles.toml")}
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".orx-migrate-", dir=target.parent) as scratch:
+            staged = Path(scratch) / "config"
+            staged.mkdir(mode=0o700)
+            for name, content in files.items():
+                (staged / name).write_bytes(content)
+            staged.rename(target)
+    except OSError as exc:
+        raise ConfigError([f"cannot migrate ORX configuration to {target}: {exc}"]) from exc
+    return source, target
 
 
 def user_data_dir() -> Path:
@@ -739,7 +764,7 @@ def load_project_config(config_path: Path, profiles_path: Path) -> tuple[Config,
     """Load both files and cross-validate references. Raises ConfigError.
 
     M1: layered — the project layer merges over the user layer
-    (~/.config/orx/, or ORX_CONFIG_DIR/XDG_CONFIG_HOME). Existing callers
+    (from user_config_dir()). Existing callers
     keep their signature; the merge is the only behavioral change."""
     effective = load_effective(config_path, profiles_path)
     return effective.config, effective.profiles

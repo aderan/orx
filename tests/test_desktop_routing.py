@@ -32,7 +32,8 @@ def routing_world(tmp_path, monkeypatch):
         )
         (directory / "state.db").write_bytes(b"configuration may not open this database")
         projects.append(project)
-    monkeypatch.setenv("ORX_CONFIG_DIR", str(user))
+    monkeypatch.delenv("ORX_CONFIG_DIR")
+    monkeypatch.setenv("ORX_HOME", str(user))
     monkeypatch.setenv("ORX_PROJECT", str(projects[0]))
     monkeypatch.chdir(projects[0])
     return user, projects[0], projects[1], tmp_path / "draft.json"

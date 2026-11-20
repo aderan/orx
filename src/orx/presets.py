@@ -2,7 +2,7 @@
 
 A preset is a packaged directory (``src/orx/presets/<name>/``) holding a
 ``config.toml`` (routing defaults) and a ``profiles.toml``. Installing one
-writes ONLY the user layer (~/.config/orx, or ORX_CONFIG_DIR) and, for
+writes ONLY the resolved user layer (default ~/.orx) and, for
 subagent presets, copies the referenced native agent definitions into the
 ZCode agents directory. No project directory is ever read or written here —
 project layers keep winning by the normal layering rules.

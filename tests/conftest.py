@@ -10,7 +10,7 @@ from orx import dispatch
 
 @pytest.fixture(autouse=True)
 def isolate_user_layer(tmp_path, monkeypatch):
-    """Every test sees an empty M1 user layer: a real ~/.config/orx on the
+    """Every test sees an empty M1 user layer: a real ~/.orx on the
     developer machine must never leak into test projects. Quota preflight is
     disabled too — run/plan/verify entry points must never touch the network
     from the suite (tests that exercise it re-enable and monkeypatch)."""

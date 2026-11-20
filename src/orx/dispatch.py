@@ -185,12 +185,17 @@ def load_profiles_only(config_path: Path, profiles_path: Path) -> dict:
     return load_profiles(profiles_path)
 
 
+def is_project_root(root: Path) -> bool:
+    directory = root / ".orx"
+    return directory.is_dir() and not config_mod.is_user_config_dir(directory)
+
+
 def find_project_root(start: Path | None = None) -> Path | None:
     """Walk parents looking for `.orx`. ORX_PROJECT env var wins."""
     env = os.environ.get("ORX_PROJECT")
     current = (Path(env) if env else (start or Path.cwd())).resolve()
     for candidate in (current, *current.parents):
-        if (candidate / ".orx").is_dir():
+        if is_project_root(candidate):
             return candidate
     return None
 
@@ -209,6 +214,8 @@ def init_project(root: Path) -> dict:
     updates are not shadowed per-project."""
     root = root.resolve()
     orx_dir = root / ".orx"
+    if config_mod.is_user_config_dir(orx_dir):
+        raise ORXError(f"cannot initialize a project in the user configuration directory: {orx_dir}")
     orx_dir.mkdir(parents=True, exist_ok=True)
     (orx_dir / "runs").mkdir(exist_ok=True)
 

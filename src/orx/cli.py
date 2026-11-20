@@ -265,8 +265,8 @@ def _config_set_help() -> str:
         "",
         "The project layer is .orx/config.toml (the project that contains the",
         "working directory, or ORX_PROJECT). --user writes only the user",
-        "config.toml: ORX_CONFIG_DIR if set, else $XDG_CONFIG_HOME/orx,",
-        "else ~/.config/orx/config.toml. A missing user or project file is",
+        "config.toml: ORX_CONFIG_DIR, ORX_HOME, $XDG_CONFIG_HOME/orx, or ~/.orx.",
+        "A missing user or project file is",
         "created with schema_version = 1 and the single key being set.",
         "Project values, environment overrides, and built-in defaults are not copied in.",
         "",
@@ -305,8 +305,8 @@ def _config_set_help() -> str:
 def config_path(json_out: bool = JsonOpt) -> None:
     """Show resolved user and project configuration paths.
 
-    user_config and user_profiles honor ORX_CONFIG_DIR, then
-    XDG_CONFIG_HOME/orx, then ~/.config/orx. user_data honors ORX_DATA_DIR,
+    user_config and user_profiles honor ORX_CONFIG_DIR, then ORX_HOME,
+    XDG_CONFIG_HOME/orx, and finally ~/.orx. user_data honors ORX_DATA_DIR,
     then XDG_DATA_HOME/orx, then ~/.local/share/orx. project_config and
     project_profiles are the .orx files of the project found from the
     working directory or ORX_PROJECT. Those two are null when no project
@@ -323,6 +323,17 @@ def config_path(json_out: bool = JsonOpt) -> None:
         typer.echo(f"user data:         {paths['user_data']}")
         typer.echo(f"project config:    {paths['project_config'] or '(none)'}")
         typer.echo(f"project profiles:  {paths['project_profiles'] or '(none)'}")
+
+
+@config_app.command("migrate-home")
+@handle_errors
+def config_migrate_home(json_out: bool = JsonOpt) -> None:
+    """Copy the legacy ~/.config/orx TOML pair into a new user config directory."""
+    source, destination = config_mod.migrate_user_config_home()
+    _ok(json_out, source=str(source), destination=str(destination))
+    if not json_out:
+        typer.echo(f"Installed config.toml and profiles.toml in {destination}.")
+        typer.echo(f"Originals retained in {source}.")
 
 
 @config_app.command("list")
@@ -485,7 +496,7 @@ def config_routing(
     if scope not in ("user", "project") or (scope == "project") != (project_root is not None):
         raise ConfigError(["choose user scope or specify the project scope and project root"])
     if project_root is not None:
-        if not project_root.is_absolute() or not (project_root / ".orx").is_dir():
+        if not project_root.is_absolute() or not dispatch.is_project_root(project_root):
             raise ConfigError(["project root must be an absolute ORX project directory"])
         project_root = project_root.resolve()
     draft = None

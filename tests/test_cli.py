@@ -1127,6 +1127,76 @@ def test_config_path_without_project_has_null_project_paths(tmp_path, monkeypatc
     assert "(none)" in human.stdout
 
 
+@pytest.mark.parametrize("existing_target", [None, "config.toml", "profiles.toml"])
+def test_config_migrate_home_installs_pair_without_overwriting(
+    tmp_path, monkeypatch, existing_target
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ORX_CONFIG_DIR")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("ORX_HOME", raising=False)
+    source = tmp_path / ".config" / "orx"
+    source.mkdir(parents=True)
+    target = tmp_path / ".orx"
+    files = {
+        "config.toml": b"schema_version = 1\n# User routing\n",
+        "profiles.toml": b"schema_version = 1\n[profiles]\n",
+    }
+    for name, content in files.items():
+        (source / name).write_bytes(content)
+    if existing_target:
+        target.mkdir()
+        (target / existing_target).write_bytes(b"# already configured\n")
+
+    result = invoke("config", "migrate-home", "--json")
+    if existing_target:
+        assert result.exit_code == 1
+        assert str(target) in payload(result)["error"]
+        expected = {existing_target: b"# already configured\n"}
+    else:
+        assert result.exit_code == 0, result.stdout
+        assert Path(payload(result)["destination"]) == target
+        expected = files
+    assert {file.name: file.read_bytes() for file in target.iterdir()} == expected
+    assert {file.name: file.read_bytes() for file in source.iterdir()} == files
+
+
+def test_config_migrate_home_rejects_missing_file_without_publishing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ORX_CONFIG_DIR")
+    monkeypatch.setenv("ORX_HOME", str(tmp_path / "alternate"))
+    source = tmp_path / ".config" / "orx"
+    source.mkdir(parents=True)
+    (source / "config.toml").write_text("schema_version = 1\n")
+
+    result = invoke("config", "migrate-home", "--json")
+    assert result.exit_code == 1
+    assert "profiles.toml" in payload(result)["error"]
+    assert not (tmp_path / "alternate").exists()
+
+
+def test_global_home_is_not_discovered_or_used_as_a_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ORX_CONFIG_DIR")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("ORX_HOME", raising=False)
+    (tmp_path / ".orx").mkdir()
+    workspace = tmp_path / "unregistered"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    paths = payload(invoke("config", "path", "--json"))
+    assert paths["project_config"] is None
+
+    routed = invoke("config", "routing", "--json", "--scope", "project",
+                    "--project-root", str(tmp_path))
+    assert routed.exit_code == 1
+
+    monkeypatch.chdir(tmp_path)
+    assert invoke("init", "--json").exit_code == 1
+    assert list((tmp_path / ".orx").iterdir()) == []
+
+
 def test_config_list_and_get_share_effective_values(cli_project, monkeypatch):
     monkeypatch.setenv("ORX_RUNTIME_COMMAND_TIMEOUT_SEC", "7")
     listed = invoke("config", "list", "--json")

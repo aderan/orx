@@ -208,18 +208,30 @@ blocker. The Controller decides when to retry, replan, or request input.
 - `.orx/runs/<run>/` — assignment prompts, exec logs, verification logs
 - `ORX_PROJECT` env var or parent search finds the project root
 
-User-layer files live next to each other: `ORX_CONFIG_DIR` if set, otherwise
-`$XDG_CONFIG_HOME/orx`, otherwise `~/.config/orx` (`config.toml` and
-`profiles.toml`). Data (probe cache and similar) lives in `ORX_DATA_DIR`,
+The user configuration directory contains both `config.toml` and
+`profiles.toml`. ORX checks `ORX_CONFIG_DIR`, then `ORX_HOME`, then
+`$XDG_CONFIG_HOME/orx` when explicitly set. The default is `~/.orx`.
+Use an absolute path for overrides so the terminal and App can resolve it
+from different working directories. Data follows `ORX_DATA_DIR`,
 `$XDG_DATA_HOME/orx`, or `~/.local/share/orx`.
 
 ```sh
 orx config path [--json]
+orx config migrate-home [--json]  # migrate the old default user configuration
 orx config list [--json]          # effective value + winning layer
 orx config models [--json]        # per-role models, effort, order, and sources
 orx config get <key> [--json]     # same value and origin as list
 orx config set <key> <value> [--user] [--json]
 ```
+
+On upgrade from the old default `~/.config/orx`, finish config edits and
+run `orx config migrate-home` once. The command copies both TOMLs into the
+resolved new directory together, requires a destination that does not yet
+exist, and keeps the originals. Check the result with `orx config path`.
+The macOS routing page uses the CLI selected in its ORX executable field
+and shows the config path it resolved. An override exported only in a
+terminal applies to that terminal, so use the default for Finder launches
+or provide the override in the GUI session environment as well.
 
 `config set` writes `.orx/config.toml` unless `--user` is given. Values are
 parsed and checked before the file changes; a rejected write leaves it
@@ -519,12 +531,13 @@ update by checking out the release — no `uv tool upgrade`. Upgrading
 
 User layer (preferred home for profile definitions):
 
-    ~/.config/orx/config.toml      user config (optional)
-    ~/.config/orx/profiles.toml    user profiles
+    ~/.orx/config.toml             user config (optional)
+    ~/.orx/profiles.toml           user profiles
     ~/.local/share/orx/            user data dir (probes, snapshots)
 
-`XDG_CONFIG_HOME` / `XDG_DATA_HOME` are respected; `ORX_CONFIG_DIR` /
-`ORX_DATA_DIR` override absolutely. Project `.orx/` keeps `config.toml`
+`ORX_CONFIG_DIR` and `ORX_HOME` select the user config directory.
+`XDG_CONFIG_HOME` applies when neither is set. `ORX_DATA_DIR` still
+takes precedence over `XDG_DATA_HOME` for user data. Project `.orx/` keeps `config.toml`
 (routing) and optionally `profiles.toml` (same-name project profiles
 completely replace user ones).
 

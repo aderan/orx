@@ -303,16 +303,28 @@ def test_layered_malformed_user_layer_is_attributed_error(tmp_path):
     assert any("[user]" in m for m in exc.value.messages)
 
 
-def test_user_paths_respect_env_and_xdg(monkeypatch, tmp_path):
+def test_user_paths_respect_config_dir_home_and_xdg(monkeypatch, tmp_path):
     from orx import config as cfg
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("ORX_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("ORX_HOME", "~/custom-orx")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.delenv("ORX_DATA_DIR")  # the autouse isolation sets it
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     assert cfg.user_config_dir() == tmp_path / "cfg"
     assert cfg.user_data_dir() == tmp_path / "xdg-data" / "orx"
+
     monkeypatch.delenv("ORX_CONFIG_DIR")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    assert cfg.user_config_path() == tmp_path / "custom-orx" / "config.toml"
+    assert cfg.user_profiles_path() == tmp_path / "custom-orx" / "profiles.toml"
+
+    monkeypatch.delenv("ORX_HOME")
     assert cfg.user_config_dir() == tmp_path / "xdg-config" / "orx"
+
+    monkeypatch.delenv("XDG_CONFIG_HOME")
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert cfg.user_config_dir() == tmp_path / ".orx"
+    assert cfg.user_data_dir() == tmp_path / ".local" / "share" / "orx"
 
 
 # -- T002: layered integration through open_project / doctor / profiles --

@@ -55,6 +55,13 @@ ORX 图标连续两次冷启动。本机共享引擎升级、原 CLI watch 重�
 
 **Status**: Complete（本机内部预览已安装，[目录收口验收](docs/diagnostics/analytics-monorepo/stage-4.md)）
 
+## ORX 0.5.x 用户配置根迁移
+
+**Goal**: 将全局 `config.toml` 与 `profiles.toml` 作为一组迁到 `~/.orx/`，支持 `ORX_HOME`。
+**Success Criteria**: CLI 与 Finder 启动的 App 读写用户默认和两个项目覆盖，原文件可回退。
+**Tests**: 路径优先级、迁移冲突和成组发布，CLI 与 App 双项目读写，核对原项目库与共享引擎。
+**Status**: In Progress
+
 # ORX 0.5：跨宿主主控与 CLI 执行
 
 2026-11-18。下表记录实施前基线，各阶段状态和实测证据见对应小节。
