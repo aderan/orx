@@ -380,3 +380,7 @@ ORX 的用户数据根下的 `analytics/`，App 的可重建显示缓存用
 - ORX 全量首次运行通过 1,304 项，单条断言仍期待旧 `auto`。修订
   该断言后重跑 CLI 与桌面路由共 92 项，通过。冻结产物的运行时代码
   与验收期间一致。
+- 终端 `orx` 从旧 editable 安装切到同一冻结候选的 wheel。
+  `orx version --json`、`orx-analytics --version` 和 App 均为
+  0.5.0。终端 ORX 的用户默认和项目路由读取通过，配置校验值一致。
+  此次切换没有重启共享 Analytics 引擎或 CLI watch。
