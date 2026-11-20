@@ -1,6 +1,6 @@
 # 安装包级验收（运行手册）
 
-状态：随 G007 T004 建立（0.3.1），G011 起随当前发布前行（0.4.0，
+状态：随 G007 T004 建立（0.3.1），当前源码线为 0.5.0（
 `CODE_SCHEMA_VERSION` = 15；升级链期望值始终锚定代码常量，不随本文
 改写）。本文是安装包级验收的运行手册：入口、依赖、
 fixture 来源、链路内容、隔离保证与失败退出行为。实现全部在
@@ -13,7 +13,11 @@ G011 T004 起本文 §1–§6 之上叠加**两仓联合验收层**（ORX v0.4.0
 Analytics v0.4.2 兼容组合的冻结构建与联合受验）：实现
 `scripts/joint_release.py`，测试 `tests/test_joint_release.py`，运行
 手册与样本来源细则见 `docs/diagnostics/g011/joint-acceptance-runbook.md`
-（§7 摘要见文末）。
+（§7 摘要见文末）。这是历史组合的复验入口。当前同仓 0.5.0 候选使用
+`scripts/joint_release.py monorepo --commit <sha> --work-dir <empty-dir>`，
+一次冻结提交构建两个独立包和 App；步骤见
+[同仓候选手册](diagnostics/analytics-monorepo/candidate-runbook.md)。
+联合候选检查不替代完整 ORX 测试和真实模型 Run，二者须单独保留证据。
 
 ## 1. 入口
 

@@ -833,7 +833,12 @@ public struct TaskFacts: Codable, Equatable {
 }
 
 /// One `orx_verifications` row (evidence). `passed` arrives as a SQLite
-/// INTEGER (0/1) — `flexBool` maps it without inventing values.
+/// INTEGER (0/1) — `flexBool` maps it without inventing values. The
+/// optional `current` / `validity_reason` fields project the row into the
+/// CURRENT verification window (same rules as ORX `verifications_current`);
+/// `current == nil` means UNKNOWN (insufficient basis), never false. Rows
+/// from an older engine without these fields decode fine — the projection
+/// stays unknown, the historical `passed` value is untouched.
 public struct VerificationRow: Codable, Equatable, Identifiable {
     public let rowID: Int?
     public let attemptID: Int?
@@ -842,16 +847,22 @@ public struct VerificationRow: Codable, Equatable, Identifiable {
     public let exitCode: Int?
     public let passed: Bool?
     public let createdAt: String?
+    /// Whether this row belongs to the current verification window:
+    /// true / false / nil (nil = unknown, no basis to confirm or deny).
+    public let current: Bool?
+    /// Why a non-current row left the window (engine reason string; shown
+    /// via `VerificationValidityDisplay`, never matched verbatim).
+    public let validityReason: String?
 
     public var id: Int? { rowID }
 
     enum CodingKeys: String, CodingKey {
-        case kind, command
+        case kind, command, passed, current
         case rowID = "id"
         case attemptID = "attempt_id"
         case exitCode = "exit_code"
-        case passed = "passed"
         case createdAt = "created_at"
+        case validityReason = "validity_reason"
     }
 
     public init(from decoder: Decoder) throws {
@@ -863,6 +874,8 @@ public struct VerificationRow: Codable, Equatable, Identifiable {
         exitCode = WireSupport.flexInt(c, .exitCode)
         passed = WireSupport.flexBool(c, .passed)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        current = try c.decodeIfPresent(Bool.self, forKey: .current)
+        validityReason = try c.decodeIfPresent(String.self, forKey: .validityReason)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -874,6 +887,137 @@ public struct VerificationRow: Codable, Equatable, Identifiable {
         try c.encodeIfPresent(exitCode, forKey: .exitCode)
         try c.encodeIfPresent(passed, forKey: .passed)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(current, forKey: .current)
+        try c.encodeIfPresent(validityReason, forKey: .validityReason)
+    }
+}
+
+/// Row counts of the current verification window
+/// (`verification_window.counts`): the current rows, how many of them
+/// passed, and how many rows are history or unknown.
+public struct VerificationWindowCounts: Codable, Equatable {
+    public let current: Int?
+    public let currentPassed: Int?
+    public let historical: Int?
+    public let unknown: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case current, unknown, historical
+        case currentPassed = "current_passed"
+    }
+}
+
+/// `verification_window` of `tasks.get`: the snapshot-basis summary of
+/// which verification rows are CURRENTLY valid. Everything here is a
+/// projection of the LAST collected ORX snapshot — no live file reread,
+/// no re-computed fingerprint, and no promise that files are unchanged
+/// since collection.
+public struct VerificationWindow: Codable, Equatable {
+    public let basis: String?
+    public let snapshotID: Int?
+    public let takenAt: String?
+    public let note: String?
+    /// valid | missing | invalid | worker_mismatch | not_reusable
+    public let contextState: String?
+    public let contextEventID: Int?
+    public let workerAttemptID: Int?
+    /// The verification_after watermark; non-null only when the context is valid.
+    public let verificationAfter: Int?
+    public let counts: VerificationWindowCounts?
+
+    enum CodingKeys: String, CodingKey {
+        case basis, note, counts
+        case snapshotID = "snapshot_id"
+        case takenAt = "taken_at"
+        case contextState = "context_state"
+        case contextEventID = "context_event_id"
+        case workerAttemptID = "worker_attempt_id"
+        case verificationAfter = "verification_after"
+    }
+}
+
+// MARK: - verification validity wording (历史 / 当前有效 / 未知)
+
+/// Display strings distinguishing HISTORICAL verification rows from the
+/// CURRENT window. A historical pass is never presented as currently
+/// valid; unknown stays unknown (never 通过 or 失败). Engine reason
+/// strings are matched by keyword/prefix — never verbatim — so wording
+/// tweaks on the engine side do not break the mapping. A row without the
+/// new fields (older engine) is unknown, same as `current == nil`.
+public enum VerificationValidityDisplay {
+    /// Short badge text: 当前有效 / 历史 / 未知.
+    public static func badge(_ row: VerificationRow) -> String {
+        switch row.current {
+        case true: return "当前"
+        case false: return "历史"
+        case nil: return "有效性未知"
+        }
+    }
+
+    public static func resultText(_ row: VerificationRow) -> String {
+        let result = row.passed == true ? "通过" : (row.passed == false ? "未通过" : "结果未知")
+        return row.current == true ? result : "历史" + result
+    }
+
+    /// Human wording for an engine `validity_reason`; nil when the row
+    /// has no reason (current, or an older engine without the field).
+    public static func reasonText(_ reason: String?) -> String? {
+        guard let reason, !reason.isEmpty else { return nil }
+        let lowered = reason.lowercased()
+        if lowered.contains("older worker attempt") {
+            return "历史：绑定更早的 Worker 尝试（重试后前一轮结果）"
+        }
+        if lowered.contains("watermark") || lowered.contains("verification_after") {
+            return "历史：产物或依赖变化后验收水位推进，该行退出当前窗口（记录保留）"
+        }
+        if lowered.contains("unbound legacy") {
+            return "历史：未绑定旧行，现代交付不继承"
+        }
+        if lowered.contains("context missing") || lowered.contains("no verification context recorded") {
+            return "未知：缺少验收上下文，依据不足"
+        }
+        if lowered.contains("context invalid") || lowered.contains("verification context is invalid") {
+            return "未知：最新验收上下文损坏（不回退到更早的上下文）"
+        }
+        if lowered.contains("does not match the current worker") {
+            return "未知：验收上下文与当前 Worker 不匹配"
+        }
+        if lowered.contains("not reusable") {
+            return "未知：验收上下文输入不可复用"
+        }
+        return reason
+    }
+
+    /// Wording for `verification_window.context_state`.
+    public static func contextStateText(_ state: String?) -> String {
+        switch state {
+        case "valid": return "有效"
+        case "missing": return "缺少验收上下文"
+        case "invalid": return "验收上下文损坏"
+        case "worker_mismatch": return "与当前 Worker 不匹配"
+        case "not_reusable": return "输入不可复用"
+        default: return "未知"
+        }
+    }
+
+    /// One-line window summary shown beside the verification list:
+    /// counts + snapshot basis + the honesty note (projection of the last
+    /// collected snapshot, not a live file guarantee).
+    public static func windowSummary(_ window: VerificationWindow?) -> String {
+        guard let window else { return "有效性未知（旧版引擎未提供依据）" }
+        var parts: [String] = []
+        if window.contextState != "valid" {
+            parts.append("有效性未知：" + contextStateText(window.contextState))
+        }
+        if let counts = window.counts {
+            if window.contextState == "valid" {
+                parts.append("当前 \(MetricsFormat.countText(counts.current))"
+                             + "（通过 \(MetricsFormat.countText(counts.currentPassed))）")
+            }
+            parts.append("历史 \(MetricsFormat.countText(counts.historical))")
+            parts.append("未知 \(MetricsFormat.countText(counts.unknown))")
+        }
+        return parts.joined(separator: " · ") + "（仅反映最近采集的 ORX 记录）"
     }
 }
 
@@ -902,12 +1046,17 @@ public struct TaskDetailEnvelope: Codable, Equatable {
     public let task: TaskFacts?
     public let usage: TaskUsage?
     public let verifications: [VerificationRow]
+    /// Optional current-window projection summary; absent from older
+    /// engines (then everything is unknown, nothing historical is
+    /// promoted to current).
+    public let verificationWindow: VerificationWindow?
     public let retry: RetrySummary?
     public let snapshots: [String: SnapshotView]
     public let warnings: [QueryWarning]
 
     enum CodingKeys: String, CodingKey {
         case found, reason, project, task, usage, verifications, retry
+        case verificationWindow = "verification_window"
         case runID = "run_id"
         case revisionID = "revision_id"
         case taskID = "task_id"
@@ -927,6 +1076,8 @@ public struct TaskDetailEnvelope: Codable, Equatable {
         task = try c.decodeIfPresent(TaskFacts.self, forKey: .task)
         usage = try c.decodeIfPresent(TaskUsage.self, forKey: .usage)
         verifications = try c.decodeIfPresent([VerificationRow].self, forKey: .verifications) ?? []
+        verificationWindow = try c.decodeIfPresent(VerificationWindow.self,
+                                                    forKey: .verificationWindow)
         retry = try c.decodeIfPresent(RetrySummary.self, forKey: .retry)
         snapshots = try c.decodeIfPresent([String: SnapshotView].self, forKey: .snapshots) ?? [:]
         warnings = try c.decodeIfPresent([QueryWarning].self, forKey: .warnings) ?? []
@@ -944,6 +1095,7 @@ public struct TaskDetailEnvelope: Codable, Equatable {
         try c.encodeIfPresent(task, forKey: .task)
         try c.encodeIfPresent(usage, forKey: .usage)
         try c.encode(verifications, forKey: .verifications)
+        try c.encodeIfPresent(verificationWindow, forKey: .verificationWindow)
         try c.encodeIfPresent(retry, forKey: .retry)
         try c.encode(snapshots, forKey: .snapshots)
         try c.encode(warnings, forKey: .warnings)

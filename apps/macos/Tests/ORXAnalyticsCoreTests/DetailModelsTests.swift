@@ -145,6 +145,140 @@ final class DetailModelsTests: XCTestCase {
         XCTAssertEqual(envelope.retry?.successorAttemptIDs, [5])
     }
 
+    // MARK: - verification validity (0.5.0：历史 / 当前有效 / 未知)
+
+    func testTaskDetailDecodesVerificationValidityFields() throws {
+        let envelope = try JSONDecoder().decode(TaskDetailEnvelope.self,
+                                                from: Self.taskDetailJSON)
+        let window = try XCTUnwrap(envelope.verificationWindow)
+        XCTAssertEqual(window.basis, "snapshot")
+        XCTAssertEqual(window.snapshotID, 7)
+        XCTAssertEqual(window.contextState, "valid")
+        XCTAssertEqual(window.verificationAfter, 1)
+        XCTAssertEqual(window.counts?.current, 1)
+        XCTAssertEqual(window.counts?.currentPassed, 1)
+        XCTAssertEqual(window.counts?.historical, 1)
+        XCTAssertEqual(window.counts?.unknown, 2)
+        // row #1: below the watermark -> history; row #3 -> current;
+        // row #2 (field-less legacy) and row #4 (current: null) -> unknown
+        let rows = envelope.verifications
+        XCTAssertEqual(rows.first?.current, false)
+        XCTAssertEqual(rows.last?.current, nil)
+        let currentRow = try XCTUnwrap(rows.first { $0.rowID == 3 })
+        XCTAssertEqual(currentRow.current, true)
+        XCTAssertNil(currentRow.validityReason)
+    }
+
+    func testLegacyVerificationRowsWithoutValidityFieldsDecodeAsUnknown() throws {
+        // an older engine's payload: no `current`, no `validity_reason`,
+        // no `verification_window` — decode must succeed and every
+        // projection stays unknown (never promoted to current)
+        let json = """
+        {"op": "tasks.get", "ok": true, "protocol_version": 1,
+         "generated_at": "2026-10-16T10:00:00+00:00",
+         "project": "/tmp/projA", "run_id": "R001",
+         "revision_id": 102, "task_id": "T002", "found": true,
+         "verifications": [
+           {"id": 9, "attempt_id": 4, "kind": "command", "command": "pytest -q",
+            "exit_code": 0, "passed": 1, "created_at": "2026-10-16T09:39:00+00:00"}],
+         "snapshots": {}, "coverage": {}, "warnings": []}
+        """
+        let envelope = try JSONDecoder().decode(TaskDetailEnvelope.self,
+                                                from: Data(json.utf8))
+        XCTAssertEqual(envelope.verifications.count, 1)
+        XCTAssertNil(envelope.verifications.first?.current)
+        XCTAssertNil(envelope.verifications.first?.validityReason)
+        XCTAssertNil(envelope.verificationWindow)
+        // passed stays the recorded historical value
+        XCTAssertEqual(envelope.verifications.first?.passed, true)
+        // presentation: legacy pass is NOT shown as currently valid
+        XCTAssertEqual(VerificationValidityDisplay.badge(envelope.verifications.first!), "有效性未知")
+        XCTAssertEqual(VerificationValidityDisplay.windowSummary(envelope.verificationWindow),
+                       "有效性未知（旧版引擎未提供依据）")
+    }
+
+    func testVerificationValidityDisplayNeverShowsHistoryAsCurrent() {
+        func row(_ current: Bool?, _ reason: String? = nil) -> VerificationRow {
+            var json = #"{"id": 1, "attempt_id": 4, "kind": "command", "command": "x", "exit_code": 0, "passed": 1, "created_at": "t""#
+            if let current { json += ", \"current\": \(current)" }
+            if let reason { json += ", \"validity_reason\": \"\(reason)\"" }
+            json += "}"
+            return try! JSONDecoder().decode(VerificationRow.self, from: Data(json.utf8))
+        }
+        // badge wording for the three states
+        XCTAssertEqual(VerificationValidityDisplay.badge(row(true)), "当前")
+        XCTAssertEqual(VerificationValidityDisplay.badge(row(false)), "历史")
+        XCTAssertEqual(VerificationValidityDisplay.badge(row(nil)), "有效性未知")
+        // a HISTORICAL PASS keeps badge 历史 — it must never read 当前有效
+        let historicalPass = row(false, "history: at or below the verification-context watermark (verification_after=9)")
+        XCTAssertEqual(historicalPass.passed, true)
+        XCTAssertEqual(VerificationValidityDisplay.badge(historicalPass), "历史")
+        // reason wording matched by keyword, not verbatim
+        XCTAssertEqual(VerificationValidityDisplay.reasonText("history: bound to an older worker attempt"),
+                       "历史：绑定更早的 Worker 尝试（重试后前一轮结果）")
+        let watermark = VerificationValidityDisplay.reasonText(
+            "history: at or below the verification-context watermark (verification_after=9)")
+        XCTAssertTrue(watermark?.contains("验收水位推进") == true)
+        func reasonContains(_ reason: String, _ needle: String) {
+            let text = VerificationValidityDisplay.reasonText(reason)
+            XCTAssertTrue(text?.contains(needle) == true, "\(reason) -> \(text ?? "nil")")
+        }
+        reasonContains("history: unbound legacy row a modern delivery cannot inherit", "未绑定旧行")
+        reasonContains("unknown: verification context missing", "缺少验收上下文")
+        reasonContains("unknown: latest verification context invalid", "不回退")
+        reasonContains("unknown: context does not match the current worker", "与当前 Worker 不匹配")
+        reasonContains("unknown: context inputs are not reusable", "不可复用")
+        XCTAssertNil(VerificationValidityDisplay.reasonText(nil))
+        // unknown reasons pass through instead of being invented
+        XCTAssertEqual(VerificationValidityDisplay.reasonText("unknown: something new"), "unknown: something new")
+        // context states
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("valid"), "有效")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("missing"), "缺少验收上下文")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("invalid"), "验收上下文损坏")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("worker_mismatch"), "与当前 Worker 不匹配")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("not_reusable"), "输入不可复用")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText(nil), "未知")
+        XCTAssertEqual(VerificationValidityDisplay.contextStateText("future_state"), "未知")
+    }
+
+    func testWindowSummaryCountsComeFromWindowNotHistoricalPassed() throws {
+        let envelope = try JSONDecoder().decode(TaskDetailEnvelope.self,
+                                                from: Self.taskDetailJSON)
+        let summary = VerificationValidityDisplay.windowSummary(envelope.verificationWindow)
+        // counts render from verification_window.counts (current=1,
+        // current_passed=1), NOT from the two historical passed=1 rows
+        XCTAssertTrue(summary.contains("当前 1（通过 1）"), summary)
+        XCTAssertTrue(summary.contains("历史 1"), summary)
+        XCTAssertTrue(summary.contains("未知 2"), summary)
+        XCTAssertEqual(envelope.verificationWindow?.takenAt, "2026-10-16T09:59:30+00:00")
+        XCTAssertTrue(summary.contains("仅反映最近采集的 ORX 记录"), summary)
+        XCTAssertFalse(summary.contains("当前 3"), summary)
+    }
+
+    func testUnknownWindowDoesNotReportZeroConfirmedChecks() throws {
+        let json = #"{"context_state":"invalid","counts":{"current":0,"current_passed":0,"historical":2,"unknown":3}}"#
+        let window = try JSONDecoder().decode(VerificationWindow.self, from: Data(json.utf8))
+        let text = VerificationValidityDisplay.windowSummary(window)
+        XCTAssertTrue(text.contains("有效性未知"))
+        XCTAssertFalse(text.contains("当前 0"))
+    }
+
+    func testActualEngineUnknownReasonsRemainReadable() {
+        XCTAssertTrue(VerificationValidityDisplay.reasonText("unknown: no verification context recorded")!.contains("缺少"))
+        XCTAssertTrue(VerificationValidityDisplay.reasonText("unknown: latest verification context is invalid")!.contains("损坏"))
+    }
+
+    func testUnconfirmedPassIsLabeledAsHistoricalResult() throws {
+        for current in ["false", "null"] {
+            let data = Data("{\"id\":1,\"passed\":1,\"current\":\(current)}".utf8)
+            let row = try JSONDecoder().decode(VerificationRow.self, from: data)
+            XCTAssertEqual(VerificationValidityDisplay.resultText(row), "历史通过")
+        }
+        let data = Data(#"{"id":1,"passed":0,"current":true}"#.utf8)
+        let row = try JSONDecoder().decode(VerificationRow.self, from: data)
+        XCTAssertEqual(VerificationValidityDisplay.resultText(row), "未通过")
+    }
+
     // MARK: - calibers never combine
 
     func testDetailCalibersExposeTwoIndependentGroupsAndNoMergedRow() {
@@ -517,9 +651,24 @@ final class DetailModelsTests: XCTestCase {
            "attribution": {"rule": "task consumption = every attributable attempt"}},
          "verifications": [
            {"id": 1, "attempt_id": 4, "kind": "command", "command": "pytest -q",
-            "exit_code": 1, "passed": 0, "created_at": "2026-10-16T09:39:00+00:00"},
+            "exit_code": 1, "passed": 0, "created_at": "2026-10-16T09:39:00+00:00",
+            "current": false,
+            "validity_reason": "history: at or below the verification-context watermark (verification_after=1)"},
            {"id": 2, "attempt_id": 4, "kind": "command", "command": "swift test",
-            "exit_code": 0, "passed": 1, "created_at": "2026-10-16T09:39:30+00:00"}],
+            "exit_code": 0, "passed": 1, "created_at": "2026-10-16T09:39:30+00:00"},
+           {"id": 3, "attempt_id": 4, "kind": "command", "command": "swift test --package-path apps/macos",
+            "exit_code": 0, "passed": 1, "created_at": "2026-10-16T09:48:00+00:00",
+            "current": true, "validity_reason": null},
+           {"id": 4, "attempt_id": 4, "kind": "command", "command": "legacy echo",
+            "exit_code": 0, "passed": 1, "created_at": "2026-10-16T09:38:00+00:00",
+            "current": null, "validity_reason": "unknown: verification context missing"}],
+         "verification_window": {
+           "basis": "snapshot", "snapshot_id": 7,
+           "taken_at": "2026-10-16T09:59:30+00:00",
+           "note": "projected from the recorded ORX snapshot at import time; not a guarantee that files are unchanged since collection",
+           "context_state": "valid", "context_event_id": 42,
+           "worker_attempt_id": 4, "verification_after": 1,
+           "counts": {"current": 1, "current_passed": 1, "historical": 1, "unknown": 2}},
          "retry": {"recovered": false, "failing_attempt_ids": [4],
                    "successor_attempt_ids": [5]},
          "snapshots": {"/tmp/projA": {"snapshot_id": 7,

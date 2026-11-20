@@ -1,0 +1,79 @@
+{
+  "format": "orx-0.5-closeout-acceptance-v1",
+  "recorded_at": "2026-11-20T07:58:37.110634+00:00",
+  "source_commit": "4ff2040ae10f55e2c6dfbaab97eb67466586f488",
+  "versions": {
+    "orx": "0.5.0",
+    "analytics": "0.5.0",
+    "app": "0.5.0"
+  },
+  "channel": "internal-preview",
+  "readiness": "local personal/internal use accepted; external publication pending decision",
+  "published": false,
+  "candidate_manifest": "candidate.json",
+  "artifact_hashes_verified": true,
+  "checks": {
+    "orx_full": {
+      "passed": 1310,
+      "failed": 0,
+      "duration_sec": 258.39,
+      "scope": "isolated exact runtime-source copy, consistent SQLite snapshot for two local-data diagnostics; retained legacy checkout supplies historical joint tests",
+      "log": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/acceptance-logs/orx-snapshot-final.log"
+    },
+    "analytics": {
+      "passed": 278,
+      "failed": 0,
+      "log": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/acceptance-logs/monorepo.log"
+    },
+    "swift_with_real_python_wire": {
+      "passed": 182,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/acceptance-logs/monorepo.log"
+    },
+    "app_packaging": {
+      "passed": 39,
+      "failed": 0,
+      "log": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/acceptance-logs/monorepo.log"
+    },
+    "cross_package_and_doc_migration": {
+      "passed": 9,
+      "failed": 0,
+      "log": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/acceptance-logs/contract-isolated.log"
+    },
+    "frozen_joint_checks": {
+      "orx_build": 0,
+      "analytics_build": 0,
+      "orx_install": 0,
+      "analytics_install": 0,
+      "analytics_pytest": 0,
+      "app_packaging_pytest": 0,
+      "swift_wire_fixtures": 0,
+      "swift_test": 0,
+      "app_build": 0,
+      "analytics_candidate_venv": 0,
+      "analytics_candidate_install": 0,
+      "analytics_candidate_version": 0,
+      "app_smoke": 0,
+      "exercise": 0
+    }
+  },
+  "real_cli_run": "live-run.json",
+  "local_install": "local-install.json",
+  "preserved_user_changes": true,
+  "native_installed_window_control": "blocked by desktop tool stale Bundle ID mapping; same-source candidate GUI passed; installed executable launch and source/signature verified separately",
+  "remaining_gates": [
+    {
+      "gate": "actual OS logout/login-item relaunch",
+      "status": "not tested; requires user session boundary, not automated here"
+    },
+    {
+      "gate": "Developer ID and notarized external App",
+      "status": "not performed; current App is internal ad-hoc preview"
+    },
+    {
+      "gate": "0.5.0 tag/Release and remote asset download hash check",
+      "status": "not published; frozen local candidate ready for review"
+    }
+  ]
+}

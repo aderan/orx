@@ -1,0 +1,211 @@
+{
+  "goal": "G014",
+  "exploration": {
+    "summary": "已有 0.5.0 内部候选验收；本轮完成实际发布闭环。",
+    "relevant_components": [
+      "skills/orx-controller/SKILL.md",
+      "tools/orx-analytics/docs/app-installation.md",
+      ".github/workflows/packages.yml",
+      "scripts/joint_release.py"
+    ],
+    "unknowns": [
+      "最后一批改动的远端 CI 结果"
+    ],
+    "assumptions": [],
+    "risks": [
+      "skill 打包进 wheel，修正后必须新冻结；内部 App 不应随公开 Release 分发"
+    ]
+  },
+  "approach": {
+    "summary": "文档修正→CI 与冻结→正式 CLI 发布和消费者验收。",
+    "decisions": [
+      "用户已明确授权整个发布顺序，不重复询问发布许可",
+      "不改旧候选证据，新增本轮独立证据目录"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "T101",
+      "objective": "确认 prior revision 1:T001 的已交付文档与 skill 仍有效，不重做；引用其已记录成果，运行当前检查并独立审查。",
+      "dependencies": [],
+      "scope": {
+        "allowed": [
+          "skills/orx-controller/SKILL.md",
+          "tools/orx-analytics/docs/app-installation.md",
+          "README.md",
+          "tools/orx-analytics/README.md",
+          "tools/orx-analytics/docs/installation.md",
+          "docs/release-0.5.0.md",
+          "docs/upgrade-0.5.0.md",
+          "IMPLEMENTATION_PLAN.md",
+          "docs/diagnostics/release-0.5.0/"
+        ]
+      },
+      "acceptance": [
+        "执行"
+      ],
+      "verification": [
+        "uv run --locked pytest -q tests/test_model_docs.py tests/test_skills_update.py",
+        "agent: 对照代码审查文档与 skill 修正、版本和渠道边界；没有新增架构或扩大权限，历史和用户原有脏文件保留。"
+      ],
+      "preread": [
+        "docs/release-0.5.0.md",
+        "docs/upgrade-0.5.0.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      }
+    },
+    {
+      "id": "T102",
+      "objective": "先更新已复现的旧 skill 契约测试：源码同仓、CLI 独立安装，可选集成/缺失继续/清理边界不变；回归后提交和重跑 PR CI。推送收尾分支并通过最终远端 CI，经审查合并；确定发布产品提交，从同一提交冻结两个 CLI 与内部预览 App，归档校验清单和来源及真实 CI 记录。若 PR 或 main CI 失败，修复后重新收口，不使用跳过检查或强推。",
+      "dependencies": [
+        "T101"
+      ],
+      "scope": {
+        "allowed": [
+          "docs/diagnostics/release-0.5.0/",
+          "IMPLEMENTATION_PLAN.md",
+          "tests/test_delivery_gate_e2e.py"
+        ]
+      },
+      "acceptance": [
+        "执行"
+      ],
+      "verification": [
+        "python3 -c \"import json; d=json.load(open('docs/diagnostics/release-0.5.0/freeze.json')); assert d['ci_passed'] and d['artifact_hashes_verified'] and d['versions']=={'orx':'0.5.0','analytics':'0.5.0','app':'0.5.0'}\"",
+        "agent: 核对冻结来源、版本、CI 绿结果、产物哈希一致，App 仍为内部预览，没有把旧候选当新提交构建。"
+      ],
+      "preread": [
+        "docs/release-0.5.0.md",
+        "docs/upgrade-0.5.0.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      }
+    },
+    {
+      "id": "T103",
+      "objective": "发布正式 ORX CLI+Analytics v0.5.0 GitHub Release：明确 tag 对应受验产品提交，上传两 CLI wheel/sdist 与来源/校验清单，不上传内部预览 App。远端重新下载哈希核对，干净安装两个 CLI，当前 Codex 会话驱动有依赖任务的真实 Run 验证交接与独立验收，形成完整报告。允许授权的发布操作；不做正式 App、不注销用户。",
+      "dependencies": [
+        "T102"
+      ],
+      "scope": {
+        "allowed": [
+          "docs/diagnostics/release-0.5.0/",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "执行"
+      ],
+      "verification": [
+        "python3 -c \"import json; d=json.load(open('docs/diagnostics/release-0.5.0/publication.json')); assert d['published'] and d['remote_hashes_verified'] and d['clean_install_verified'] and d['real_run']['status']=='done'\"",
+        "agent: 从实际 GitHub Release、下载文件、安装版本与真实 Run 原始记录验证正式发布闭环；无内部 App 外发，无用户脏文件混入；不以本地候选代替远端验收。"
+      ],
+      "preread": [
+        "docs/release-0.5.0.md",
+        "docs/upgrade-0.5.0.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      }
+    }
+  ],
+  "replan": {
+    "prior_revision": 1,
+    "tasks": [
+      {
+        "task": "T101",
+        "classification": "confirm",
+        "sources": [
+          {
+            "revision": 1,
+            "task_id": "T001",
+            "part": false
+          }
+        ],
+        "redo_reason": "",
+        "confirm_verification": [
+          "uv run --locked pytest -q tests/test_model_docs.py tests/test_skills_update.py",
+          "agent: 对照代码审查文档与 skill 修正、版本和渠道边界；没有新增架构或扩大权限，历史和用户原有脏文件保留。"
+        ],
+        "artifacts": [
+          "skills/orx-controller/SKILL.md",
+          "tools/orx-analytics/docs/app-installation.md",
+          "README.md",
+          "tools/orx-analytics/README.md",
+          "tools/orx-analytics/docs/installation.md",
+          "docs/release-0.5.0.md",
+          "docs/upgrade-0.5.0.md"
+        ]
+      },
+      {
+        "task": "T102",
+        "classification": "redo",
+        "sources": [
+          {
+            "revision": 1,
+            "task_id": "T002",
+            "part": false
+          }
+        ],
+        "redo_reason": "CI 检出旧契约断言，扩展测试修复 scope，旧失败候选必须替换。",
+        "confirm_verification": [],
+        "artifacts": []
+      },
+      {
+        "task": "T103",
+        "classification": "continue",
+        "sources": [
+          {
+            "revision": 1,
+            "task_id": "T003",
+            "part": false
+          }
+        ],
+        "redo_reason": "",
+        "confirm_verification": [],
+        "artifacts": []
+      }
+    ],
+    "superseded": [
+      {
+        "revision": 1,
+        "task_id": "T001",
+        "disposition": "confirmed",
+        "successors": [
+          "T101"
+        ],
+        "note": ""
+      },
+      {
+        "revision": 1,
+        "task_id": "T002",
+        "disposition": "redone",
+        "successors": [
+          "T102"
+        ],
+        "note": ""
+      },
+      {
+        "revision": 1,
+        "task_id": "T003",
+        "disposition": "continued",
+        "successors": [
+          "T103"
+        ],
+        "note": ""
+      }
+    ]
+  }
+}

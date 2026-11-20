@@ -38,13 +38,13 @@ orx-analytics 通过只读契约消费这些事实，同时读取原生 agent �
 安装到独立工具环境；Git 来源安装还需要 `git`：
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aderan/orx.git@main#subdirectory=tools/orx-analytics'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx.git@v0.5.0#subdirectory=tools/orx-analytics'
 orx-analytics --version
 orx-analytics --help
 ```
 
-当前开发线为 **0.5.x**，Analytics 与 ORX 随同一个仓库迭代。
-需要复现时将 `@main` 换成完整提交。旧仓 Git 安装用户需显式重装到
+示例固定 **0.5.0** 标签，Analytics 与 ORX 随同一个仓库迭代。
+跟随开发线可改用 `@main`，选择精确构建可使用完整提交。旧仓 Git 安装用户需显式重装到
 新地址。[历史 Release 和下载](https://github.com/aderan/orx-analytics/releases)
 继续用于旧版安装和回退。
 pipx、普通 Python 虚拟环境、PATH、升级和卸载见[完整安装指南](docs/installation.md)。

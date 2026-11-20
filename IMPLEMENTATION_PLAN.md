@@ -63,7 +63,9 @@ App 分发待完成。[切换记录](docs/diagnostics/analytics-monorepo/source-
 **Success Criteria**: CLI 与 Finder 启动的 App 读写用户默认和两个项目覆盖，原文件可回退。
 **Tests**: 路径优先级、迁移冲突和成组发布，CLI 与 App 双项目读写，核对原项目库与共享引擎。
 **Status**: In Progress（本机配置已迁移，CLI 与生产 Swift 路由客户端三范围验收通过。
-Finder 启动与用户默认保存已核对，两个项目的界面保存待核对。
+Finder 启动与用户默认保存已核对。2026-11-20 同源候选 App 的两项目界面保存
+通过，默认安装路径的桌面工具旧 Bundle ID 误识别边界仍单独留痕，见
+docs/diagnostics/0.5-closeout/README.md。
 [验收记录](docs/diagnostics/analytics-monorepo/config-home.md)）
 
 # ORX 0.5：跨宿主主控与 CLI 执行
@@ -1495,3 +1497,49 @@ v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Rele
   G011 §9.1 同式）。验收报告 docs/diagnostics/g012/joint-acceptance-
   report.md＋clone 侧 reports/release-v0.4.3-acceptance.md（冻结后证据
   文档，零源码混入）；规定检查 6/6 绿（check 2/3 轮）。
+
+# ORX 0.5.0 收尾（2026-11-20）
+
+## Stage C1: Analytics 验收证据语义
+**Goal**: 只读区分历史验收、当前有效窗口和未知状态，与 ORX 水位及 Worker 边界一致。
+**Success Criteria**: 保留历史记录；输入失效与重验不混入当前结果；不修改源数据库；兼容旧快照。
+**Tests**: 同交付补验、产物和依赖失效、Worker 重试、无绑定历史、异常 context、跨项目/修订隔离。
+**Status**: Complete
+
+## Stage C2: 桌面与版本文档
+**Goal**: 详情明确当前有效性和历史结果，统一 0.5.0 安装、兼容与回退说明。
+**Success Criteria**: 新旧引擎均可读，未知不冒充有效，现有主题与最小宽度保持可用，历史版本说明保留。
+**Tests**: Python wire 与 Swift 解码/展示测试；版本一致性；浅深色与最小宽度实查。
+**Status**: Complete
+
+## Stage C3: 冻结联合候选
+**Goal**: 从同一提交构建两个 CLI 和内部预览 App，归档校验值和发布说明。
+**Success Criteria**: 干净安装、独立运行、全量检查与真实依赖 Run 通过，候选来源可复现。
+**Tests**: ORX/Analytics/Swift/打包测试；联合发布驱动；真实跨 CLI 与失效重验验收。
+**Status**: Complete（冻结 4ff2040；14 项联合检查、1,310 项 ORX 全量及真实四 CLI 依赖 Run 通过，见 docs/diagnostics/0.5-closeout/）
+
+## Stage C4: 安装迁移与发布收口
+**Goal**: 复核实际安装和旧仓切换，明确剩余系统及外部分发门禁。
+**Success Criteria**: 已实测事实与待验项目明确；不把未注销重登或正式签名视为通过；可审阅发布候选完整。
+**Tests**: 版本/路径/验签、共享引擎与 watch、旧仓归档与历史下载、最终逐项完成审计。
+**Status**: Complete（共同候选已安装、watch 续租及历史业务身份保留；用户原有改动未变。实际注销重登、正式签名/公证和外部发布仍为明确独立门禁，见 docs/diagnostics/0.5-closeout/README.md）
+
+# ORX CLI + Analytics 0.5.0 正式发布（2026-11-20）
+
+## Stage R1: 发布文档与 skill
+**Goal**: 修正同仓和引擎文档，固定 v0.5.0 安装入口与 CLI 正式/App 内部范围。
+**Success Criteria**: skill 校验和现有文档/安装回归通过，用户原有改动保留。
+**Tests**: tests/test_model_docs.py、tests/test_skills_update.py、quick_validate.py。
+**Status**: Complete（37 项现有回归及 skill 校验通过）
+
+## Stage R2: 远端 CI 与冻结
+**Goal**: PR 和 main CI 通过，从受验产品提交生成同源候选与哈希。
+**Success Criteria**: 两 CLI 和 App 版本 0.5.0，候选来源、CI、产物可对账。
+**Tests**: packages workflow、joint_release.py monorepo、逐文件 SHA-256。
+**Status**: In Progress
+
+## Stage R3: 发布与消费者复验
+**Goal**: 发布两个 CLI 的 v0.5.0，远端下载并安装验收。
+**Success Criteria**: Release 和 tag 来源一致，四份 CLI 产物哈希一致，真实依赖 Run done。App 内部包不外发。
+**Tests**: 下载复算、隔离安装、真实跨 CLI 依赖 Run、Analytics 只读对账。
+**Status**: Not Started

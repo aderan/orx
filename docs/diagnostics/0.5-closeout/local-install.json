@@ -1,0 +1,64 @@
+{
+  "source_commit": "4ff2040ae10f55e2c6dfbaab97eb67466586f488",
+  "versions": {
+    "orx": "0.5.0",
+    "analytics": "0.5.0",
+    "app": "0.5.0"
+  },
+  "app_path": "/Applications/ORX (Internal Preview).app",
+  "app_source_commit": "4ff2040ae10f55e2c6dfbaab97eb67466586f488",
+  "app_pid": 77133,
+  "process_executable_verified_by_lsof": true,
+  "codesign_deep_strict_exit": 0,
+  "backup": "/Users/flb/Library/Application Support/ORX Installation Backups/20261120-closeout-c5cfdc83",
+  "sqlite_backup": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/local-install/analytics-before-update.db",
+  "backup_and_live_integrity": "ok",
+  "registered_projects": 10,
+  "project_rows_unchanged": true,
+  "historical_identity_preservation": {
+    "orx_runs": {
+      "before": 44,
+      "after": 44,
+      "prior_business_identities_retained": true,
+      "identity_basis": "project_key + id; snapshot IDs rotate under retention"
+    },
+    "orx_attempts": {
+      "before": 1091,
+      "after": 1091,
+      "prior_business_identities_retained": true,
+      "identity_basis": "project_key + id; snapshot IDs rotate under retention"
+    },
+    "orx_usage_obs": {
+      "before": 439,
+      "after": 439,
+      "prior_business_identities_retained": true,
+      "identity_basis": "project_key + id; snapshot IDs rotate under retention"
+    }
+  },
+  "engine_pid": 73293,
+  "watch_pid": 73294,
+  "watch_last_renew_at": "2026-11-20T07:58:22+00:00",
+  "watch_renew_ok": true,
+  "legacy_top_level_watch_error": "historical telemetry, not the current engine/demand status",
+  "skills_updated": true,
+  "skills_backup": "/Users/flb/Sources/Products/ORX/dist/0.5-closeout/local-install/skills-before",
+  "project_config_final_sha256": {
+    "/Users/flb/Sources/Products/ORX/.orx/config.toml": "11b9cf595684b144404f6c7180a7af007ec6d3328950d3febf188502686735a3",
+    "/Users/flb/Sources/Products/To2050/.orx/config.toml": "f1408266ceaa527b629902a491927154f654b5ee96ca02a01a93ea61f4634588"
+  },
+  "project_config_final_bytes_restored_by_controller": true,
+  "user_dirty_files_sha256": {
+    "docs/m1.2-report.md": "5289e6e713483ae1930513a4443967b90906d5a3433f7493770e5a52b89d0fa5",
+    "docs/observability-contract.md": "805902ee42bceb4ae0f8e41747b07528e29b26139f34353d3dc09fbc3ef60390",
+    "docs/zcode-cli-interface-research-2026-11-18.md": "76cfce572cd448ad84750f04bfc4676d8725926f69b0d961bae8a164e302703c",
+    "docs/0.5-execution-architecture-proposal.md": "091a867f4a691bfa267329759c46ea8929b64b8780332015bb63d6d9b4bfb8d5",
+    "docs/litellm-execution-boundaries-research-2026-10-30.md": "e77af4a73cb32925e2fc132cfc03f6a606086577aa090866fcc9cc5eb92a9580"
+  },
+  "user_dirty_files_preserved": true,
+  "app_native_gui_source": "frozen candidate copy, identical product build; installed-path UI control fails due desktop tool stale Bundle ID mapping",
+  "two_project_gui_save": "ORX standard->light->standard; To2050 standard->deep->standard; previews read-only; each save target-only; serializer removed comments, Controller restored original bytes after semantic restore",
+  "themes_and_widths": "production taskBreakdown export; light/dark x380/760pt and legacy narrow cases; not OS theme changes",
+  "native_gui_observation": "final candidate R013/T001 current2/pass2, historical3, unknown0; legacy engine unknown; original38 real history rows plus R013=39",
+  "actual_logout_relogin": "not performed",
+  "official_signature_notarization": "not performed; internal ad-hoc only"
+}

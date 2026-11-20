@@ -10,9 +10,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
+
+# The suite can be invoked from the repo root (`python -m pytest tools/...`),
+# which puts the repo root first on sys.path — its top-level `scripts/`
+# package then shadows this package's own `scripts/`. Prepend the package
+# root so `scripts.check_install` and `orxanalytics` always resolve here.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 # ---------------------------------------------------------------- zcode ---

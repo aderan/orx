@@ -1,10 +1,20 @@
 # 版本兼容与来源能力
 
 软件版本、ORX 数据 schema、analytics 存储 schema 独立演进。
-orx-analytics 0.4.3 支持以下明确的数据版本，不按“大于等于”推测兼容。
-**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.3**（ORX 软件
-版本 0.4.0、ORX schema v15、analytics 0.4.3、store v4——四条版本轴
-各自独立，两个仓库的软件版本不必同号）。
+当前源码和本机内部预览的组合为 **ORX 0.5.0 / Analytics 0.5.0 / ORX App 0.5.0**，
+数据契约分别为 ORX schema 15、Analytics store 4、
+引擎协议 1。软件版本对齐不表示这些数据协议改成 0.5.0。
+支持以下明确的数据版本，不按“大于等于”推测兼容。构建及安装证据见
+[同仓验收记录](../../../docs/diagnostics/analytics-monorepo/stage-4.md)。
+
+历史已发布组合 ORX v0.4.0 + orx-analytics v0.4.3（ORX schema 15、
+Analytics store 4）仍可读取；v0.4.2 使用 store 3。历史安装与发布记录
+不因同仓迁移而改变。0.5.0 对外发布状态以 Release 和其校验清单为准。
+
+0.5.0 的 `tasks.get` 在保留历史验收行的同时投影采集时的当前窗口。
+缺少、损坏或不匹配的上下文显示有效性未知，旧引擎缺少新字段仍可解码。
+当前窗口不代表全部检查通过，也不代表采集之后文件未变。历史首次通过率
+等指标继续采用原历史口径，见 [验收有效性字段](verification-validity.md)。
 
 | ORX schema | 本工具读取能力 |
 |------|------|
