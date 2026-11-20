@@ -45,7 +45,9 @@ ORX 图标连续两次冷启动。本机共享引擎升级、原 CLI watch 重�
 **Goal**: 从 ORX 分发受验产物，对账下载并更新旧仓迁移入口。
 **Success Criteria**: 新旧下载可用，标签不变，安装和回退指引与实物一致。
 **Tests**: 按发布 URL 干净安装，旧资产下载并校验，核对旧仓发布与归档状态。
-**Status**: Not Started
+**Status**: In Progress（ORX `main` 已上线，两个 CLI 的独立 Git 安装
+实测通过，旧仓已归档且历史下载复验通过。0.5.0 Release 和正式
+App 分发待完成。[切换记录](docs/diagnostics/analytics-monorepo/source-cutover.md)）
 
 ## 当前 ORX 菜单栏 0.5.0
 
