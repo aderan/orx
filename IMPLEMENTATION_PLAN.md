@@ -46,8 +46,8 @@ ORX 图标连续两次冷启动。本机共享引擎升级、原 CLI watch 重�
 **Success Criteria**: 新旧下载可用，标签不变，安装和回退指引与实物一致。
 **Tests**: 按发布 URL 干净安装，旧资产下载并校验，核对旧仓发布与归档状态。
 **Status**: In Progress（ORX `main` 已上线，两个 CLI 的独立 Git 安装
-实测通过，旧仓已归档且历史下载复验通过。0.5.0 Release 和正式
-App 分发待完成。[切换记录](docs/diagnostics/analytics-monorepo/source-cutover.md)）
+实测通过，旧仓已归档且历史下载复验通过。CLI v0.5.0 Release 及公开下载/安装验收已完成，正式
+App 分发仍待完成；见 docs/diagnostics/release-0.5.0/README.md。[切换记录](docs/diagnostics/analytics-monorepo/source-cutover.md)）
 
 ## 当前 ORX 菜单栏 0.5.0
 
@@ -1536,10 +1536,10 @@ v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Rele
 **Goal**: PR 和 main CI 通过，从受验产品提交生成同源候选与哈希。
 **Success Criteria**: 两 CLI 和 App 版本 0.5.0，候选来源、CI、产物可对账。
 **Tests**: packages workflow、joint_release.py monorepo、逐文件 SHA-256。
-**Status**: In Progress
+**Status**: Complete（PR/main CI 各五项通过，冻结 8784fc9）
 
 ## Stage R3: 发布与消费者复验
 **Goal**: 发布两个 CLI 的 v0.5.0，远端下载并安装验收。
 **Success Criteria**: Release 和 tag 来源一致，四份 CLI 产物哈希一致，真实依赖 Run done。App 内部包不外发。
 **Tests**: 下载复算、隔离安装、真实跨 CLI 依赖 Run、Analytics 只读对账。
-**Status**: Not Started
+**Status**: Complete（正式 Release、六项匿名下载哈希、两 CLI 干净安装、Git 标签安装及真实依赖 Run 通过）

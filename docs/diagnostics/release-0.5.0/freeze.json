@@ -1,0 +1,48 @@
+{
+  "source_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+  "main_merge_commit": "255fd2c7aa7a901c4cb859cf7e65405fc517ee6f",
+  "source_tree_matches_main": true,
+  "ci_passed": true,
+  "ci": [
+    {
+      "kind": "pr",
+      "head_sha": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+      "url": "https://github.com/aderan/orx/actions/runs/44704836859",
+      "conclusion": "success"
+    },
+    {
+      "kind": "main",
+      "head_sha": "255fd2c7aa7a901c4cb859cf7e65405fc517ee6f",
+      "url": "https://github.com/aderan/orx/actions/runs/44705343460",
+      "conclusion": "success"
+    }
+  ],
+  "pull_request": "https://github.com/aderan/orx/pull/1",
+  "versions": {
+    "orx": "0.5.0",
+    "analytics": "0.5.0",
+    "app": "0.5.0"
+  },
+  "artifact_hashes_verified": true,
+  "candidate_path": "/Users/flb/Sources/Products/ORX/dist/release-0.5.0/candidate-final",
+  "candidate_manifest": "candidate.json",
+  "checks": {
+    "orx_build": 0,
+    "analytics_build": 0,
+    "orx_install": 0,
+    "analytics_install": 0,
+    "analytics_pytest": 0,
+    "app_packaging_pytest": 0,
+    "swift_wire_fixtures": 0,
+    "swift_test": 0,
+    "app_build": 0,
+    "analytics_candidate_venv": 0,
+    "analytics_candidate_install": 0,
+    "analytics_candidate_version": 0,
+    "app_smoke": 0,
+    "exercise": 0
+  },
+  "public_scope": "ORX CLI + Analytics CLI only; no App archive upload",
+  "superseded_candidate": "dist/release-0.5.0/candidate at 9e775be; replaced after stale docs-contract assertion was corrected",
+  "regression": "tests/test_delivery_gate_e2e.py optional-watchdog test updated to same-repo, independently installed semantics; red reproduced, all 71 related tests passed; no disabled tests"
+}

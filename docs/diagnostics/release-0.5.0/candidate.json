@@ -1,0 +1,120 @@
+{
+  "format": "orx-monorepo-candidate-v1",
+  "source_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+  "channel": "internal-preview",
+  "versions": {
+    "orx": "0.5.0",
+    "analytics": "0.5.0",
+    "app": "0.5.0"
+  },
+  "contracts": {
+    "orx_schema": 15,
+    "analytics_store": "4",
+    "engine_protocol": 1
+  },
+  "artifacts": {
+    "orx_wheel": {
+      "path": "dist/orx_agent-0.5.0-py3-none-any.whl",
+      "sha256": "f069e804fb8415e7dec94316b56c436bfe00a026afda4d1a1058bc3b2324c4e8"
+    },
+    "orx_sdist": {
+      "path": "dist/orx_agent-0.5.0.tar.gz",
+      "sha256": "22d52fd31116bbcf50fb89e8c3b9921b3934610568a06bc7be467d4d1089c054"
+    },
+    "analytics_wheel": {
+      "path": "dist/orx_analytics-0.5.0-py3-none-any.whl",
+      "sha256": "99e6227a009af22aa78092aee9ce78b1a9dec013c2d89d6feaf45f7fae976311"
+    },
+    "analytics_sdist": {
+      "path": "dist/orx_analytics-0.5.0.tar.gz",
+      "sha256": "8a4a3a1e73d287d99b8f6407c73eb08e50621e2a759739371db948e535462b11"
+    },
+    "app_archive": {
+      "path": "dist/ORX-0.5.0-internal-preview-dev-macos13-arm64.zip",
+      "sha256": "c8bfc4f5aab7e8a0d0871a72590c005e3eaf40b2a508a8de8ce288b5929991b3"
+    },
+    "app_build_record": {
+      "path": "dist/ORX-0.5.0-internal-preview-dev-macos13-arm64.zip.json",
+      "sha256": "60900324ca749eef3455d902fd37c1fa83af14f3977f25cbd8032efc7f18b7a6"
+    }
+  },
+  "app": {
+    "app_name": "ORX (Internal Preview).app",
+    "bundle_id": "com.aderan.orx.dev",
+    "cf_bundle_version_string": "0.5.0",
+    "cf_bundle_version": "0.5.0",
+    "build_flavor": "dev",
+    "channel": "internal-preview",
+    "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+    "source_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+    "bundled_python_name": "cpython-3.12.8+20250115-aarch64-apple-darwin-install_only",
+    "in_app_manifest": {
+      "audience": "internal testing only (\u5185\u90e8\u6d4b\u8bd5)",
+      "channel": "internal-preview",
+      "gatekeeper_limit": "Ad-hoc signed, NOT notarized: Gatekeeper blocks first launch and needs the documented manual confirmation. Internal preview \u2014 not a formal installer, do not distribute outside the internal audience.",
+      "mode": "dev",
+      "signing": "ad-hoc",
+      "source_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+      "version": "0.5.0"
+    },
+    "orxanalytics_version_txt": "0.5.0",
+    "bundled_python_version": "3.12.8",
+    "bundled_python_exit": 0
+  },
+  "signature": {
+    "codesign_verify_exit": 0,
+    "signature_style": "adhoc",
+    "authorities": [],
+    "adhoc": true
+  },
+  "checks": {
+    "orx_build": 0,
+    "analytics_build": 0,
+    "orx_install": 0,
+    "analytics_install": 0,
+    "analytics_pytest": 0,
+    "app_packaging_pytest": 0,
+    "swift_wire_fixtures": 0,
+    "swift_test": 0,
+    "app_build": 0,
+    "analytics_candidate_venv": 0,
+    "analytics_candidate_install": 0,
+    "analytics_candidate_version": 0,
+    "app_smoke": 0,
+    "exercise": 0
+  },
+  "joint_exercise": {
+    "stand_in_app_delivery": false,
+    "project": "isolated",
+    "goal_1": {
+      "paused_then_resumed": true,
+      "completion_during_pause": true,
+      "engine_view_while_paused": {
+        "run_active": true,
+        "goal_control_raw": "paused"
+      },
+      "receipt_retransmit_zero_change": true,
+      "receipts": 1,
+      "final": {
+        "goal": "done",
+        "run": "done"
+      }
+    },
+    "goal_2": {
+      "cancelling_then_cancelled": true,
+      "unconfirmed_executor_listed": true,
+      "recovered_via_termination_fact": true,
+      "history_queryable": true
+    },
+    "installed_orx_version": "0.5.0",
+    "engine": {
+      "connected_via": "app engine serve entry (socket protocol v1)",
+      "bundled_analytics_version": "0.5.0",
+      "collects": 2,
+      "snapshots": 1,
+      "read_only_source": true,
+      "no_real_session_mirrors": true,
+      "cancelled_goal_not_aggregated": true
+    }
+  }
+}

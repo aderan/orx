@@ -1,0 +1,218 @@
+{
+  "format": "orx-0.5-publication-v1",
+  "published": true,
+  "release_url": "https://github.com/aderan/orx/releases/tag/v0.5.0",
+  "published_at": "2026-11-20T09:04:18Z",
+  "tag": "v0.5.0",
+  "tag_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+  "source_commit": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+  "versions": {
+    "orx": "0.5.0",
+    "analytics": "0.5.0"
+  },
+  "remote_hashes_verified": true,
+  "anonymous_public_downloads": [
+    {
+      "name": "orx_agent-0.5.0-py3-none-any.whl",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/orx_agent-0.5.0-py3-none-any.whl",
+      "sha256": "f069e804fb8415e7dec94316b56c436bfe00a026afda4d1a1058bc3b2324c4e8",
+      "bytes": 363688,
+      "http_status": 200,
+      "anonymous_download": true
+    },
+    {
+      "name": "orx_agent-0.5.0.tar.gz",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/orx_agent-0.5.0.tar.gz",
+      "sha256": "22d52fd31116bbcf50fb89e8c3b9921b3934610568a06bc7be467d4d1089c054",
+      "bytes": 6476771,
+      "http_status": 200,
+      "anonymous_download": true
+    },
+    {
+      "name": "orx_analytics-0.5.0-py3-none-any.whl",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/orx_analytics-0.5.0-py3-none-any.whl",
+      "sha256": "99e6227a009af22aa78092aee9ce78b1a9dec013c2d89d6feaf45f7fae976311",
+      "bytes": 111388,
+      "http_status": 200,
+      "anonymous_download": true
+    },
+    {
+      "name": "orx_analytics-0.5.0.tar.gz",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/orx_analytics-0.5.0.tar.gz",
+      "sha256": "8a4a3a1e73d287d99b8f6407c73eb08e50621e2a759739371db948e535462b11",
+      "bytes": 227825,
+      "http_status": 200,
+      "anonymous_download": true
+    },
+    {
+      "name": "release-manifest.json",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/release-manifest.json",
+      "sha256": "bb3d87b7b981ea62ffc3692e547c77a75ae6520bef80ba269f6a6836c3048d99",
+      "bytes": 1683,
+      "http_status": 200,
+      "anonymous_download": true
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "url": "https://github.com/aderan/orx/releases/download/v0.5.0/SHA256SUMS.txt",
+      "sha256": "0c29a3ed8387834cc9bcd924e29a97dbc77476b47254663da6dfdf6c82420450",
+      "bytes": 472,
+      "http_status": 200,
+      "anonymous_download": true
+    }
+  ],
+  "public_assets_include_app": false,
+  "clean_install_verified": true,
+  "clean_install_basis": "Published assets installed into two fresh environments after publication; earlier draft-download environments ran the real Goal; every published file is byte-identical to the tested draft asset.",
+  "git_tag_install_verified": true,
+  "git_install": {
+    "orx-agent": {
+      "version": "0.5.0",
+      "direct_url": {
+        "url": "https://github.com/aderan/orx.git",
+        "vcs_info": {
+          "vcs": "git",
+          "commit_id": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+          "requested_revision": "v0.5.0"
+        }
+      }
+    },
+    "orx-analytics": {
+      "version": "0.5.0",
+      "direct_url": {
+        "url": "https://github.com/aderan/orx.git",
+        "vcs_info": {
+          "vcs": "git",
+          "commit_id": "8784fc9ce90f35c24eeb61e3e80033171d294666",
+          "requested_revision": "v0.5.0"
+        },
+        "subdirectory": "tools/orx-analytics"
+      }
+    }
+  },
+  "real_run": {
+    "project": "/private/var/folders/kh/dyn_2t5d10d7_szmhtsjc7qr0000gn/T/orx050-release-consumer-f6rwyhbm",
+    "archive": "/Users/flb/Sources/Products/ORX/dist/release-0.5.0/consumer-evidence",
+    "goal": "G001",
+    "run": "R001",
+    "status": "done",
+    "goal_status": "done",
+    "stale": [],
+    "attempts": [
+      {
+        "id": 1,
+        "role": "planner",
+        "task_id": null,
+        "profile": "claude-plan",
+        "harness": "claude",
+        "model": "sonnet",
+        "requested_effort": "low",
+        "actual_effort": null,
+        "effort_source": null,
+        "routing_reason": "primary",
+        "result": "completed",
+        "failure_reason": null,
+        "started_at": "2026-11-20T08:57:18.867529+00:00",
+        "ended_at": "2026-11-20T08:57:55.743659+00:00"
+      },
+      {
+        "id": 2,
+        "role": "worker",
+        "task_id": "T001",
+        "profile": "zcode-cli-worker",
+        "harness": "zcode",
+        "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+        "requested_effort": "low",
+        "actual_effort": null,
+        "effort_source": null,
+        "routing_reason": "primary",
+        "result": "completed",
+        "failure_reason": null,
+        "started_at": "2026-11-20T08:59:09.202152+00:00",
+        "ended_at": "2026-11-20T08:59:42.306141+00:00"
+      },
+      {
+        "id": 3,
+        "role": "worker",
+        "task_id": "T002",
+        "profile": "zcode-cli-worker",
+        "harness": "zcode",
+        "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+        "requested_effort": "low",
+        "actual_effort": null,
+        "effort_source": null,
+        "routing_reason": "fallback",
+        "result": "completed",
+        "failure_reason": null,
+        "started_at": "2026-11-20T09:00:24.027215+00:00",
+        "ended_at": "2026-11-20T09:01:17.712054+00:00"
+      },
+      {
+        "id": 4,
+        "role": "verifier",
+        "task_id": "T002",
+        "profile": "codex-verify",
+        "harness": "codex",
+        "model": "gpt-6.1-sol",
+        "requested_effort": "low",
+        "actual_effort": "low",
+        "effort_source": "requested_validated",
+        "routing_reason": "primary",
+        "result": "pass",
+        "failure_reason": null,
+        "started_at": "2026-11-20T09:02:32.069940+00:00",
+        "ended_at": "2026-11-20T09:02:53.949528+00:00"
+      }
+    ],
+    "product_stdout": "1900",
+    "product_exit": 0,
+    "test_fixtures_unchanged": true,
+    "dependency_handoff": [
+      {
+        "task": "T001",
+        "revision": 1,
+        "attempt": 2,
+        "artifacts": [
+          {
+            "path": "money_core.py",
+            "exists": true
+          }
+        ]
+      }
+    ],
+    "cursor_note": "Cursor was first in configured order for T002, but quota preflight marked it exhausted; no Cursor Worker launched. ZCode completed T002 via configured fallback. This consumer Run is Claude -> ZCode -> Codex, not a four-CLI success claim.",
+    "upstream_effort_observed": false,
+    "permission_or_timeout_failure_observed": false,
+    "unchanged_verify_model_launches": 0
+  },
+  "analytics": {
+    "readonly_source_sha256_match": true,
+    "task_counts": {
+      "T001": {
+        "current": 2,
+        "current_passed": 2,
+        "historical": 0,
+        "unknown": 0
+      },
+      "T002": {
+        "current": 3,
+        "current_passed": 3,
+        "historical": 0,
+        "unknown": 0
+      }
+    }
+  },
+  "local_install": {
+    "orx_and_analytics": "updated from the published download assets",
+    "managed_skills_updated": true,
+    "watch_healthy": true,
+    "app": "Existing internal preview retained; new same-source internal candidate is local only."
+  },
+  "user_dirty_files_preserved": true,
+  "project_config_bytes_preserved": true,
+  "remaining_app_gates": [
+    "Developer ID signing and notarization",
+    "Actual logout/relogin validation",
+    "Installed-path UI automation bridge misidentifies Bundle ID; same-source candidate GUI was verified previously"
+  ]
+}
