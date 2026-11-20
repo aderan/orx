@@ -603,10 +603,10 @@ def test_orx_controller_skill_teaches_configured_optional_analytics_watchdog():
     # Cleanup boundary: stop only a watcher this session started.
     assert "ONLY for a watcher this session started" in text
     assert "another session or the user started is not yours to stop" in text
-    # The analysis implementation stays external; ORX ships no built-in
-    # analysis layer, and the watchdog observes — no auto-recovery claim.
-    assert "separate repository" in text
-    assert "no analysis layer of its own" in text
+    # Analytics shares the source repository but is independently installed;
+    # the optional watchdog still observes without auto-recovery authority.
+    assert "tools/orx-analytics" in text
+    assert "installing ORX alone does not install it" in text
     assert "never restarts, resumes, or recovers" in text
 
 
