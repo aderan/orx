@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -233,6 +234,14 @@ def write_evidence(tmp_path: Path, name: str = "evidence.json", *, status: str =
         "commands": [],
     }))
     return path
+
+
+def marker_check(name: str) -> str:
+    """Produce the same failing status and diagnostic on macOS and Linux."""
+    return (
+        f"test -f {shlex.quote(name)} || "
+        f"{{ printf '%s\\n' {shlex.quote(f'Missing marker {name}')} >&2; exit 1; }}"
+    )
 
 
 def active_task(project, task_id):

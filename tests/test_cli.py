@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from orx import dispatch
@@ -1076,7 +1077,7 @@ def test_config_help_mentions_layers_keys_and_exits_zero():
         assert word in listed.stdout
     detailed = invoke("config", "set", "--help")
     assert detailed.exit_code == 0
-    text = detailed.stdout
+    text = Text.from_ansi(detailed.stdout).plain
     for snippet in (
         "--user",
         "--json",
@@ -1409,8 +1410,9 @@ def test_agent_help_lists_subcommands():
         assert word in listed.stdout
     probed = invoke("agent", "probe", "--help")
     assert probed.exit_code == 0
+    text = Text.from_ansi(probed.stdout).plain
     for snippet in ("--json", "codex", "cursor", "zcode", "completion", "exit 1"):
-        assert snippet in probed.stdout
+        assert snippet in text
 
 
 def test_agent_usage_exits_2():
@@ -1649,9 +1651,10 @@ def test_agent_probe_rejects_unprobeable_and_unknown():
 def test_agent_status_help_names_columns():
     result = invoke("agent", "status", "--help")
     assert result.exit_code == 0
+    text = Text.from_ansi(result.stdout).plain
     for word in ("PROFILE", "STATE", "SINCE", "REASON", "--json", "cooldown",
                  "quota", "override", "resource_status"):
-        assert word in result.stdout
+        assert word in text
 
 
 def test_agent_status_outside_project(tmp_path, monkeypatch):
@@ -1761,9 +1764,10 @@ def _seed_attempt(store, profile, task_id, started_at, ended_at):
 def test_usage_help_names_contract():
     result = invoke("usage", "--help")
     assert result.exit_code == 0
+    text = Text.from_ansi(result.stdout).plain
     for word in ("--profile", "--json", "tasks", "runtime", "accuracy",
                  "unknown", "input_tokens", "runtime_sec"):
-        assert word in result.stdout
+        assert word in text
 
 
 def test_usage_outside_project(tmp_path, monkeypatch):

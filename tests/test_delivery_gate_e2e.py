@@ -41,6 +41,7 @@ from conftest import (
     active_task,
     ir_for,
     make_project,
+    marker_check,
     task_spec,
     write_evidence,
 )
@@ -157,9 +158,10 @@ def test_scenario_b_gate_reject_then_same_attempt_fix_all_green(project, goal, t
     the task's prior status kept and the attempt open; the worker repairs in
     the SAME session (check -> fix -> check) and completes again — all green,
     on the same attempt, with no new attempt created anywhere in the story."""
+    check_command = marker_check("b.marker")
     dispatch.submit_plan(project, ir_for(goal, [
         task_spec("T102", acceptance=goal.acceptance,
-                  verification=["ls b.marker", "true"]),
+                  verification=[check_command, "true"]),
     ]))
     dispatch.run_slice(project)
     dispatch.task_claim(project, "T102")
@@ -174,9 +176,9 @@ def test_scenario_b_gate_reject_then_same_attempt_fix_all_green(project, goal, t
         "remaining": 2, "exceeded": False,
     }
     red = first["results"][0]
-    assert red["command"] == "ls b.marker"
+    assert red["command"] == check_command
     assert red["exit_code"] == 1
-    assert red["error_summary"] == "ls: b.marker: No such file or directory"
+    assert red["error_summary"] == "Missing marker b.marker"
 
     # Premature passed claim: the gate re-runs the entries itself and
     # rejects — nothing closes, nothing is recorded as delivered.
@@ -190,9 +192,9 @@ def test_scenario_b_gate_reject_then_same_attempt_fix_all_green(project, goal, t
     assert report["summary"]["total"] == 2
     assert len(report["failures"]) == 1
     failure = report["failures"][0]
-    assert failure["command"] == "ls b.marker"
+    assert failure["command"] == check_command
     assert failure["exit_code"] == 1
-    assert failure["error_summary"] == "ls: b.marker: No such file or directory"
+    assert failure["error_summary"] == "Missing marker b.marker"
     assert failure["log_path"].startswith(".orx/runs/R001/check/T102/")
     assert (project.root / failure["log_path"]).exists()
     assert report["check_rounds"] == {
@@ -236,14 +238,14 @@ def test_scenario_b_gate_reject_then_same_attempt_fix_all_green(project, goal, t
     rows = project.store.verifications_for_attempt(attempt.id)
     assert len(rows) == 8
     assert all(v.attempt_id == attempt.id for v in rows)
-    ls_rows = [v for v in rows if v.command == "ls b.marker"]
-    assert [v.passed for v in ls_rows] == [False, False, True, True]
+    check_rows = [v for v in rows if v.command == check_command]
+    assert [v.passed for v in check_rows] == [False, False, True, True]
     latest = {
         v.command: v.passed
         for v in project.store.verifications_current(row.revision_id, "T102")
         if v.kind == "command"
     }
-    assert latest == {"ls b.marker": True, "true": True}
+    assert latest == {check_command: True, "true": True}
     task_row = project.store.task_get(row.revision_id, "T102")  # goal is done
     assert verify.evaluate(project.store, row.revision_id, task_row) == "passed"
     assert verify.first_failure(project.store, row.revision_id, task_row) is None
@@ -261,9 +263,10 @@ def test_scenario_c_retry_preserves_attempt_history_and_classifies(project, goal
     quotes the failure rows verbatim plus guidance classified as a code
     failure; and the retried round's current judgment never reads the old
     attempt's red rows."""
+    check_command = marker_check("c.marker")
     dispatch.submit_plan(project, ir_for(goal, [
         task_spec("T103", acceptance=goal.acceptance,
-                  verification=["ls c.marker", "true"]),
+                  verification=[check_command, "true"]),
     ]))
     first_park = dispatch.run_slice(project)["host_required"][0]
     assert "A previous attempt" not in first_park["prompt"]  # no history yet
@@ -278,14 +281,14 @@ def test_scenario_c_retry_preserves_attempt_history_and_classifies(project, goal
     gate_rows = project.store.verifications_for_attempt(attempt_a.id)
     assert len(gate_rows) == 2
     assert [(v.command, v.passed) for v in gate_rows] == [
-        ("ls c.marker", False), ("true", True),
+        (check_command, False), ("true", True),
     ]
 
     # The worker cannot fix it and exits structured failed (budget spent).
     failed = write_evidence(
         tmp_path, "tc-failed.json", status="failed",
         summary="cannot produce c.marker within this scope",
-        checks=[{"command": "ls c.marker", "exit_code": 1,
+        checks=[{"command": check_command, "exit_code": 1,
                  "log": gate_rows[0].output_path}],
     )
     result = dispatch.task_complete(project, "T103", str(failed))
@@ -312,9 +315,9 @@ def test_scenario_c_retry_preserves_attempt_history_and_classifies(project, goal
         f"Verification evidence retained from that failed attempt"
         f" (attempt {attempt_a.id}; latest row per check):" in prompt
     )
-    assert "  - command: ls c.marker" in prompt
+    assert f"  - command: {check_command}" in prompt
     assert "    exit code: 1" in prompt
-    assert "    error summary: ls: c.marker: No such file or directory" in prompt
+    assert "    error summary: Missing marker c.marker" in prompt
     log_line = next(
         line.strip() for line in prompt.splitlines() if line.strip().startswith("log:")
     )

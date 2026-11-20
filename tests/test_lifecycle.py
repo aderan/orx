@@ -12,7 +12,7 @@ import pytest
 from orx import dispatch, verify
 from orx.verify import DeliveryRejected
 
-from conftest import active_task, ir_for, task_spec
+from conftest import active_task, ir_for, marker_check, task_spec
 
 
 def write_evidence(tmp_path, name: str = "evidence.json", *, status: str = "passed",
@@ -397,9 +397,10 @@ def test_retry_prompt_quotes_retained_failure_evidence(project, goal, tmp_path):
     row shape) — sourced from the per-attempt history, never re-executed
     here. A check that went green later in the same attempt is not quoted:
     the latest row per check is the state that failed."""
+    check_command = marker_check("t1.marker")
     dispatch.submit_plan(project, ir_for(goal, [
         task_spec("T001", acceptance=goal.acceptance,
-                  verification=["ls t1.marker", "true"]),
+                  verification=[check_command, "true"]),
     ]))
     first = dispatch.run_slice(project)["host_required"][0]
     assert "A previous attempt" not in first["prompt"]  # no history yet
@@ -419,9 +420,9 @@ def test_retry_prompt_quotes_retained_failure_evidence(project, goal, tmp_path):
     assert "could not make the check green" in prompt
     assert f"(attempt {failed_attempt}; latest row per check)" in prompt
     # The gate-refusal row shape: command / exit code / error summary / log.
-    assert "  - command: ls t1.marker" in prompt
+    assert f"  - command: {check_command}" in prompt
     assert "    exit code: 1" in prompt
-    assert "    error summary: ls: t1.marker: No such file or directory" in prompt
+    assert "    error summary: Missing marker t1.marker" in prompt
     assert "    log: .orx/runs/R001/check/T001/01-0000-command.log" in prompt
     log_line = next(
         line.strip() for line in prompt.splitlines() if line.strip().startswith("log:")
