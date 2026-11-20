@@ -1,6 +1,8 @@
 # ORX Analytics 同仓迁移与桌面统一方案
 
-**决策已确认，实施待交接。** 本文定义源码导入、应用升级、发布切换和验收。决策见 [ORX ADR-0001](adr/0001-orx-monorepo-independent-packages.md)。
+本文定义源码导入、应用升级、发布切换和验收。当前执行状态见
+[实施计划](../IMPLEMENTATION_PLAN.md)，架构决策见
+[ORX ADR-0001](adr/0001-orx-monorepo-independent-packages.md)。
 
 ## 目标布局和职责
 

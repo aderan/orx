@@ -5,6 +5,24 @@ assignments, records execution, and coordinates verification. The host
 Controller drives the loop; agents plan, perform the work, and judge results.
 SQLite is the state authority; TOML holds only static configuration.
 
+The ORX repository also maintains [ORX Analytics](tools/orx-analytics/README.md)
+and the [ORX macOS app](apps/macos/README.md). The two Python commands install
+independently. Install from the current development source with uv:
+
+```sh
+uv tool install --python 3.12 'git+https://github.com/aderan/orx.git@main'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx.git@main#subdirectory=tools/orx-analytics'
+orx version --json
+orx-analytics --version
+```
+
+Use a full commit SHA in place of `main` for a reproducible install. See
+[Analytics installation and source migration](tools/orx-analytics/docs/installation.md)
+and the [macOS build and rollback guide](tools/orx-analytics/docs/app-installation.md).
+Release downloads are listed on [ORX Releases](https://github.com/aderan/orx/releases).
+Historical Analytics downloads are available from the
+[previous repository's releases](https://github.com/aderan/orx-analytics/releases).
+
 The product boundary is the Goal execution control layer. See
 [职责与边界](docs/responsibilities.md) for what ORX executes, delegates, and
 excludes, and [CONTEXT.md](CONTEXT.md) for the shared domain vocabulary.

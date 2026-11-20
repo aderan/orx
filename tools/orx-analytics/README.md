@@ -9,11 +9,10 @@
 个人开发者。所有采集和分析在本地执行；安装后不需要 ORX Python 包，
 也不需要调用模型或供应商计费接口。
 
-**它是独立工具、独立仓库。** ORX 保存执行事实并控制 Goal 的推进；
+**它是 ORX 仓库中可独立安装的工具。** ORX 保存执行事实并控制 Goal 的推进；
 orx-analytics 通过只读契约消费这些事实，同时读取原生 agent 会话。
 分析结果只生成信号和本地草案，恢复与修复由操作者或获授权的 Controller
-决定。仓库组织、被否决的合并/submodule 方案与重新评估条件见
-[架构决策 ADR-0001](docs/adr/0001-independent-repository.md)。
+决定。仓库与包的边界见 [ORX 同仓架构决策](../../docs/adr/0001-orx-monorepo-independent-packages.md)。
 
 | 能力 | 现在提供什么 |
 |---|---|
@@ -39,18 +38,15 @@ orx-analytics 通过只读契约消费这些事实，同时读取原生 agent �
 安装到独立工具环境；Git 来源安装还需要 `git`：
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx.git@main#subdirectory=tools/orx-analytics'
 orx-analytics --version
 orx-analytics --help
 ```
 
-当前包版本 **0.4.3**。`@main` 安装主分支当时的提交；需要复现时固定到
-完整 commit SHA。当前安装来源是 GitHub，不依赖同名 PyPI 包。
-**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.3**——ORX 软件
-版本（0.4.0）、ORX 数据 schema（v15）与本工具软件版本（0.4.3）、
-analytics 存储 schema（store v4）是四条独立演进的版本轴，不必同号；
-本工具只读接受 ORX schema 8–15，拒绝未知未来版本（见
-[兼容性与来源限制](docs/compatibility.md)）。
+当前开发线为 **0.5.x**，Analytics 与 ORX 随同一个仓库迭代。
+需要复现时将 `@main` 换成完整提交。旧仓 Git 安装用户需显式重装到
+新地址。[历史 Release 和下载](https://github.com/aderan/orx-analytics/releases)
+继续用于旧版安装和回退。
 pipx、普通 Python 虚拟环境、PATH、升级和卸载见[完整安装指南](docs/installation.md)。
 
 运行时零第三方依赖（标准库）。数据目录默认 `~/.local/share/orx/analytics/`，可用
