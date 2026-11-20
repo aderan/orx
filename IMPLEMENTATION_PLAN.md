@@ -1495,3 +1495,29 @@ v0.1.0–v0.4.0）全部原样、全程无强推；ORX v0.4.0 产品/标签/Rele
   G011 §9.1 同式）。验收报告 docs/diagnostics/g012/joint-acceptance-
   report.md＋clone 侧 reports/release-v0.4.3-acceptance.md（冻结后证据
   文档，零源码混入）；规定检查 6/6 绿（check 2/3 轮）。
+
+# ORX 0.5.0 收尾（2026-11-20）
+
+## Stage C1: Analytics 验收证据语义
+**Goal**: 只读区分历史验收、当前有效窗口和未知状态，与 ORX 水位及 Worker 边界一致。
+**Success Criteria**: 保留历史记录；输入失效与重验不混入当前结果；不修改源数据库；兼容旧快照。
+**Tests**: 同交付补验、产物和依赖失效、Worker 重试、无绑定历史、异常 context、跨项目/修订隔离。
+**Status**: Complete
+
+## Stage C2: 桌面与版本文档
+**Goal**: 详情明确当前有效性和历史结果，统一 0.5.0 安装、兼容与回退说明。
+**Success Criteria**: 新旧引擎均可读，未知不冒充有效，现有主题与最小宽度保持可用，历史版本说明保留。
+**Tests**: Python wire 与 Swift 解码/展示测试；版本一致性；浅深色与最小宽度实查。
+**Status**: Complete
+
+## Stage C3: 冻结联合候选
+**Goal**: 从同一提交构建两个 CLI 和内部预览 App，归档校验值和发布说明。
+**Success Criteria**: 干净安装、独立运行、全量检查与真实依赖 Run 通过，候选来源可复现。
+**Tests**: ORX/Analytics/Swift/打包测试；联合发布驱动；真实跨 CLI 与失效重验验收。
+**Status**: In Progress
+
+## Stage C4: 安装迁移与发布收口
+**Goal**: 复核实际安装和旧仓切换，明确剩余系统及外部分发门禁。
+**Success Criteria**: 已实测事实与待验项目明确；不把未注销重登或正式签名视为通过；可审阅发布候选完整。
+**Tests**: 版本/路径/验签、共享引擎与 watch、旧仓归档与历史下载、最终逐项完成审计。
+**Status**: Not Started

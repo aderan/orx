@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import READER_VERSION, display, usage_readmodel
+from . import READER_VERSION, display, usage_readmodel, verification_validity
 from .dbutil import open_ro
 from .metrics import _canonical_observations as _canon
 from .probe import SUPPORTED_ORX_SCHEMA
@@ -716,6 +716,17 @@ def tasks_get(store: Store, project: str, run_id: str, revision_id: int,
         return _envelope("tasks.get", payload, snap_map,
                          {"project": key, "found": False, "snapshot_id": sid},
                          warnings, now)
+    revision = store.conn.execute(
+        "SELECT id FROM orx_revisions WHERE snapshot_id=? AND id=? AND run_id=?",
+        (sid, revision_id, run_id)).fetchone()
+    if revision is None:
+        _warn(warnings, "task-not-found", key,
+              f"revision {revision_id} does not belong to run {run_id!r} "
+              f"in snapshot {sid}")
+        payload.update({"found": False, "reason": "revision not in run"})
+        return _envelope("tasks.get", payload, snap_map,
+                         {"project": key, "found": False, "snapshot_id": sid},
+                         warnings, now)
     task_row = store.conn.execute(
         "SELECT * FROM orx_tasks WHERE snapshot_id=? AND revision_id=? AND "
         "task_id=?", (sid, revision_id, task_id)).fetchone()
@@ -739,6 +750,17 @@ def tasks_get(store: Store, project: str, run_id: str, revision_id: int,
         "created_at FROM orx_verifications WHERE snapshot_id=? AND "
         "revision_id=? AND task_id=? ORDER BY created_at, id",
         (sid, revision_id, task_id))]
+    # every historical row keeps its original passed value and identity; the
+    # optional per-row current flag and the window summary project the SAME
+    # rules as ORX Store.verifications_current (verification_validity)
+    validity = verification_validity.classify(store, sid, revision_id,
+                                              task_id)
+    for v in verifications:
+        verdict = validity["rows"].get(v["id"],
+                                       {"current": None,
+                                        "validity_reason": None})
+        v["current"] = verdict["current"]
+        v["validity_reason"] = verdict["validity_reason"]
     payload.update({
         "found": True,
         "task": {
@@ -753,6 +775,7 @@ def tasks_get(store: Store, project: str, run_id: str, revision_id: int,
             "updated_at": task_row["updated_at"] if task_row else None},
         "usage": usage,
         "verifications": verifications,
+        "verification_window": validity["window"],
         "retry": {"recovered": recovered,
                   "failing_attempt_ids": failing,
                   "successor_attempt_ids": successors},

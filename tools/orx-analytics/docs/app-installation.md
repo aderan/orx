@@ -42,7 +42,8 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
 构建（如实标注），正式通道按设计失败关闭**。解锁步骤见该文件
 `channels.official.user_steps_to_unblock`。
 
-版本号唯一来源是 `src/orxanalytics/__init__.py` 的 `__version__`，构建时
+版本号唯一来源是同仓 `tools/orx-analytics/src/orxanalytics/__init__.py`
+的 `__version__`，构建时
 写入 App 版本与 `Contents/Resources/orxanalytics-version.txt`。
 
 构建脚本固定内置运行时（版本与 SHA256 写死在 `apps/macos/scripts/build_app.sh`）：
@@ -161,6 +162,81 @@ bundle 内容快照（每个文件的 SHA-256、symlink 目标、目录）、前
 备份通过完整性检查后才进入 `backups/`。升级前先取消 App 登录启动、退出
 App、释放 CLI watch 需求，并确认待替换引擎已停止。
 仍有其他进程使用分析库时不要覆盖它。
+
+### 0.5.0：从旧默认数据目录迁移
+
+0.5.0 默认使用 ORX 用户数据根的 `analytics/`（通常为
+`~/.local/share/orx/analytics/`），旧默认是 `~/.orx-analytics/`。
+升级软件不会自动证明数据已搬迁。显式 `--data-dir`、
+`ORX_ANALYTICS_HOME` 和 App 的数据目录覆盖仍会优先生效。
+
+1. 用旧路径执行 `orx-analytics --data-dir "$HOME/.orx-analytics" watch status`，
+   保存项目登记、历史 Run/尝试/用量数及当前引擎信息。退出 App、暂停登录启动，
+   与其他使用者协调后，用同一 `--data-dir` 的 `watch stop` 停止自己管理的 watcher。
+   确认该目录的所有写入者已经停止。若引擎仍运行，先核对其 PID 的完整命令行
+   确实指向这个目录，再发送 SIGTERM 并等待退出；不能仅凭遗留 pid 文件杀进程。
+2. 在所有客户端停止后执行下面的复制。它持有旧引擎锁，若引擎仍持锁则拒绝。
+   用 SQLite backup API 读取已提交 WAL、校验完整性，保留旧目录和独立备份，
+   再原子发布新目录。目标已存在时拒绝合并，先检查已有数据，不覆盖它。
+
+```python
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
+import fcntl
+import shutil
+import sqlite3
+import tempfile
+
+old = Path.home() / ".orx-analytics"
+new = Path.home() / ".local/share/orx/analytics"  # 自定义 ORX_DATA_DIR 时改为其 analytics 子目录
+if not (old / "analytics.db").is_file() or new.exists():
+    raise SystemExit("旧数据库缺失或目标已存在；请先核对路径，不覆盖数据")
+if old.resolve() in new.resolve().parents or new.resolve() in old.resolve().parents:
+    raise SystemExit("新旧目录不能互相包含；请先核对路径")
+new.parent.mkdir(parents=True, exist_ok=True)
+with (old / "engine.lock").open("a+b") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("旧引擎仍持锁；请先协调停止所有客户端和该目录的引擎")
+    stage = Path(tempfile.mkdtemp(prefix=".analytics-move-", dir=new.parent))
+    with closing(sqlite3.connect((old / "analytics.db").as_uri() + "?mode=ro", uri=True)) as src, \
+         closing(sqlite3.connect(stage / "analytics.db")) as dst:
+        src.backup(dst)
+        if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise RuntimeError("备份完整性检查失败；旧目录保留，目标未发布")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    shutil.copy2(stage / "analytics.db", old.parent / f"analytics-before-050-{stamp}.db")
+    runtime = {"analytics.db", "analytics.db-wal", "analytics.db-shm", "engine.sock",
+               "engine.lock", "engine.state.json", "watch.pid", "watch.state.json",
+               "watch-demand.pid", "watch-demand.state.json"}
+    for entry in old.iterdir():
+        if entry.name in runtime:
+            continue
+        if entry.is_symlink():
+            raise RuntimeError(f"请先人工检查符号链接：{entry}；旧目录保留")
+        if entry.is_dir():
+            shutil.copytree(entry, stage / entry.name)
+        elif entry.is_file():
+            shutil.copy2(entry, stage / entry.name)
+        else:
+            raise RuntimeError(f"发现未识别的运行文件：{entry}；目标未发布")
+    stage.rename(new)
+```
+
+3. 使用新安装的 CLI，显式指定新目录执行 `projects list`，与原登记核对。
+   在 App「设置 → 数据目录」选择同一新路径；若原来设置了旧绝对路径覆盖，
+   必须更新它，不能以新默认值已变化为由跳过。清理或更新自己设置的旧环境覆盖。
+   启动新目录的 `watch start`（需要持续观察时），重开 App，再用同一路径的
+   `watch status` 确认它们使用同一引擎和 socket。
+4. 核对历史 Run、尝试、原生会话与用量，实际退出 App 后确认 CLI watch 仍续约。
+   备份、旧目录和旧安装包暂时保留。这里不自动注销当前账户；登录启动的实际
+   重登验收单独进行。项目 `.orx/state.db` 不搬迁、不写入。
+
+回退时先协调停止新版写入，另存新目录，再恢复旧软件并重新指向保留的旧目录
+或 `analytics-before-050-*.db` 一致性备份。不要把新旧引擎同时指向同一库，
+也不要复制遗留 socket、PID、锁或 WAL/SHM 文件来冒充服务已启动。
 
 ## 回退（明确拒绝读取，不损坏数据）
 

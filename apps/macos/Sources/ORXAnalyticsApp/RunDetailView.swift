@@ -675,28 +675,58 @@ struct RunDetailView: View {
 
             ORXRule()
 
-            // 验证证据
+            // 验证证据 — 历史结果与当前有效窗口分开表达：历史通过的行
+            // 不因曾经的 passed=1 而显示为当前有效（0.5.0 收尾契约）。
             Text("验证（verifier 运行记录）").font(ORXType.section)
+            if let window = taskDetail.verificationWindow {
+                keyValue("最近验收", VerificationValidityDisplay.windowSummary(window))
+                if let takenAt = window.takenAt {
+                    keyValue("采集于", DisplayTime.short(takenAt) ?? takenAt)
+                }
+            } else {
+                keyValue("最近验收", VerificationValidityDisplay.windowSummary(nil))
+            }
             if taskDetail.verifications.isEmpty {
                 Text("无验证记录").font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             }
             ForEach(taskDetail.verifications) { verification in
-                HStack(spacing: ORXSpace.sm) {
-                    Text(verification.kind ?? "—").font(ORXType.caption)
+                VStack(alignment: .leading, spacing: ORXSpace.xxs) {
+                    HStack(spacing: ORXSpace.sm) {
+                        Text(verification.kind ?? "—")
+                        Spacer()
+                        Text(VerificationValidityDisplay.resultText(verification))
+                            .foregroundStyle(verification.current == true && verification.passed == false
+                                             ? ORXColor.dangerText : ORXColor.secondary)
+                        validityBadge(verification)
+                    }
                     Text(verification.command ?? "—")
                         .font(ORXType.code)
-                        .lineLimit(1)
-                    Spacer()
-                    Text("退出码 \(verification.exitCode.map(String.init) ?? "—")")
-                    Text(verification.passed == true ? "通过" :
-                            (verification.passed == false ? "未通过" : "—"))
-                        .foregroundStyle(verification.passed == false ? ORXColor.dangerText : ORXColor.secondary)
-                    Text(DisplayTime.short(verification.createdAt) ?? verification.createdAt ?? "—")
+                        .lineLimit(2)
+                        .help(verification.command ?? "—")
+                        .textSelection(.enabled)
+                    HStack {
+                        Text("退出码 \(verification.exitCode.map(String.init) ?? "—")")
+                        Text(DisplayTime.short(verification.createdAt) ?? verification.createdAt ?? "—")
+                    }
                         .foregroundStyle(ORXColor.secondary)
                 }
                 .font(ORXType.caption)
+                if let reason = VerificationValidityDisplay.reasonText(verification.validityReason) {
+                    Text(reason)
+                        .font(ORXType.caption)
+                        .foregroundStyle(ORXColor.secondary)
+                        .help(verification.validityReason ?? reason)
+                }
             }
         }
+    }
+
+    /// 窗口归属与检查结果独立；当前窗口内的失败也不应得到成功色。
+    private func validityBadge(_ verification: VerificationRow) -> some View {
+        let badge = VerificationValidityDisplay.badge(verification)
+        let help = VerificationValidityDisplay.reasonText(verification.validityReason)
+        return ORXBadge(badge, tone: .neutral)
+            .help(help ?? badge)
     }
 
     private func attemptRow(_ attempt: AttemptDetail) -> some View {

@@ -1,0 +1,240 @@
+{
+  "goal": "G013",
+  "exploration": {
+    "summary": "首轮计划遗漏功能改造并含永远无法通过的工作区清洁检查；未启动执行，现修正范围和依赖。",
+    "relevant_components": [
+      "src/orx/state.py",
+      "tools/orx-analytics/src/orxanalytics/query_model.py",
+      "apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+      "apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+      "scripts/joint_release.py"
+    ],
+    "unknowns": [
+      "实际注销重登和正式签名仍未实测"
+    ],
+    "assumptions": [],
+    "risks": [
+      "Analytics 快照只证明采集时记录窗口，不能证明采集后的文件内容未变"
+    ]
+  },
+  "approach": {
+    "summary": "先补只读窗口，再改桌面和版本文档，最后由主控执行冻结构建及真实验收。",
+    "decisions": [
+      "遵守 docs/diagnostics/0.5-closeout/contract.md",
+      "保留用户未提交文档；不以整个工作区干净作为单任务检查",
+      "保留原始历史 passed，不让未知冒充有效"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "T001",
+      "objective": "实现 Analytics 只读验收窗口与逐行有效性。按约定改真实 Python 代码并先补失败回归，保留历史、旧快照 unknown、无绑定行、Worker 边界、水位、坏 context 不回退，跨项目/Run/修订隔离。明确 snapshot 口径而非实时文件保证。新增 tools/orx-analytics/docs/verification-validity.md 说明返回字段供后续 Swift 消费。禁止提交用户已有改动，不做 git commit，由主控检查后统一提交。",
+      "dependencies": [],
+      "scope": {
+        "allowed": [
+          "tools/orx-analytics/src/orxanalytics/",
+          "tools/orx-analytics/tests/",
+          "tools/orx-analytics/docs/verification-validity.md"
+        ]
+      },
+      "acceptance": [
+        "执行收尾工作。"
+      ],
+      "verification": [
+        "uv run --no-project --with-editable './tools/orx-analytics[dev]' python -m pytest -q tools/orx-analytics/tests",
+        "agent: 核对真实实现和回归，水位和 Worker 规则与 ORX 一致，历史原始行保留，非法或缺失依据显示未知，最新错误不回退，跨 Run 身份不可串读，源库只读。"
+      ],
+      "preread": [
+        "docs/diagnostics/0.5-closeout/contract.md",
+        "src/orx/state.py",
+        "docs/verification-validity.md",
+        "tools/orx-analytics/src/orxanalytics/query_model.py",
+        "tools/orx-analytics/tests/test_query_model.py"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T002",
+      "objective": "消费 T001 的真实字段，更新 Swift VerificationRow 及任务详情以区分历史结果、采集时当前窗口和未知。字段缺失的旧引擎可解码。复用既有样式，不重设计列表，补 Swift 解码及展示文案测试。阅读 apps/macos/AGENTS.md 和 DESIGN.md。禁止 commit。",
+      "dependencies": [
+        "T001"
+      ],
+      "scope": {
+        "allowed": [
+          "apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+          "apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+          "apps/macos/Tests/ORXAnalyticsCoreTests/"
+        ]
+      },
+      "acceptance": [
+        "执行收尾工作。"
+      ],
+      "verification": [
+        "swift test --package-path apps/macos",
+        "agent: 核对新旧 wire 解码、历史/当前/未知文案，保留 Goal/Run/当前计划口径和现有样式，不能把历史通过展示成当前有效。"
+      ],
+      "preread": [
+        "docs/diagnostics/0.5-closeout/contract.md",
+        "apps/macos/AGENTS.md",
+        "apps/macos/DESIGN.md",
+        "apps/macos/Sources/ORXAnalyticsCore/DetailModels.swift",
+        "apps/macos/Sources/ORXAnalyticsApp/RunDetailView.swift",
+        "tools/orx-analytics/docs/verification-validity.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "coding"
+        ]
+      }
+    },
+    {
+      "id": "T003",
+      "objective": "整理 0.5.0 当前版本、安装升级回退与发布说明，保留旧版本历史。包含 README.md、docs/package-acceptance.md 与 Analytics compatibility 的已有主控修订；不触碰其他脏文档。新建 docs/release-0.5.0.md 和 docs/upgrade-0.5.0.md，明确内部预览与正式渠道、旧未知证据、配置根和 Analytics 数据根迁移。由主控结合上下文处理。",
+      "dependencies": [
+        "T001",
+        "T002"
+      ],
+      "scope": {
+        "allowed": [
+          "README.md",
+          "docs/package-acceptance.md",
+          "docs/release-0.5.0.md",
+          "docs/upgrade-0.5.0.md",
+          "tools/orx-analytics/docs/compatibility.md",
+          "tools/orx-analytics/docs/app-installation.md",
+          "tools/orx-analytics/CHANGELOG.md"
+        ]
+      },
+      "acceptance": [
+        "执行收尾工作。"
+      ],
+      "verification": [
+        "test -s docs/release-0.5.0.md && test -s docs/upgrade-0.5.0.md",
+        "agent: 对照代码检查 0.5.0 文档版本、安装路径、历史界限、回退与剩余渠道门禁，不能宣称未做过的系统验收通过。"
+      ],
+      "preread": [
+        "docs/diagnostics/0.5-closeout/contract.md",
+        "docs/diagnostics/analytics-monorepo/config-home.md",
+        "docs/diagnostics/analytics-monorepo/source-cutover.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      }
+    },
+    {
+      "id": "T004",
+      "objective": "主控完成全量测试、自审和增量提交，再从单一提交冻结构建两个 CLI 和内部预览 App；从安装候选跑真实跨 CLI 依赖 Run 并用 Analytics 对账当前/历史窗口。检查实际 App 新 UI 明暗主题及最小宽度、版本路径与共享引擎。核对源码切换及旧仓归档，形成逐项完成报告与可审阅发布候选。真实注销重登和正式渠道缺口必须如实记录，不自行注销或改系统权限。",
+      "dependencies": [
+        "T003"
+      ],
+      "scope": {
+        "allowed": [
+          "docs/diagnostics/0.5-closeout/",
+          "IMPLEMENTATION_PLAN.md"
+        ]
+      },
+      "acceptance": [
+        "执行收尾工作。"
+      ],
+      "verification": [
+        "test -s docs/diagnostics/0.5-closeout/candidate-acceptance.json",
+        "agent: 核对最终报告及清单，冻结提交贯穿两 CLI 和 App，实际跨 CLI 依赖及 Analytics 窗口对账有原始证据，用户原有改动保留，未实测门禁和未发布状态没有伪报通过。"
+      ],
+      "preread": [
+        "docs/diagnostics/0.5-closeout/contract.md",
+        "docs/diagnostics/analytics-monorepo/candidate-runbook.md",
+        "scripts/joint_release.py",
+        "docs/diagnostics/analytics-monorepo/source-cutover.md"
+      ],
+      "routing": {
+        "complexity": "medium",
+        "required_capabilities": [
+          "host_context"
+        ]
+      }
+    }
+  ],
+  "replan": {
+    "prior_revision": 1,
+    "tasks": [
+      {
+        "task": "T001",
+        "classification": "new",
+        "sources": [],
+        "redo_reason": "",
+        "confirm_verification": [],
+        "artifacts": []
+      },
+      {
+        "task": "T002",
+        "classification": "new",
+        "sources": [],
+        "redo_reason": "",
+        "confirm_verification": [],
+        "artifacts": []
+      },
+      {
+        "task": "T003",
+        "classification": "new",
+        "sources": [],
+        "redo_reason": "",
+        "confirm_verification": [],
+        "artifacts": []
+      },
+      {
+        "task": "T004",
+        "classification": "new",
+        "sources": [],
+        "redo_reason": "",
+        "confirm_verification": [],
+        "artifacts": []
+      }
+    ],
+    "superseded": [
+      {
+        "revision": 1,
+        "task_id": "T001",
+        "disposition": "dropped",
+        "successors": [],
+        "note": "原计划未执行，文档替代功能且检查依赖已有脏文件，全部由修正范围的 rev2 任务替代。"
+      },
+      {
+        "revision": 1,
+        "task_id": "T002",
+        "disposition": "dropped",
+        "successors": [],
+        "note": "原计划未执行，文档替代功能且检查依赖已有脏文件，全部由修正范围的 rev2 任务替代。"
+      },
+      {
+        "revision": 1,
+        "task_id": "T003",
+        "disposition": "dropped",
+        "successors": [],
+        "note": "原计划未执行，文档替代功能且检查依赖已有脏文件，全部由修正范围的 rev2 任务替代。"
+      },
+      {
+        "revision": 1,
+        "task_id": "T004",
+        "disposition": "dropped",
+        "successors": [],
+        "note": "原计划未执行，文档替代功能且检查依赖已有脏文件，全部由修正范围的 rev2 任务替代。"
+      },
+      {
+        "revision": 1,
+        "task_id": "T005",
+        "disposition": "dropped",
+        "successors": [],
+        "note": "原计划未执行，文档替代功能且检查依赖已有脏文件，全部由修正范围的 rev2 任务替代。"
+      }
+    ]
+  }
+}

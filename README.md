@@ -33,11 +33,13 @@ for the meaning of Plan Depth, Task Difficulty, Model Tier, Specialized Model
 tracks rollout of the tier and effort conventions. See
 [model selection](docs/model-selection.md) for currently supported configuration.
 
-**M0 is complete.** The CLI drives the full lifecycle — Goal → Plan →
-Tasks (host, CLI, or external) → verification → Done — and the adapters
-implement the probed Codex / Cursor / shell launch surfaces. Automated tests
-(201) and the acceptance scenario run entirely on local fakes: no paid model
-is ever called. See `docs/m0-report.md` for the acceptance log.
+The CLI drives the full lifecycle — Goal → Plan → Tasks (host, CLI, or
+external) → verification → Done. Current adapters include Codex, Cursor,
+Claude Code, ZCode and shell. Deterministic tests use local substitutes;
+real model acceptance is recorded separately in the
+[clean-install dual-controller runs](docs/diagnostics/host-install-2026-11-19/README.md)
+and [verification validity run](docs/diagnostics/verification-validity-2026-11-19/README.md).
+The original 201-test M0 baseline remains in `docs/m0-report.md`.
 
 ## Quick start
 
@@ -360,12 +362,14 @@ statement — the gate accepts exactly the supported versions 8, 9, 10,
 the v13/v14 `paused` and `cancelling` goal states, and the v15
 `completion_receipts` and goal-lifecycle reads;
 docs/observability-contract.md is authoritative. The external analysis
-layer is the separate `orx-analytics` tool: the pairing verified with
-this release is ORX v0.4.0 + Analytics v0.4.2 (Analytics store v3),
-which accepts ORX schema 8–15 read-only, refuses unknown future
-versions, and mirrors completion-receipt facts without the replay
-payload. That contract is read-only. The analysis layer itself is not
-in this repository.
+layer is the independently installed `orx-analytics` tool maintained in
+this repository. The current 0.5.0 source line aligns ORX, Analytics and
+the macOS App at 0.5.0; their contracts remain ORX schema 15, Analytics
+store 4 and engine protocol 1. Analytics accepts ORX schema 8–15 read-only,
+refuses unknown future versions, and mirrors completion-receipt facts
+without the replay payload. See the [compatibility table](tools/orx-analytics/docs/compatibility.md)
+for current boundaries. The historical ORX v0.4.0 + Analytics v0.4.2
+(store v3) release pairing remains documented in its release notes.
 
 ## Key invariants
 
@@ -494,7 +498,9 @@ planning, assignment delivery, verification, retry/replan, recovery) and
 `orx-pbv` is an optional, explicitly-invoked multi-round development recipe
 on top of the controller protocol: `orx skill install orx-pbv`.
 
-Upgrading from 0.3.x? Follow
+For the 0.5.0 source line, follow [Upgrade to 0.5.0](docs/upgrade-0.5.0.md)
+for the configuration and Analytics data-directory changes, backups and
+rollback. For the historical 0.3.x → 0.4.0 transition, follow
 [docs/upgrade-0.4.0.md](docs/upgrade-0.4.0.md): pause writers, take the
 SQLite-consistent backup (database + project config + run materials)
 before the new version first opens the old database (schema v8/v11/v12
@@ -509,6 +515,11 @@ update by checking out the release — no `uv tool upgrade`. Upgrading
 [docs/upgrade-0.3.1.md](docs/upgrade-0.3.1.md).
 
 ## Docs
+
+- [0.5.0 release notes](docs/release-0.5.0.md) — unified source, model
+  routing, evidence validity and candidate channel boundaries
+- [Upgrade to 0.5.0](docs/upgrade-0.5.0.md) — independent CLI installation,
+  user configuration and Analytics data migration, backups and rollback
 
 - [职责与边界](docs/responsibilities.md) — responsibility baseline, scope
   decisions, and current implementation limits

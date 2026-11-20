@@ -511,7 +511,7 @@ def test_doc_declares_what_it_does_not_change():
 def g008_section() -> str:
     text = PLAN.read_text()
     assert "# G008" in text
-    return text.split("# G008", 1)[1]
+    return text.split("# G008", 1)[1].split("\n# ", 1)[0]
 
 
 def test_implementation_plan_g008_is_finished_and_clean():
