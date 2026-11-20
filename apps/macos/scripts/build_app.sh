@@ -165,8 +165,6 @@ cat > "$WORK/Info.plist" <<PLIST
 	<string>$APP_NAME</string>
 	<key>CFBundleIdentifier</key>
 	<string>$BUNDLE_ID</string>
-	<key>ORXAnalyticsPreviousBundleIdentifier</key>
-	<string>$PREVIOUS_BUNDLE_ID</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$VERSION</string>
 	<key>CFBundleVersion</key>

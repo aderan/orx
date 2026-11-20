@@ -8,7 +8,7 @@ macOS 菜单栏应用（自带内置 Python 运行时的可安装 `ORX Analytics
 的安装、升级、回退与卸载是独立流程，见
 [app-installation.md](app-installation.md)。
 
-本目录的候选包版本为 0.4.5。已发布的历史版本及资产仍可从旧仓下载。
+本目录的候选包版本为 0.5.0。已发布的历史版本及资产仍可从旧仓下载。
 以下 0.4.3 Git 示例用于安装历史版本。同仓候选使用下文的本地源码或 wheel。尚未发布到
 PyPI，不使用裸 `pip install orx-analytics` 作为本项目的安装方式。
 
@@ -107,15 +107,15 @@ uv tool install --python 3.12 .
 
 维护者可以用 `python -m build` 生成源码包与 wheel。拿到构建好的 wheel
 后，在目标虚拟环境中用 `python -m pip install --no-index --no-deps
-/absolute/path/to/orx_analytics-0.4.5-py3-none-any.whl` 离线安装。构建工具与
+/absolute/path/to/orx_analytics-0.5.0-py3-none-any.whl` 离线安装。构建工具与
 源码包不是运行时依赖。项目的 `scripts/check_install.py` 会验证这个流程。
 
 ## 数据、配置和卸载后的保留
 
 | 项目 | 位置与行为 |
 |---|---|
-| 默认分析数据 | `~/.orx-analytics/analytics.db`，包含项目登记、导入结果、游标、findings |
-| 数据目录优先级 | `--data-dir` > `ORX_ANALYTICS_HOME` > `~/.orx-analytics/` |
+| 默认分析数据 | `~/.local/share/orx/analytics/analytics.db`，包含项目登记、导入结果、游标、findings |
+| 数据目录优先级 | `--data-dir` > `ORX_ANALYTICS_HOME` > `ORX_DATA_DIR/analytics` > `XDG_DATA_HOME/orx/analytics` > `~/.local/share/orx/analytics/` |
 | watch 状态 | 同一数据目录中的 `watch-demand.pid`、`watch-demand.state.json`（CLI 需求）与 `watch.state.json`（once 轮次）；`engine.sock`/`engine.lock` 属于协调引擎，`watch.pid` 只由旧版循环写入（见[迁移指引](watch-migration.md)） |
 | macOS 通知 | `ORX_ANALYTICS_NOTIFY=0` 关闭；不影响采集与 findings |
 | ORX 可选接入 | `ORX_ANALYTICS_BIN` 由 ORX Controller 读取，见[集成指南](orx-integration.md) |

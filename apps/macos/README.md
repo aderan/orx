@@ -78,7 +78,7 @@ analytics.db 需要跨版本打开，先备份再放行（升级保护）。引�
   （attributed / unattributed 附原因等，跨 run 共享时显示会话累计并强制标注
   不摊分；见 docs/metrics.md「controller 自身用量」，G012 用户反馈 5）。
 - 引擎 socket 默认 `<data-dir>/engine.sock`，data-dir 沿用 CLI 约定
-  （`ORX_ANALYTICS_HOME` 覆盖，默认 `~/.orx-analytics`）。
+  （`ORX_ANALYTICS_HOME` 覆盖，默认 `~/.local/share/orx/analytics`）。
 - 关闭详情窗口应用继续驻留菜单栏，只有“退出”结束；清理显示缓存是设置里
   单独、明确的操作；退出/卸载不删除 ORX 项目数据（设计 §9）。
 

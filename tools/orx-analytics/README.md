@@ -53,7 +53,7 @@ analytics 存储 schema（store v4）是四条独立演进的版本轴，不必�
 [兼容性与来源限制](docs/compatibility.md)）。
 pipx、普通 Python 虚拟环境、PATH、升级和卸载见[完整安装指南](docs/installation.md)。
 
-运行时零第三方依赖（标准库）。数据目录默认 `~/.orx-analytics/`，可用
+运行时零第三方依赖（标准库）。数据目录默认 `~/.local/share/orx/analytics/`，可用
 `--data-dir` 或环境变量 `ORX_ANALYTICS_HOME` 覆盖；优先级为命令行 >
 环境变量 > 默认值。全局选项应放在子命令之前：
 

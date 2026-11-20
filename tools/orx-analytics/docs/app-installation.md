@@ -110,7 +110,7 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
   运行（设计 §7 App/CLI 共存）。注销或重启后引擎不自动恢复，下次启动
   App 时自动重新拉起。
 - 引擎日志在 `<data-dir>/logs/engine-launch.log`（容量有上限）；默认
-  data-dir 是 `~/.orx-analytics`，可在设置中显式选择其他目录。
+  data-dir 是 `~/.local/share/orx/analytics`，可在设置中显式选择其他目录。
 
 ## 安装后封条检查（可重复验证）
 
@@ -180,9 +180,9 @@ App、释放 CLI watch 需求，并确认待替换引擎已停止。
 ## 退出、卸载与缓存清理（各是独立操作）
 
 - **退出**：菜单栏 → 退出，只结束 App 自身（见上「引擎与进程」）。
-- **卸载**：把 `.app` 拖入废纸篓即可。卸载不会删除 `~/.orx-analytics`
+- **卸载**：把 `.app` 拖入废纸篓即可。卸载不会删除 `~/.local/share/orx/analytics`
   （analytics 数据）、任何 ORX 项目数据或用户级项目索引；想连数据一起
-  清理需手动删除 `~/.orx-analytics` 目录。
+  清理需手动删除 `~/.local/share/orx/analytics` 目录。
 - **清缓存**：设置里的「清理显示缓存」是单独、明确的操作，只清面板的
   展示缓存并回到空状态；它不删除 analytics 数据库，也不可能在退出或
   卸载时自动触发。

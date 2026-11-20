@@ -65,6 +65,7 @@ from . import anomalies, collect as _collect, correlate, display, findings
 from . import probe as _probe
 from . import discovery, query_model, registry
 from .query_model import PROTOCOL_VERSION, REFRESH_OP
+from .paths import analytics_data_directory
 from .store import Store
 
 # ----------------------------------------------------------------- tuning ---
@@ -1095,7 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="orx-analytics-engine")
     ap.add_argument("--data-dir", default=None)
     args = ap.parse_args(argv)
-    data_dir = Path(args.data_dir) if args.data_dir else Store().data_dir
+    data_dir = analytics_data_directory(args.data_dir)
 
     def make_engine() -> Engine:
         engine = Engine(data_dir)

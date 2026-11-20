@@ -138,8 +138,10 @@ def test_desktop_project_preview_reads_a_current_host_candidate(routing_world):
     assert bound_candidate["host_blocked_reason"] is None
 
 
-def test_desktop_contract_exposes_model_definition_and_effective_default(routing_world):
+def test_desktop_contract_exposes_model_definition_and_one_default_depth(routing_world):
     user, _, project, request = routing_world
+    config = project / ".orx/config.toml"
+    config.write_text(config.read_text().replace('depth = "deep"', 'depth = "auto"'))
     with (user / "profiles.toml").open("a") as profiles:
         profiles.write(
             '[profiles.ocr]\ndriver = "cli"\nharness = "codex"\n'
@@ -148,15 +150,17 @@ def test_desktop_contract_exposes_model_definition_and_effective_default(routing
             'capabilities = ["ocr"]\n'
         )
     _, initial = invoke(project)
-    draft(request, initial["revision"], **{"plan.depth": "auto", "worker.profiles": ["ocr"]})
+    assert initial["model_selection"]["planner"]["depth"] == "standard"
+    assert "effective_depth" not in initial["model_selection"]["planner"]
+    draft(request, initial["revision"], **{"plan.depth": "standard", "worker.profiles": ["ocr"]})
 
     code, preview = invoke(project, "--request", str(request))
 
     assert code == 0, preview
     assert preview["contract"] == 1
     selection = preview["model_selection"]
-    assert selection["planner"]["depth"] == "auto"
-    assert selection["planner"]["effective_depth"] == "standard"
+    assert selection["planner"]["depth"] == "standard"
+    assert "effective_depth" not in selection["planner"]
     candidate = selection["worker"]["candidates"][0]
     assert candidate["tier"] == "S"
     assert candidate["capabilities"] == ["ocr"]

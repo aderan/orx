@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 from . import __version__, discovery, metrics, probe
-from .store import Store, DEFAULT_DATA_DIR
+from .paths import analytics_data_directory
+from .store import Store
 
 
 def _store(args) -> Store:
-    return Store(Path(args.data_dir) if args.data_dir else None)
+    return Store(analytics_data_directory(args.data_dir))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,10 +23,7 @@ def main(argv: list[str] | None = None) -> int:
                     "and agents")
     ap.add_argument("--version", action="version", version=__version__)
     ap.add_argument("--data-dir", default=None,
-                    help=f"analytics home (default {DEFAULT_DATA_DIR}); "
-                         f"env ORX_ANALYTICS_HOME overrides")
-    if os.environ.get("ORX_ANALYTICS_HOME"):
-        ap.set_defaults(data_dir=os.environ["ORX_ANALYTICS_HOME"])
+                    help=f"analytics data directory (default: {analytics_data_directory()})")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("probe", help="probe local sources honestly")
@@ -274,8 +271,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "watch":
         from . import watch as watch_mod
-        data_dir = Path(args.data_dir) if args.data_dir else None
-        home = data_dir or watch_mod.Store().data_dir
+        home = analytics_data_directory(args.data_dir)
         if args.action == "start":
             out = watch_mod.start(home)
         elif args.action == "stop":

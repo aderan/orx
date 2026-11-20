@@ -42,7 +42,7 @@ public final class OverviewCacheStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("ORXAnalytics", isDirectory: true)
+        return base.appendingPathComponent("ORX", isDirectory: true)
     }
 
     public static func makeDefault() -> OverviewCacheStore {

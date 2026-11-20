@@ -19,7 +19,6 @@ public struct RoutingCandidate: Decodable, Sendable {
     public let model: String?
     public let modelSpec: RoutingModelSpec?
     public let tier: String?
-    public let legacyClass: String?
     public let capabilities: [String]?
     public let effort: String?
     public let nativeEffort: String?
@@ -36,8 +35,6 @@ public struct RoutingGroup: Decodable, Sendable {
 
 public struct RoutingSelection: Decodable, Sendable {
     public struct Controller: Decodable, Sendable {
-        public let origin: String
-        public let candidate: RoutingCandidate
         public let sessionHarness: String?
         public let nativeAgents: [String]?
         public let source: String?
@@ -45,7 +42,6 @@ public struct RoutingSelection: Decodable, Sendable {
 
     public struct Planner: Decodable, Sendable {
         public let depth: String
-        public let effectiveDepth: String?
         public let depthOrigin: String
         public let depths: [String: RoutingGroup]
     }

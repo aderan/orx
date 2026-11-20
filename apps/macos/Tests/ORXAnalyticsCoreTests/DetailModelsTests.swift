@@ -27,7 +27,6 @@ final class DetailModelsTests: XCTestCase {
         let current = try decoder.decode(AttemptRouting.self, from: json)
         XCTAssertEqual(current.controllerHarness, "zcode")
         XCTAssertEqual(current.effortSource, "reported")
-        XCTAssertEqual(current.candidates?.first?.legacyClass, "strong")
         XCTAssertEqual(current.candidates?.first?.rejectReason, "host_agent_unavailable:helper")
         XCTAssertEqual(current.candidates?.last?.tier, "T2")
     }

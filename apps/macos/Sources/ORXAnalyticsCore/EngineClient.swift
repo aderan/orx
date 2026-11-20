@@ -146,19 +146,21 @@ public final class EngineSocketClient: EngineClientProtocol {
         transport?.close()
     }
 
-    /// Default socket location: `<data-dir>/engine.sock` where data-dir
-    /// follows the CLI convention (`ORX_ANALYTICS_HOME` env override,
-    /// else `~/.orx-analytics`). Design §8: the app reuses the existing
-    /// analytics data-dir, it does not keep a second copy.
+    /// This resolution matches the standalone Analytics CLI.
     public static func defaultSocketPath(environment: [String: String] =
                                             ProcessInfo.processInfo.environment) -> String {
         let dataDir: String
         if let home = environment["ORX_ANALYTICS_HOME"], !home.isEmpty {
             dataDir = home
+        } else if let root = environment["ORX_DATA_DIR"], !root.isEmpty {
+            dataDir = root + "/analytics"
+        } else if let xdg = environment["XDG_DATA_HOME"], !xdg.isEmpty {
+            dataDir = xdg + "/orx/analytics"
         } else {
-            dataDir = NSHomeDirectory() + "/.orx-analytics"
+            dataDir = NSHomeDirectory() + "/.local/share/orx/analytics"
         }
-        return dataDir + "/engine.sock"
+        return ((dataDir as NSString).expandingTildeInPath as NSString)
+            .appendingPathComponent("engine.sock")
     }
 
     // MARK: - EngineClientProtocol

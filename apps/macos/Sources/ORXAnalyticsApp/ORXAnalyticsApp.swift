@@ -7,14 +7,7 @@ import ORXAnalyticsCore
 /// The installed app and its SwiftUI views share one runtime.
 @MainActor
 private enum AppRuntime {
-    static let settingsStore: UserDefaultsAppSettingsStore = {
-        let bundle = Bundle.main
-        if let current = bundle.bundleIdentifier,
-           let previous = bundle.object(forInfoDictionaryKey: "ORXAnalyticsPreviousBundleIdentifier") as? String {
-            UserDefaultsAppSettingsStore.migrateBundlePreferences(from: previous, to: current)
-        }
-        return UserDefaultsAppSettingsStore()
-    }()
+    static let settingsStore = UserDefaultsAppSettingsStore()
 
     static let model: AppModel = {
         // Honor the user's explicit data-directory choice (settings) —

@@ -26,10 +26,6 @@ public enum PanelShortcut: String, CaseIterable, Identifiable {
 ///   original ~5s default; the engine's matching tiers are 30/60/300s).
 public struct AppSettings: Equatable {
     public static let defaultPanelRefreshInterval: TimeInterval = 30
-    /// The pre-G012 default. Persisted values equal to it are treated as
-    /// the OLD default (not an explicit choice) unless the choice marker
-    /// says otherwise — 0.4.2 wrote it incidentally on every settings save.
-    public static let legacyDefaultPanelRefreshInterval: TimeInterval = 5
 
     public var appearance: AppAppearance
     public var panelDensity: PanelDensity
@@ -37,15 +33,14 @@ public struct AppSettings: Equatable {
     public var notificationsEnabled: Bool
     public var menuBarAttentionBadgeEnabled: Bool
     /// Explicit data-directory choice (设置页显式选择); nil = the shared
-    /// default resolution (ORX_ANALYTICS_HOME env, else ~/.orx-analytics).
+    /// default resolution used by the Analytics CLI.
     /// Applies on the next app launch — changing it never moves data.
     public var dataDirectoryOverride: String?
     /// Panel/detail-open refresh tier in seconds (design §8; G012 lowered
     /// the default to 30s — 面板或详情打开 ~30s).
     public var panelRefreshInterval: TimeInterval
     /// True only when the user explicitly chose the refresh preference
-    /// (设置页). Unmarked persisted values are migration candidates, not
-    /// guaranteed preferences.
+    /// (设置页).
     public var panelRefreshIntervalChosen: Bool
 
     public static let `default` = AppSettings(notificationsEnabled: false,
@@ -77,7 +72,8 @@ public struct AppSettings: Equatable {
     public func resolvedSocketPath(environment: [String: String] =
                                     ProcessInfo.processInfo.environment) -> String {
         if let dir = dataDirectoryOverride, !dir.isEmpty {
-            return dir + "/engine.sock"
+            return ((dir as NSString).expandingTildeInPath as NSString)
+                .appendingPathComponent("engine.sock")
         }
         return EngineSocketClient.defaultSocketPath(environment: environment)
     }
@@ -117,24 +113,6 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         self.defaults = defaults
     }
 
-    /// Import only ORX preferences once. The previous domain is retained
-    /// for rollback, and the system manages its own state for each identity.
-    public static func migrateBundlePreferences(from previous: String, to current: String,
-                                                using defaults: UserDefaults = .standard) {
-        guard !previous.isEmpty, !current.isEmpty, previous != current else { return }
-        let marker = "migration.previous-bundle-id"
-        var destination = defaults.persistentDomain(forName: current) ?? [:]
-        guard destination[marker] == nil else { return }
-        let source = defaults.persistentDomain(forName: previous) ?? [:]
-        let keys = [notificationsKey, menuBarAttentionBadgeKey, dataDirectoryKey, intervalKey, intervalChosenKey,
-                    appearanceKey, densityKey, shortcutsKey, "orx.executable.path"]
-        for key in keys where destination[key] == nil {
-            destination[key] = source[key]
-        }
-        destination[marker] = previous
-        defaults.setPersistentDomain(destination, forName: current)
-    }
-
     public func load() -> AppSettings {
         // bool(forKey:) is NO for a missing OR non-boolean value — an
         // unparseable value keeps notifications off, never on.
@@ -142,20 +120,6 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
         let override = defaults.string(forKey: Self.dataDirectoryKey)
         let interval = defaults.double(forKey: Self.intervalKey)
         let chosen = defaults.bool(forKey: Self.intervalChosenKey)
-        // G012 migration: 新安装和未显式选择刷新偏好的升级用户采用新默认
-        // 值；已明确保存的有效偏好保留. A persisted value is an explicit
-        // preference when the choice marker is set, or when it differs
-        // from the legacy default (pre-marker versions only ever wrote 5
-        // incidentally — any other value descends from a deliberate pick).
-        let effectiveInterval: TimeInterval
-        let effectiveChosen: Bool
-        if interval > 0 && (chosen || interval != AppSettings.legacyDefaultPanelRefreshInterval) {
-            effectiveInterval = interval
-            effectiveChosen = chosen
-        } else {
-            effectiveInterval = AppSettings.defaultPanelRefreshInterval
-            effectiveChosen = false
-        }
         let appearance = defaults.string(forKey: Self.appearanceKey).flatMap(AppAppearance.init(rawValue:))
         let density = defaults.string(forKey: Self.densityKey).flatMap(PanelDensity.init(rawValue:))
         let shortcuts = defaults.stringArray(forKey: Self.shortcutsKey)?
@@ -164,8 +128,8 @@ public final class UserDefaultsAppSettingsStore: AppSettingsStore {
 
         return AppSettings(notificationsEnabled: enabled,
                            dataDirectoryOverride: (override?.isEmpty ?? true) ? nil : override,
-                           panelRefreshInterval: effectiveInterval,
-                           panelRefreshIntervalChosen: effectiveChosen,
+                           panelRefreshInterval: interval > 0 ? interval : AppSettings.defaultPanelRefreshInterval,
+                           panelRefreshIntervalChosen: chosen && interval > 0,
                            appearance: appearance ?? .system,
                            panelDensity: density ?? .compact,
                            panelShortcuts: shortcuts ?? PanelShortcut.defaults,

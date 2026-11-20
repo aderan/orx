@@ -218,16 +218,13 @@ struct RoutingView: View {
         VStack(alignment: .leading, spacing: ORXSpace.lg) {
             Text("配置候选").font(ORXType.title).accessibilityAddTraits(.isHeader)
             let depth = selection.planner.depth
-            let depthLabel = depth == "auto"
-                ? "默认（\(selection.planner.effectiveDepth ?? "standard")）" : depth
             HStack(spacing: ORXSpace.md) {
                 Label("Planner", systemImage: "list.bullet.rectangle").font(ORXType.section)
-                Text("默认规划深度 \(depthLabel) · \(originLabel(selection.planner.depthOrigin))")
+                Text("默认规划深度 \(depth) · \(originLabel(selection.planner.depthOrigin))")
                     .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
                 Spacer()
                 if editing {
                     Picker("默认规划深度", selection: textBinding("plan.depth", initial: depth)) {
-                        Text("默认（standard）").tag("auto")
                         Text("light").tag("light")
                         Text("standard").tag("standard")
                         Text("deep").tag("deep")
@@ -254,9 +251,9 @@ struct RoutingView: View {
             Text("各角色显示配置顺序。派发时 ORX 按任务能力、宿主和资源状态筛选。")
                 .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
             HStack(alignment: .top, spacing: ORXSpace.md) {
-                topologyStage("Controller", profiles: [selection.controller.candidate.profile])
+                topologyStage("Controller", profiles: [selection.controller.sessionHarness ?? "宿主未声明"])
                 topologyArrow
-                let depth = selection.planner.effectiveDepth ?? selection.planner.depth
+                let depth = selection.planner.depth
                 topologyStage("Planner · \(depth)", profiles: selection.planner.depths[depth]?.candidates.map(\.profile) ?? [])
                 topologyArrow
                 topologyStage("Worker", profiles: selection.worker.candidates.map(\.profile))
@@ -314,7 +311,7 @@ struct RoutingView: View {
                             Button(candidate.profile) { inspection = CandidateInspection(candidate: candidate) }
                                 .buttonStyle(ORXButtonStyle(variant: .quiet))
                             Text(configuredModel(candidate))
-                            Text(RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) ?? "—")
+                            Text(RoutingLabels.tier(candidate.tier) ?? "—")
                             Text(candidate.effort ?? "—")
                             Text(candidate.capabilities?.joined(separator: "、") ?? "—")
                         }
@@ -331,7 +328,6 @@ struct RoutingView: View {
             HStack {
                 Label("Controller 会话", systemImage: "terminal").font(ORXType.section)
                 Spacer()
-                ORXBadge(originLabel(controller.origin))
             }
             if let host = controller.sessionHarness {
                 let origin = controller.source == "environment" ? "查询环境中的宿主" : "配置查询声明的宿主"
@@ -342,10 +338,6 @@ struct RoutingView: View {
             } else {
                 Text("本次配置查询未声明宿主。Run 详情记录当次派发的 Controller。")
                     .font(ORXType.caption).foregroundStyle(ORXColor.secondary)
-            }
-            ORXValueRow("兼容配置", controller.candidate.profile, monospaced: true)
-            if let error = controller.candidate.error {
-                Text(error).font(ORXType.caption).foregroundStyle(ORXColor.warningText)
             }
         }
         .orxCard(padding: ORXSpace.md)
@@ -398,7 +390,7 @@ struct RoutingView: View {
                     }
                 }
                 Spacer(minLength: ORXSpace.sm)
-                if let level = RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) {
+                if let level = RoutingLabels.tier(candidate.tier) {
                     ORXBadge(level)
                 }
                 if let effort = candidate.effort { ORXBadge(effort) }
@@ -417,7 +409,7 @@ struct RoutingView: View {
             ORXValueRow("执行方式", candidateExecution(candidate) ?? "—")
             ORXValueRow("配置模型", configuredModel(candidate), monospaced: true)
             ORXValueRow("来源", candidate.profileOrigin.map(originLabel) ?? "—")
-            ORXValueRow("等级", RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass) ?? "—")
+            ORXValueRow("等级", RoutingLabels.tier(candidate.tier) ?? "—")
             ORXValueRow("请求推理", candidate.effort ?? "—")
             if let effort = candidate.nativeEffort { ORXValueRow("原生推理覆盖", effort) }
             if let ref = candidate.agentRef { ORXValueRow("原生代理", ref) }
@@ -588,7 +580,7 @@ struct RoutingView: View {
 }
 
 enum RoutingLabels {
-    static func tier(_ value: String?, legacyClass: String?) -> String? {
+    static func tier(_ value: String?) -> String? {
         switch value {
         case "T0": return "T0 旗舰"
         case "T1": return "T1 高阶"
@@ -596,7 +588,7 @@ enum RoutingLabels {
         case "T3": return "T3 高效"
         case "S": return "S 专有"
         case let value?: return value
-        case nil: return legacyClass.map { "旧分类 \($0)" }
+        case nil: return nil
         }
     }
 

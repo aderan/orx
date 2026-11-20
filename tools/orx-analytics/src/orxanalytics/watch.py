@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .paths import analytics_data_directory
 from .store import Store, now_iso
 
 DEFAULT_INTERVAL_SEC = 600   # legacy compat: `watch once --interval`
@@ -612,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
                             "engine owns collection cadence")
     args = ap.parse_args(argv)
     data_dir = Path(args.data_dir) if args.data_dir else None
-    home = data_dir or Store().data_dir
+    home = analytics_data_directory(data_dir)
     if args.cmd == "start":
         out = start(home)
     elif args.cmd == "stop":

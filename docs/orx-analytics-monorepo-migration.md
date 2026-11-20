@@ -19,7 +19,7 @@ ORX/
 | `orx-analytics` | 保留 Python 包名、`orxanalytics` 模块和 CLI 入口。单独安装可分析支持的非 ORX 会话。按只读契约和项目索引读 ORX 数据，不调用 `orx.Store`，也不通过可能触发迁移的 ORX 命令读取源库。 |
 | `ORX.app` | macOS 唯一日常桌面入口。通过 ORX 的机器可读配置接口读写策略，通过现有 Analytics 本地协议读取执行与用量。复用现有 App、引擎和界面状态管理。 |
 
-仓库路径与运行时路径分开。保留 `ORX_ANALYTICS_HOME`、`--data-dir`、默认 `~/.orx-analytics/`、项目登记和当前 socket 解析规则。保留 `ORX_CONFIG_DIR`、`ORX_DATA_DIR` 和项目配置解析。构建程序从提交树或发布产物识别源码，安装后的 App 和 CLI 不寻找开发机 checkout。
+仓库路径与运行时路径分开。0.5.0 将 Analytics 默认目录设为 ORX 用户数据根的 `analytics/`，默认 `~/.local/share/orx/analytics/`。保留 `ORX_ANALYTICS_HOME`、`--data-dir`、项目登记和数据目录内的 socket。保留 `ORX_CONFIG_DIR`、`ORX_DATA_DIR` 和项目配置解析。构建程序从提交树或发布产物识别源码，安装后的 App 和 CLI 不寻找开发机 checkout。
 
 ## 阶段 1：锁定基线并导入 Analytics
 

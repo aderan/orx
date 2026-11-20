@@ -120,7 +120,7 @@ def test_emit_env_is_eval_safe_shell():
     assert assignments["CHANNEL"] == "internal-preview"
     assert assignments["APP_NAME"] == "ORX (Internal Preview)"
     assert assignments["BUNDLE_ID"] == "com.aderan.orx.dev"
-    assert assignments["PREVIOUS_BUNDLE_ID"] == "org.orxanalytics.macos.dev"
+    assert "PREVIOUS_BUNDLE_ID" not in assignments
     # Names contain spaces/parens: quoting must round-trip through a
     # real shell word-split.
     assert " ".join(shlex.split(
@@ -134,7 +134,7 @@ def test_channel_facts_differ_in_every_visible_dimension():
     assert preview["app_name"] != official["app_name"]
     assert preview["bundle_id"] != official["bundle_id"]
     assert official["bundle_id"] == "com.aderan.orx"
-    assert official["previous_bundle_id"] == "org.orxanalytics.macos"
+    assert "previous_bundle_id" not in official
     assert preview["archive_suffix"] == "zip" != official["archive_suffix"]
     assert "NOT notarized" in preview["gatekeeper_notice"]
     assert "notarized" in official["gatekeeper_notice"]

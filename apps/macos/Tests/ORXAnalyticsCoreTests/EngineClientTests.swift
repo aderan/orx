@@ -317,12 +317,19 @@ final class EngineClientTests: XCTestCase {
     func testDefaultSocketPathFollowsDataDirConvention() {
         XCTAssertEqual(
             EngineSocketClient.defaultSocketPath(environment: [:]),
-            NSHomeDirectory() + "/.orx-analytics/engine.sock")
+            NSHomeDirectory() + "/.local/share/orx/analytics/engine.sock")
         XCTAssertEqual(
             EngineSocketClient.defaultSocketPath(environment: ["ORX_ANALYTICS_HOME": "/tmp/x"]),
             "/tmp/x/engine.sock")
         XCTAssertEqual(
             EngineSocketClient.defaultSocketPath(environment: ["ORX_ANALYTICS_HOME": ""]),
-            NSHomeDirectory() + "/.orx-analytics/engine.sock")
+            NSHomeDirectory() + "/.local/share/orx/analytics/engine.sock")
+        XCTAssertEqual(
+            EngineSocketClient.defaultSocketPath(environment: ["ORX_DATA_DIR": "/tmp/orx",
+                                                                  "XDG_DATA_HOME": "/tmp/xdg"]),
+            "/tmp/orx/analytics/engine.sock")
+        XCTAssertEqual(
+            EngineSocketClient.defaultSocketPath(environment: ["XDG_DATA_HOME": "/tmp/xdg"]),
+            "/tmp/xdg/orx/analytics/engine.sock")
     }
 }

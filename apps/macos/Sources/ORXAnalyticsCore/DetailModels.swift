@@ -214,13 +214,11 @@ public struct DispatchCandidate: Codable, Equatable {
     public let profile: String
     public let kept: Bool
     public let tier: String?
-    public let legacyClass: String?
     public let resourceStatus: String?
     public let rejectReason: String?
 
     enum CodingKeys: String, CodingKey {
         case profile, kept, tier
-        case legacyClass = "class"
         case resourceStatus = "resource_status"
         case rejectReason = "reject_reason"
     }

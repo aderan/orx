@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import display, query_model, registry
+from .paths import orx_data_directory
 from .probe import SUPPORTED_ORX_SCHEMA
 
 SUPPORTED_INDEX_VERSION = 1
@@ -72,13 +73,7 @@ def orx_index_path(orx_data_dir: Path | str | None = None) -> Path:
     whole resolution (tests, explicit callers)."""
     if orx_data_dir is not None:
         return Path(orx_data_dir) / INDEX_NAME
-    env = os.environ.get("ORX_DATA_DIR")
-    if env:
-        return Path(env) / INDEX_NAME
-    xdg = os.environ.get("XDG_DATA_HOME")
-    if xdg:
-        return Path(xdg) / "orx" / INDEX_NAME
-    return Path.home() / ".local" / "share" / "orx" / INDEX_NAME
+    return orx_data_directory() / INDEX_NAME
 
 
 def read_index(path: Path | str | None = None) -> dict:

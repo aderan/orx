@@ -395,8 +395,7 @@ def _model_selection(
             "candidate": candidate(cfg.controller_profile, executor=False),
         },
         "planner": {
-            "depth": cfg.plan_depth_default,
-            "effective_depth": resolve_depth(
+            "depth": resolve_depth(
                 "", cfg.plan_depth_default if cfg.plan_depth_default != "auto" else None
             ).value,
             "depth_origin": effective.origins["plan.depth"],
@@ -502,7 +501,8 @@ def config_routing(
     _ok(json_out, contract=1, orx_version=__version__, scope=scope,
         project_root=str(project_root) if project_root else None,
         model_selection=selection,
-        values=[entry for entry in config_mod.config_entries(effective)
+        values=[{**entry, "value": selection["planner"]["depth"]} if entry["key"] == "plan.depth" else entry
+                for entry in config_mod.config_entries(effective)
                 if entry["key"] in config_mod.ROUTING_EDIT_KEYS],
         available_profiles=sorted(effective.profiles), **metadata)
     if not json_out:

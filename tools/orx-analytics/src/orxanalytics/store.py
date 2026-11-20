@@ -1,6 +1,6 @@
 """The analytics tool's own database.
 
-Everything here lives under the data dir (default ``~/.orx-analytics``) and
+Everything here lives under the data dir (default ``~/.local/share/orx/analytics``) and
 is ours to write. Source databases are only ever opened through
 :mod:`orxanalytics.dbutil` read-only helpers.
 
@@ -18,6 +18,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .paths import analytics_data_directory
 
 STORE_VERSION = "4"
 
@@ -302,9 +304,6 @@ CREATE TABLE IF NOT EXISTS finding_fixes(
 );
 """
 
-DEFAULT_DATA_DIR = Path.home() / ".orx-analytics"
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -315,11 +314,7 @@ _MIGRATABLE_FROM = {"1", "2", "3"}
 
 class Store:
     def __init__(self, data_dir: Path | None = None):
-        import os
-        if data_dir is None:
-            env = os.environ.get("ORX_ANALYTICS_HOME")
-            data_dir = Path(env) if env else DEFAULT_DATA_DIR
-        self.data_dir = Path(data_dir)
+        self.data_dir = analytics_data_directory(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / "analytics.db"
         self.conn = sqlite3.connect(self.path)

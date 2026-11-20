@@ -19,10 +19,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aderan/orx-analytics"
-Repository = "https://github.com/aderan/orx-analytics"
-Issues = "https://github.com/aderan/orx-analytics/issues"
-Documentation = "https://github.com/aderan/orx-analytics#readme"
+Homepage = "https://github.com/aderan/orx/tree/main/tools/orx-analytics"
+Repository = "https://github.com/aderan/orx"
+Issues = "https://github.com/aderan/orx/issues"
+Documentation = "https://github.com/aderan/orx/tree/main/tools/orx-analytics/docs"
 
 [project.scripts]
 orx-analytics = "orxanalytics.cli:main"

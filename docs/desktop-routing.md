@@ -15,8 +15,7 @@
 本次宿主解析。`host_mode`、`agent_ref` 和 `host_blocked_reason`
 说明宿主执行方式及本次宿主限制。ModelSpec、执行能力、T0–T3 或 S、
 请求 effort 与可选的 `native_effort` 覆盖独立展示。Planner 的
-`depth` 保留原配置，`effective_depth` 给出不带显式 `--depth` 时
-的默认值。
+`depth` 是不带显式 `--depth` 时的默认值，取 `light`、`standard` 或 `deep`。
 
 把编辑内容保存为 JSON 请求，`revision` 取自刚读取的对应作用域：
 

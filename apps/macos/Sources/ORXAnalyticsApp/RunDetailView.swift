@@ -761,7 +761,7 @@ struct RunDetailView: View {
                     ForEach(Array(candidates.enumerated()), id: \.offset) { _, candidate in
                         let outcome = candidate.rejectReason.map(RoutingLabels.reason)
                             ?? (candidate.kept ? "通过筛选" : "已过滤")
-                        Text([candidate.profile, RoutingLabels.tier(candidate.tier, legacyClass: candidate.legacyClass),
+                        Text([candidate.profile, RoutingLabels.tier(candidate.tier),
                               candidate.resourceStatus, outcome].compactMap { $0 }.joined(separator: "  ·  "))
                     }
                 }
